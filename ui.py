@@ -19,8 +19,17 @@ from utils import (
 )
 
 _UI_COMMIT = ""
+_DIFF_COMMIT = ""
 try:
     _UI_COMMIT = subprocess.check_output(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=Path(__file__).resolve().parent,
+        stderr=subprocess.DEVNULL, text=True,
+    ).strip()
+except Exception:
+    pass
+try:
+    _DIFF_COMMIT = subprocess.check_output(
         ["git", "rev-parse", "--short", "HEAD"],
         cwd=Path(__file__).resolve().parent / "diffucore",
         stderr=subprocess.DEVNULL, text=True,
@@ -28,7 +37,8 @@ try:
 except Exception:
     pass
 
-_UI_ID = f"diffucore-ui {_DIFFUCORE_VERSION}+{_UI_COMMIT}" if _UI_COMMIT else f"diffucore-ui {_DIFFUCORE_VERSION}"
+_UI_ID = f"diffucore-ui+{_UI_COMMIT}" if _UI_COMMIT else "diffucore-ui"
+_DIFF_ID = f"diffucore+{_DIFF_COMMIT}" if _DIFF_COMMIT else f"diffucore+{_DIFFUCORE_VERSION}"
 
 # ── helpers ────────────────────────────────────────────────────────
 
@@ -126,6 +136,7 @@ def _metadata_str(gen_kwargs) -> str:
     if "shift" in gen_kwargs:
         fields.append(f"Shift: {gen_kwargs['shift']}")
     fields.append(f"diffucore-ui: {_UI_ID}")
+    fields.append(_DIFF_ID)
     return f"{prompt}\nNegative prompt: {neg}\n{', '.join(fields)}"
 
 
