@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 from typing import List
+
+_ROOT = Path(__file__).resolve().parent
+_LOCAL_DIFFUCORE_SRC = _ROOT / "diffucore" / "src"
+if _LOCAL_DIFFUCORE_SRC.exists():
+    sys.path.insert(0, str(_LOCAL_DIFFUCORE_SRC))
 
 import gradio as gr
 from PIL import Image
@@ -23,7 +29,7 @@ _DIFF_COMMIT = ""
 try:
     _UI_COMMIT = subprocess.check_output(
         ["git", "rev-parse", "--short", "HEAD"],
-        cwd=Path(__file__).resolve().parent,
+        cwd=_ROOT,
         stderr=subprocess.DEVNULL, text=True,
     ).strip()
 except Exception:
@@ -31,7 +37,7 @@ except Exception:
 try:
     _DIFF_COMMIT = subprocess.check_output(
         ["git", "rev-parse", "--short", "HEAD"],
-        cwd=Path(__file__).resolve().parent / "diffucore",
+        cwd=_ROOT / "diffucore",
         stderr=subprocess.DEVNULL, text=True,
     ).strip()
 except Exception:
@@ -67,17 +73,27 @@ def _scheduler_list() -> List[str]:
 # ── callbacks ──────────────────────────────────────────────────────
 
 def cb_load_model(model_name, model_type,
-                  anima_dit, anima_vae, anima_te):
+                  anima_dit, anima_vae, anima_te,
+                  compile_enabled, cuda_graphs_enabled, channels_last_enabled):
     try:
         if model_type == "Anima":
             for name in (anima_dit, anima_vae, anima_te):
                 if not name or name.startswith("("):
                     return "Select all three Anima files"
-            return ENGINE.load_anima(anima_dit, anima_vae, anima_te, offload=True, vae_tile=True)
+            return ENGINE.load_anima(
+                anima_dit, anima_vae, anima_te,
+                offload=True, vae_tile=True,
+                compile=compile_enabled, cuda_graphs=cuda_graphs_enabled,
+            )
         else:
             if not model_name or model_name.startswith("("):
                 return "Select a model"
-            return ENGINE.load_model(model_name, offload=True, vae_tile=True)
+            return ENGINE.load_model(
+                model_name,
+                offload=True, vae_tile=True,
+                compile=compile_enabled, cuda_graphs=cuda_graphs_enabled,
+                channels_last=channels_last_enabled,
+            )
     except Exception as e:
         return f"Error: {e}"
 
@@ -137,6 +153,9 @@ def _metadata_str(gen_kwargs) -> str:
         fields.append(f"Shift: {gen_kwargs['shift']}")
     fields.append(f"diffucore-ui: {_UI_ID}")
     fields.append(_DIFF_ID)
+    flags = ENGINE.perf_flags_str
+    if flags != "default":
+        fields.append(f"Perf flags: {flags}")
     return f"{prompt}\nNegative prompt: {neg}\n{', '.join(fields)}"
 
 
@@ -224,13 +243,21 @@ def _generate_with_loras(prompt, neg, gen_fn, gen_kwargs, progress: gr.Progress 
         if loras:
             lora_info = ENGINE.apply_temp_loras(loras) + "  |  "
 
+        def _on_sampling_step(step: int, total: int) -> None:
+            if progress is not None and total > 0:
+                progress((step, total), desc=f"Sampling {step}/{total}")
+
         gen_kwargs["prompt"] = clean_prompt
         gen_kwargs["negative_prompt"] = clean_neg
+        gen_kwargs["progress_callback"] = _on_sampling_step
         image, info = gen_fn(**gen_kwargs)
+        if progress is not None:
+            progress(1, desc="Saving…")
 
         out = next_output_path(ENGINE.last_seed)
         meta = PngInfo()
-        meta.add_text("parameters", _metadata_str(gen_kwargs))
+        meta_kwargs = {k: v for k, v in gen_kwargs.items() if k != "progress_callback"}
+        meta.add_text("parameters", _metadata_str(meta_kwargs))
         image.save(out, pnginfo=meta)
         return image, f"{lora_info}{info}  |  saved to {out.relative_to(OUTPUTS_DIR)}"
     except Exception as e:
@@ -238,6 +265,8 @@ def _generate_with_loras(prompt, neg, gen_fn, gen_kwargs, progress: gr.Progress 
     finally:
         if loras:
             ENGINE.clear_temp_loras()
+        if progress is not None:
+            progress(1, desc="Done")
 
 
 def cb_generate_t2i(prompt, neg, width, height, steps, cfg, sampler, scheduler, seed, shift,
@@ -619,11 +648,182 @@ select:focus, .gr-dropdown:focus {
   overflow: hidden !important;
 }
 
-/* model bar: vertically centre the row so the tall radio leaves no dead band */
-#model-bar > .gr-row, #model-bar .form { align-items: center !important; }
-#model-bar { padding: 14px 16px !important; }
+/* model bar: compact control strip */
+#model-bar {
+  padding: 14px 16px !important;
+  overflow: visible !important;
+}
+#model-bar .form {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+#model-controls {
+  align-items: flex-start !important;
+  gap: 12px !important;
+  overflow: visible !important;
+}
+#model-selectors {
+  min-width: 0 !important;
+  gap: 8px !important;
+  overflow: visible !important;
+}
+#model-actions {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: 160px !important;
+  gap: 3px !important;
+  align-items: flex-end !important;
+  padding-top: 15px !important;
+  overflow: visible !important;
+}
+#model-actions button {
+  height: 36px !important;
+}
 .gr-checkbox, .gr-radio { accent-color: var(--ember) !important; }
 .gr-checkbox label, .gr-radio label { color: var(--txt) !important; }
+
+/* compact segmented model-family switch */
+#model-type-switcher {
+  min-width: 172px !important;
+  max-width: 184px !important;
+  align-self: flex-start !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+#model-type-switcher,
+#model-type-switcher .wrap,
+#model-type-switcher .container {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+#model-type-switcher > label,
+#model-type-switcher .gr-label {
+  display: block !important;
+  margin: 0 0 9px !important;
+  white-space: nowrap !important;
+}
+#model-type-switcher .wrap,
+#model-type-switcher .options,
+#model-type-switcher .radio-group,
+#model-type-switcher [role="radiogroup"] {
+  display: grid !important;
+  grid-template-columns: 1fr 1fr !important;
+  gap: 4px !important;
+  width: 100% !important;
+  padding: 3px !important;
+  border: 1px solid var(--line) !important;
+  border-radius: var(--r-md) !important;
+  background: rgba(255,138,76,0.045) !important;
+  overflow: visible !important;
+}
+#model-type-switcher input[type="radio"] {
+  position: absolute !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+#model-type-switcher label:has(input[type="radio"]) {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 0 !important;
+  min-height: 34px !important;
+  margin: 0 !important;
+  padding: 0 10px !important;
+  border: 1px solid transparent !important;
+  border-radius: 5px !important;
+  color: var(--txt-3) !important;
+  background: transparent !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 1px !important;
+  line-height: 1 !important;
+  text-align: center !important;
+  text-transform: uppercase !important;
+  cursor: pointer !important;
+  transition: color var(--t-fast), background var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast) !important;
+}
+#model-type-switcher label:has(input[type="radio"]:hover) {
+  color: var(--txt) !important;
+  background: rgba(255,106,43,0.06) !important;
+}
+#model-type-switcher label:has(input[type="radio"]:checked) {
+  color: #fff3ec !important;
+  border-color: rgba(255,138,76,0.34) !important;
+  background: linear-gradient(180deg, rgba(255,138,76,0.22), rgba(255,106,43,0.12)) !important;
+  box-shadow: 0 0 0 1px rgba(255,106,43,0.08) inset, 0 8px 22px rgba(255,106,43,0.10) !important;
+}
+#model-type-switcher label:has(input[type="radio"]:checked)::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--ember);
+  box-shadow: 0 0 8px var(--ember);
+  flex: 0 0 auto;
+}
+
+/* perf flags as stable toggle chips, without Gradio's internal scroll boxes */
+#perf-flags {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+  width: 100% !important;
+  min-height: 34px !important;
+  margin: 0 !important;
+  overflow: visible !important;
+}
+#perf-flags,
+#perf-flags .form,
+#perf-flags .wrap,
+#perf-flags .container,
+#perf-flags .gr-checkbox {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+#perf-flags .gr-checkbox {
+  flex: 0 1 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+}
+#perf-flags label:has(input[type="checkbox"]) {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+  min-height: 34px !important;
+  margin: 0 !important;
+  padding: 0 12px !important;
+  border: 1px solid var(--line) !important;
+  border-radius: var(--r-sm) !important;
+  background: rgba(255,138,76,0.045) !important;
+  color: var(--txt-2) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 1px !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+  text-transform: uppercase !important;
+}
+#perf-flags input[type="checkbox"] {
+  width: 14px !important;
+  height: 14px !important;
+  margin: 0 !important;
+  flex: 0 0 auto !important;
+}
+#perf-flags label:has(input[type="checkbox"]:checked) {
+  border-color: var(--line-strong) !important;
+  color: var(--txt) !important;
+  background: rgba(255,106,43,0.10) !important;
+}
 
 /* ── buttons ──────────────────────────────────────────────────────── */
 button, .gr-button {
@@ -783,17 +983,15 @@ def build_ui() -> gr.Blocks:
             )
 
         # ════════════════════════════════════════════════════════════
-        # TOP BAR — model selector + LoRA + load
+        # TOP BAR — model selector + perf flags + LoRA + load
         # ════════════════════════════════════════════════════════════
         with gr.Group(elem_id="model-bar"):
-            with gr.Row(equal_height=True):
+            with gr.Row(equal_height=False, elem_id="model-controls"):
                 model_type = gr.Radio(
                     ["SD/SDXL", "Anima"], value="SD/SDXL", label="Model type",
-                    scale=0, min_width=150,
+                    scale=0, min_width=172, elem_id="model-type-switcher",
                 )
-                # single slot — toggle inner widgets so no hidden sibling
-                # reserves flex space (the visible selector always fills)
-                with gr.Column(scale=4, min_width=0):
+                with gr.Column(scale=4, min_width=0, elem_id="model-selectors"):
                     model_dd = gr.Dropdown(
                         choices=_checkpoint_list(), label="Checkpoint",
                         value=_checkpoint_list()[0], interactive=True,
@@ -812,8 +1010,18 @@ def build_ui() -> gr.Blocks:
                             choices=_te_list(), label="TE",
                             value=_te_list()[0], interactive=True, scale=1,
                         )
-                refresh_btn = gr.Button("↻", scale=0, min_width=50)
-                load_btn = gr.Button("Load", variant="primary", scale=0, min_width=110)
+                    with gr.Row(equal_height=False, elem_id="perf-flags"):
+                        compile_cb = gr.Checkbox(label="torch.compile", value=False)
+                        cuda_graphs_cb = gr.Checkbox(label="CUDA Graphs", value=False)
+                        channels_last_cb = gr.Checkbox(label="channels_last", value=False)
+                with gr.Row(equal_height=False, elem_id="model-actions"):
+                    refresh_btn = gr.Button("↻", scale=0, min_width=50)
+                    load_btn = gr.Button("Load", variant="primary", scale=0, min_width=110)
+
+        # CUDA Graphs requires compile
+        compile_cb.change(
+            lambda c: gr.update(interactive=c), compile_cb, cuda_graphs_cb,
+        )
 
         gr.Markdown(
             "**LoRA**: use `<lora:name:mult>` in your prompt — e.g. `<lora:my_lora:0.75>`"
@@ -850,7 +1058,8 @@ def build_ui() -> gr.Blocks:
 
         load_btn.click(
             cb_load_model,
-            [model_dd, model_type, anima_dit, anima_vae, anima_te],
+            [model_dd, model_type, anima_dit, anima_vae, anima_te,
+             compile_cb, cuda_graphs_cb, channels_last_cb],
             [status_bar],
         )
 

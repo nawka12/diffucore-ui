@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import copy
 import gc
-import io
 import re
+import sys
 import time
-from contextlib import redirect_stderr
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
+
+_ROOT = Path(__file__).resolve().parent
+_LOCAL_DIFFUCORE_SRC = _ROOT / "diffucore" / "src"
+if _LOCAL_DIFFUCORE_SRC.exists():
+    sys.path.insert(0, str(_LOCAL_DIFFUCORE_SRC))
 
 import torch
 from PIL import Image
@@ -24,20 +28,11 @@ from diffucore import (
     TextToImage,
 )
 from diffucore.runtime import DevicePolicy
+from diffucore.pipelines._base import sampling_progress
 
 from utils import checkpoint_path, lora_path, diffusion_model_path, vae_path, te_path
 
 LORA_PROMPT_RE = re.compile(r"<lora:([^:]+):([^>]+)>")
-
-
-def _append_tqdm_info(buf: io.StringIO, info: str) -> str:
-    raw = buf.getvalue()
-    if not raw.strip():
-        return info
-    lines = [l for l in raw.split("\r") if l.strip()]
-    if lines:
-        return f"{info}  |  {lines[-1].strip()}"
-    return info
 
 SAMPLERS = [
     "euler",
@@ -76,8 +71,12 @@ class Engine:
         self.dtype = getattr(torch, dtype_str)
         self._loaded: Optional[LoadedModel] = None
         self._clean_state: Optional[dict] = None
-        self._offload = True
+        self._offload: bool | str = True
         self._vae_tile = True
+        self._compile = False
+        self._cuda_graphs = False
+        self._channels_last = False
+        self._tf32 = False
         self._last_seed: int = -1
         self._anima_defaults_applied: bool = False
 
@@ -115,7 +114,8 @@ class Engine:
         lora_str = ""
         if self._loaded.applied_loras:
             lora_str = f"  |  LoRAs: {', '.join(self._loaded.applied_loras)}"
-        return f"{self._loaded.name} ({self._loaded.family}, {self._loaded.native_res}){vram}{lora_str}"
+        flags = self._perf_flag_summary().strip()
+        return f"{self._loaded.name} ({self._loaded.family}, {self._loaded.native_res}){vram}{lora_str}{'  ' + flags if flags else ''}"
 
     # ── temporary LoRA (reForge-style via prompt) ────────────────
 
@@ -171,19 +171,35 @@ class Engine:
 
     # ── model loading ──────────────────────────────────────────────
 
-    def load_model(self, model_name: str, offload: bool = True, vae_tile: bool = True) -> str:
+    def load_model(
+        self, model_name: str, offload: bool = True, vae_tile: bool = True,
+        compile: bool = False, cuda_graphs: bool = False,
+        channels_last: bool = False, tf32: bool = False,
+    ) -> str:
         if self._loaded and self._loaded.name == model_name:
             return f"Model already loaded: {model_name}"
+
+        if compile and offload is True:
+            offload = "encoders"
 
         self._unload()
         self._offload = offload
         self._vae_tile = vae_tile
+        self._compile = compile
+        self._cuda_graphs = cuda_graphs
+        self._channels_last = channels_last
+        self._tf32 = tf32
 
         path = checkpoint_path(model_name)
         if not path.exists():
             raise FileNotFoundError(f"Model not found: {path}")
 
-        policy = DevicePolicy(device=self.device, compute_dtype=self.dtype, offload=offload, vae_tile=vae_tile)
+        policy = DevicePolicy(
+            device=self.device, compute_dtype=self.dtype,
+            offload=offload, vae_tile=vae_tile,
+            compile=compile, cuda_graphs=cuda_graphs,
+            channels_last=channels_last, tf32=tf32,
+        )
 
         t0 = time.time()
         family = self._detect_family(path)
@@ -198,19 +214,28 @@ class Engine:
         )
         self._clean_state = None
         self._save_clean_state()
-        return f"Loaded {model_name} ({family}) in {elapsed:.1f}s"
+        flags = self._perf_flag_summary()
+        return f"Loaded {model_name} ({family}) in {elapsed:.1f}s{flags}"
 
     def load_anima(
         self, dit_name: str, vae_name: str, te_name: str,
         offload: bool = True, vae_tile: bool = True,
+        compile: bool = False, cuda_graphs: bool = False,
     ) -> str:
         label = f"Anima({dit_name})"
         if self._loaded and self._loaded.name == label:
             return f"Model already loaded: {label}"
 
+        if compile and offload is True:
+            offload = "encoders"
+
         self._unload()
         self._offload = offload
         self._vae_tile = vae_tile
+        self._compile = compile
+        self._cuda_graphs = cuda_graphs
+        self._channels_last = False
+        self._tf32 = False
 
         dit_path = diffusion_model_path(dit_name)
         vae_file = vae_path(vae_name)
@@ -219,7 +244,11 @@ class Engine:
             if not p.exists():
                 raise FileNotFoundError(f"Anima file not found: {p}")
 
-        policy = DevicePolicy(device=self.device, compute_dtype=self.dtype, offload=offload, vae_tile=vae_tile)
+        policy = DevicePolicy(
+            device=self.device, compute_dtype=self.dtype,
+            offload=offload, vae_tile=vae_tile,
+            compile=compile, cuda_graphs=cuda_graphs,
+        )
 
         t0 = time.time()
         model = load_anima_checkpoint(
@@ -235,7 +264,39 @@ class Engine:
         )
         self._clean_state = None
         self._save_clean_state()
-        return f"Loaded Anima in {elapsed:.1f}s  (DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})"
+        flags = self._perf_flag_summary()
+        return f"Loaded Anima in {elapsed:.1f}s{flags}  (DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})"
+
+    def _perf_flag_summary(self) -> str:
+        flags = []
+        if self._compile:
+            flags.append("compile")
+        if self._cuda_graphs:
+            flags.append("cuda_graphs")
+        if self._channels_last:
+            flags.append("channels_last")
+        if self._tf32:
+            flags.append("tf32")
+        if self._offload is True:
+            flags.append("offload=full")
+        elif self._offload == "encoders":
+            flags.append("offload=encoders")
+        elif not self._offload:
+            flags.append("no-offload")
+        return f"  [{', '.join(flags)}]" if flags else ""
+
+    @property
+    def perf_flags_str(self) -> str:
+        parts = []
+        if self._compile:
+            parts.append("compile")
+        if self._cuda_graphs:
+            parts.append("cuda_graphs")
+        if self._channels_last:
+            parts.append("channels_last")
+        if self._tf32:
+            parts.append("tf32")
+        return ", ".join(parts) if parts else "default"
 
     def _unload(self) -> None:
         if self._loaded is not None:
@@ -296,6 +357,7 @@ class Engine:
         scheduler: str = "karras",
         seed: int = -1,
         shift: float = 1.0,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
@@ -314,11 +376,10 @@ class Engine:
         )
         if self._loaded.family == MODEL_FAMILY_ANIMA:
             kwargs["shift"] = shift
-        buf = io.StringIO()
-        with redirect_stderr(buf):
+        with sampling_progress(progress_callback):
             image = gen(**kwargs)
         info = f"Seed: {seed} | {width}x{height} | {steps} steps"
-        return image, _append_tqdm_info(buf, info)
+        return image, info
 
     def generate_i2i(
         self,
@@ -331,6 +392,7 @@ class Engine:
         sampler: str = "dpmpp_2m",
         scheduler: str = "karras",
         seed: int = -1,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
@@ -347,11 +409,10 @@ class Engine:
             scheduler=scheduler,
             seed=seed,
         )
-        buf = io.StringIO()
-        with redirect_stderr(buf):
+        with sampling_progress(progress_callback):
             image = gen(**gen_kwargs)
         info = f"Seed: {seed} | strength={strength} | {steps} steps"
-        return image, _append_tqdm_info(buf, info)
+        return image, info
 
     def generate_inpaint(
         self,
@@ -365,6 +426,7 @@ class Engine:
         sampler: str = "dpmpp_2m",
         scheduler: str = "karras",
         seed: int = -1,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
@@ -382,13 +444,11 @@ class Engine:
             scheduler=scheduler,
             seed=seed,
         )
-        buf = io.StringIO()
-        with redirect_stderr(buf):
+        with sampling_progress(progress_callback):
             image = gen(**gen_kwargs)
         info = f"Seed: {seed} | inpainted | {steps} steps"
-        return image, _append_tqdm_info(buf, info)
+        return image, info
 
 
 # ── singleton ──────────────────────────────────────────────────────
 ENGINE = Engine()
-
