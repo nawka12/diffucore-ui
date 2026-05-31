@@ -1,0 +1,3 @@
+[submodule "diffucore"]
+	path = diffucore
+	url = https://github.com/nawka12/diffucore.git

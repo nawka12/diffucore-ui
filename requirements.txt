@@ -1,0 +1,9 @@
+gradio>=6.0
+torch>=2.1
+numpy>=1.25
+safetensors>=0.4
+tokenizers>=0.15
+transformers>=4.40
+Pillow>=10.0
+einops>=0.7
+tqdm
