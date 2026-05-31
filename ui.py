@@ -226,8 +226,6 @@ def _generate_with_loras(prompt, neg, gen_fn, gen_kwargs, progress: gr.Progress 
 
         gen_kwargs["prompt"] = clean_prompt
         gen_kwargs["negative_prompt"] = clean_neg
-        if progress is not None:
-            gen_kwargs["progress_cb"] = progress
         image, info = gen_fn(**gen_kwargs)
 
         out = next_output_path(ENGINE.last_seed)

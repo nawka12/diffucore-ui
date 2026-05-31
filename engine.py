@@ -10,7 +10,7 @@ import time
 from contextlib import redirect_stderr
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 from PIL import Image
@@ -296,7 +296,6 @@ class Engine:
         scheduler: str = "karras",
         seed: int = -1,
         shift: float = 1.0,
-        progress_cb: Callable | None = None,
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
@@ -315,8 +314,6 @@ class Engine:
         )
         if self._loaded.family == MODEL_FAMILY_ANIMA:
             kwargs["shift"] = shift
-        if progress_cb is not None:
-            kwargs["callback"] = progress_cb
         buf = io.StringIO()
         with redirect_stderr(buf):
             image = gen(**kwargs)
@@ -334,7 +331,6 @@ class Engine:
         sampler: str = "dpmpp_2m",
         scheduler: str = "karras",
         seed: int = -1,
-        progress_cb: Callable | None = None,
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
@@ -351,8 +347,6 @@ class Engine:
             scheduler=scheduler,
             seed=seed,
         )
-        if progress_cb is not None:
-            gen_kwargs["callback"] = progress_cb
         buf = io.StringIO()
         with redirect_stderr(buf):
             image = gen(**gen_kwargs)
@@ -371,7 +365,6 @@ class Engine:
         sampler: str = "dpmpp_2m",
         scheduler: str = "karras",
         seed: int = -1,
-        progress_cb: Callable | None = None,
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
@@ -389,8 +382,6 @@ class Engine:
             scheduler=scheduler,
             seed=seed,
         )
-        if progress_cb is not None:
-            gen_kwargs["callback"] = progress_cb
         buf = io.StringIO()
         with redirect_stderr(buf):
             image = gen(**gen_kwargs)
