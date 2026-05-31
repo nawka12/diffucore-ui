@@ -172,6 +172,41 @@ def _parse_metadata(params_str: str) -> dict:
     return result
 
 
+def _parse_comfyui_metadata(prompt_json: str) -> dict:
+    import json
+    try:
+        data = json.loads(prompt_json)
+    except json.JSONDecodeError:
+        return {}
+    result = {}
+    for node_id, node in data.items():
+        if not isinstance(node, dict):
+            continue
+        class_type = node.get("class_type", "")
+        inputs = node.get("inputs", {})
+        if class_type == "KSampler":
+            for key in ("seed", "steps", "cfg"):
+                if key in inputs:
+                    result[key] = inputs[key]
+            if "sampler_name" in inputs:
+                result["sampler"] = inputs["sampler_name"]
+            if "scheduler" in inputs:
+                result["scheduler"] = inputs["scheduler"]
+            if "denoise" in inputs:
+                result["denoising_strength"] = inputs["denoise"]
+        if class_type == "CLIPTextEncode":
+            text = inputs.get("text", "")
+            if text:
+                if "prompt" not in result:
+                    result["prompt"] = text
+                else:
+                    result["negative_prompt"] = text
+        if class_type == "EmptyLatentImage":
+            if "width" in inputs and "height" in inputs:
+                result["size"] = f"{inputs['width']}x{inputs['height']}"
+    return result
+
+
 # ── generation ─────────────────────────────────────────────────────
 
 def _generate_with_loras(prompt, neg, gen_fn, gen_kwargs, progress: gr.Progress | None = None):
@@ -1004,6 +1039,123 @@ def build_ui() -> gr.Blocks:
                         inp_prompt, inp_neg,
                         inp_steps, inp_cfg, inp_sampler, inp_scheduler, inp_seed,
                         inp_strength,
+                    ],
+                )
+
+            # ── metadata reader ──────────────────────────────────────
+            with gr.Tab("Metadata"):
+                meta_input = gr.Image(label="Upload a PNG image", type="pil")
+                meta_info = gr.Textbox(
+                    label="Metadata", lines=15, max_lines=30, interactive=False,
+                )
+                with gr.Row():
+                    meta_send = gr.Button("Send to txt2img", variant="primary", scale=0)
+
+                def _format_metadata(img):
+                    if img is None:
+                        return "Upload a PNG image to view its metadata."
+
+                    try:
+                        with Image.open(img.filename) as raw:
+                            info = dict(raw.info)
+                    except Exception:
+                        info = dict(img.info)
+
+                    if not info:
+                        return "No metadata found in this image."
+
+                    lines = []
+
+                    lines.append("═ ALL PNG METADATA KEYS ═")
+                    for k, v in info.items():
+                        val = str(v)
+                        if len(val) > 600:
+                            val = val[:600] + "..."
+                        lines.append(f"  {k}: {val}")
+
+                    auto1111 = info.get("parameters", "")
+                    if auto1111:
+                        lines.append("")
+                        lines.append("═ AUTO1111 / FORGE PARSED ═")
+                        for k, v in _parse_metadata(auto1111).items():
+                            lines.append(f"  {k}: {v}")
+
+                    comfyui = info.get("prompt", "")
+                    if comfyui:
+                        lines.append("")
+                        lines.append("═ COMFYUI PARSED ═")
+                        for k, v in _parse_comfyui_metadata(comfyui).items():
+                            lines.append(f"  {k}: {v}")
+
+                    return "\n".join(lines)
+
+                def _meta_send_to_txt2img(img):
+                    if img is None:
+                        return [gr.update()] * 10
+
+                    try:
+                        with Image.open(img.filename) as raw:
+                            info = dict(raw.info)
+                    except Exception:
+                        info = dict(img.info)
+
+                    auto1111 = info.get("parameters", "")
+                    if auto1111:
+                        meta = _parse_metadata(auto1111)
+                    else:
+                        meta = _parse_comfyui_metadata(info.get("prompt", ""))
+
+                    def _upd(v):
+                        return gr.update(value=v) if v is not None and v != "" else gr.update()
+
+                    prompt = meta.get("prompt", "")
+                    neg = meta.get("negative_prompt", "")
+                    try:
+                        steps = int(meta.get("steps", 0)) or None
+                    except Exception:
+                        steps = None
+                    try:
+                        cfg = float(meta.get("cfg_scale", 0)) or None
+                    except Exception:
+                        cfg = None
+                    sampler = meta.get("sampler", None)
+                    scheduler = meta.get("scheduler", None)
+                    try:
+                        seed = int(meta.get("seed", -1))
+                    except Exception:
+                        seed = -1
+                    try:
+                        shift = float(meta.get("shift", 3.0))
+                    except Exception:
+                        shift = 3.0
+
+                    width = gr.update()
+                    height = gr.update()
+                    size_str = meta.get("size", "")
+                    if "x" in size_str:
+                        try:
+                            parts = size_str.split("x")
+                            w = int(parts[0])
+                            h = int(parts[1])
+                            if 256 <= w <= 2048 and 256 <= h <= 2048:
+                                width = gr.update(value=w)
+                                height = gr.update(value=h)
+                        except Exception:
+                            pass
+
+                    return [
+                        _upd(prompt), _upd(neg), width, height,
+                        _upd(steps), _upd(cfg), _upd(sampler), _upd(scheduler), _upd(seed),
+                        _upd(shift),
+                    ]
+
+                meta_input.change(_format_metadata, meta_input, meta_info)
+                meta_send.click(
+                    _meta_send_to_txt2img, meta_input,
+                    [
+                        t2i_prompt, t2i_neg, t2i_width, t2i_height,
+                        t2i_steps, t2i_cfg, t2i_sampler, t2i_scheduler, t2i_seed,
+                        t2i_shift,
                     ],
                 )
 
