@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import copy
+import ctypes
+import ctypes.util
 import gc
 import re
 import sys
@@ -10,6 +11,27 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
+
+
+def _resolve_malloc_trim():
+    """glibc ``malloc_trim`` if available, else None. Used after each generation to
+    return free heap pages to the OS — offload round-trips churn many GB of CPU
+    weights per call, and glibc's allocator otherwise grows RSS indefinitely."""
+    try:
+        libc_path = ctypes.util.find_library("c")
+        if not libc_path:
+            return None
+        libc = ctypes.CDLL(libc_path)
+        if not hasattr(libc, "malloc_trim"):
+            return None
+        libc.malloc_trim.argtypes = [ctypes.c_size_t]
+        libc.malloc_trim.restype = ctypes.c_int
+        return libc.malloc_trim
+    except OSError:
+        return None
+
+
+_MALLOC_TRIM = _resolve_malloc_trim()
 
 _ROOT = Path(__file__).resolve().parent
 _LOCAL_DIFFUCORE_SRC = _ROOT / "diffucore" / "src"
@@ -21,6 +43,7 @@ from PIL import Image
 
 from diffucore import (
     apply_lora,
+    clear_loras as clear_bundle_loras,
     load_anima_checkpoint,
     load_checkpoint,
     ImageToImage,
@@ -28,9 +51,9 @@ from diffucore import (
     TextToImage,
 )
 from diffucore.runtime import DevicePolicy
-from diffucore.pipelines._base import sampling_progress
 
 from utils import checkpoint_path, lora_path, diffusion_model_path, vae_path, te_path
+
 
 LORA_PROMPT_RE = re.compile(r"<lora:([^:]+):([^>]+)>")
 
@@ -48,7 +71,7 @@ SAMPLERS = [
 ]
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "sgm_uniform", "simple"]
-SCHEDULERS_ANIMA = ["flow", "sgm_uniform", "simple"]
+SCHEDULERS_ANIMA = ["flow", "acas", "sgm_uniform", "simple"]
 
 # (family, native_res) tuples — used for defaults
 MODEL_FAMILY_SD15 = "sd15"
@@ -70,7 +93,6 @@ class Engine:
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.dtype = getattr(torch, dtype_str)
         self._loaded: Optional[LoadedModel] = None
-        self._clean_state: Optional[dict] = None
         self._offload: bool | str = True
         self._vae_tile = True
         self._compile = False
@@ -119,26 +141,6 @@ class Engine:
 
     # ── temporary LoRA (reForge-style via prompt) ────────────────
 
-    def _save_clean_state(self) -> None:
-        m = self._loaded.model
-        sd = {"backbone": copy.deepcopy(m.backbone.state_dict())}
-        if m.text_encoder is not None:
-            sd["text_encoder"] = copy.deepcopy(m.text_encoder.state_dict())
-        if m.text_encoder_2 is not None:
-            sd["text_encoder_2"] = copy.deepcopy(m.text_encoder_2.state_dict())
-        self._clean_state = sd
-
-    def _restore_clean_state(self) -> None:
-        if self._clean_state is None:
-            return
-        m = self._loaded.model
-        m.backbone.load_state_dict(self._clean_state["backbone"])
-        if m.text_encoder is not None and "text_encoder" in self._clean_state:
-            m.text_encoder.load_state_dict(self._clean_state["text_encoder"])
-        if m.text_encoder_2 is not None and "text_encoder_2" in self._clean_state:
-            m.text_encoder_2.load_state_dict(self._clean_state["text_encoder_2"])
-        self._loaded.applied_loras.clear()
-
     @staticmethod
     def parse_lora_prompt(prompt: str) -> tuple[str, list[tuple[str, float]]]:
         loras = []
@@ -153,7 +155,8 @@ class Engine:
     def apply_temp_loras(self, loras: list[tuple[str, float]]) -> str:
         if not self._loaded:
             return "No model loaded"
-        self._restore_clean_state()
+        clear_bundle_loras(self._loaded.model)
+        self._loaded.applied_loras.clear()
         msgs = []
         for name, mult in loras:
             path = lora_path(name)
@@ -166,8 +169,9 @@ class Engine:
         return " | ".join(msgs) if msgs else "No LoRAs"
 
     def clear_temp_loras(self) -> None:
-        if self._loaded and self._clean_state is not None:
-            self._restore_clean_state()
+        if self._loaded:
+            clear_bundle_loras(self._loaded.model)
+            self._loaded.applied_loras.clear()
 
     # ── model loading ──────────────────────────────────────────────
 
@@ -212,8 +216,6 @@ class Engine:
             model=model,
             native_res=self._native_res(family),
         )
-        self._clean_state = None
-        self._save_clean_state()
         flags = self._perf_flag_summary()
         return f"Loaded {model_name} ({family}) in {elapsed:.1f}s{flags}"
 
@@ -262,8 +264,6 @@ class Engine:
             model=model,
             native_res=1024,
         )
-        self._clean_state = None
-        self._save_clean_state()
         flags = self._perf_flag_summary()
         return f"Loaded Anima in {elapsed:.1f}s{flags}  (DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})"
 
@@ -302,10 +302,17 @@ class Engine:
         if self._loaded is not None:
             del self._loaded.model
             self._loaded = None
-        self._clean_state = None
+        self._reclaim_memory()
+
+    def _reclaim_memory(self) -> None:
+        """Drop dead refs and hand free heap pages back to the OS. Called after
+        each generation so glibc doesn't grow RSS indefinitely from the
+        multi-GB CPU malloc/free churn the offload round-trips produce."""
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        if _MALLOC_TRIM is not None:
+            _MALLOC_TRIM(0)
 
     def _detect_family(self, path: Path) -> str:
         name_lower = path.stem.lower()
@@ -373,12 +380,16 @@ class Engine:
             sampler=sampler,
             scheduler=scheduler,
             seed=seed,
+            progress_callback=progress_callback,
+            return_info=True,
         )
         if self._loaded.family == MODEL_FAMILY_ANIMA:
             kwargs["shift"] = shift
-        with sampling_progress(progress_callback):
-            image = gen(**kwargs)
-        info = f"Seed: {seed} | {width}x{height} | {steps} steps"
+        try:
+            image, pipeline_info = gen(**kwargs)
+        finally:
+            self._reclaim_memory()
+        info = f"Seed: {seed} | {width}x{height} | {steps} steps | VAE: {pipeline_info.vae_decode_mode}"
         return image, info
 
     def generate_i2i(
@@ -400,7 +411,7 @@ class Engine:
         gen = ImageToImage(self._loaded.model)
         gen_kwargs = dict(
             prompt=prompt,
-            input_image=input_image,
+            init_image=input_image,
             negative_prompt=negative_prompt,
             strength=strength,
             steps=steps,
@@ -408,10 +419,14 @@ class Engine:
             sampler=sampler,
             scheduler=scheduler,
             seed=seed,
+            progress_callback=progress_callback,
+            return_info=True,
         )
-        with sampling_progress(progress_callback):
-            image = gen(**gen_kwargs)
-        info = f"Seed: {seed} | strength={strength} | {steps} steps"
+        try:
+            image, pipeline_info = gen(**gen_kwargs)
+        finally:
+            self._reclaim_memory()
+        info = f"Seed: {seed} | strength={strength} | {steps} steps | VAE: {pipeline_info.vae_decode_mode}"
         return image, info
 
     def generate_inpaint(
@@ -434,7 +449,7 @@ class Engine:
         gen = Inpaint(self._loaded.model)
         gen_kwargs = dict(
             prompt=prompt,
-            input_image=input_image,
+            init_image=input_image,
             mask_image=mask_image,
             negative_prompt=negative_prompt,
             strength=strength,
@@ -443,10 +458,14 @@ class Engine:
             sampler=sampler,
             scheduler=scheduler,
             seed=seed,
+            progress_callback=progress_callback,
+            return_info=True,
         )
-        with sampling_progress(progress_callback):
-            image = gen(**gen_kwargs)
-        info = f"Seed: {seed} | inpainted | {steps} steps"
+        try:
+            image, pipeline_info = gen(**gen_kwargs)
+        finally:
+            self._reclaim_memory()
+        info = f"Seed: {seed} | inpainted | {steps} steps | VAE: {pipeline_info.vae_decode_mode}"
         return image, info
 
 

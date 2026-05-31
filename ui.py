@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import List
 
@@ -250,7 +251,9 @@ def _generate_with_loras(prompt, neg, gen_fn, gen_kwargs, progress: gr.Progress 
         gen_kwargs["prompt"] = clean_prompt
         gen_kwargs["negative_prompt"] = clean_neg
         gen_kwargs["progress_callback"] = _on_sampling_step
+        t0 = time.perf_counter()
         image, info = gen_fn(**gen_kwargs)
+        inference_time = time.perf_counter() - t0
         if progress is not None:
             progress(1, desc="Saving…")
 
@@ -259,7 +262,7 @@ def _generate_with_loras(prompt, neg, gen_fn, gen_kwargs, progress: gr.Progress 
         meta_kwargs = {k: v for k, v in gen_kwargs.items() if k != "progress_callback"}
         meta.add_text("parameters", _metadata_str(meta_kwargs))
         image.save(out, pnginfo=meta)
-        return image, f"{lora_info}{info}  |  saved to {out.relative_to(OUTPUTS_DIR)}"
+        return image, f"{lora_info}{info}  |  inference: {inference_time:.2f}s  |  saved to {out.relative_to(OUTPUTS_DIR)}"
     except Exception as e:
         return None, f"Error: {e}"
     finally:
