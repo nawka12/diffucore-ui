@@ -68,6 +68,7 @@ SAMPLERS = [
     "dpmpp_2m_sde",
     "dpmpp_3m_sde",
     "er_sde",
+    "secant",
 ]
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "sgm_uniform", "simple"]
