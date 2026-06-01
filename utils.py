@@ -74,12 +74,19 @@ def lora_path(name: str) -> Path:
     return LORAS_DIR / name
 
 
+def _parse_date_dir(name: str) -> date:
+    try:
+        return date(int(name[6:10]), int(name[3:5]), int(name[0:2]))
+    except (ValueError, IndexError):
+        return date.min
+
+
 def scan_outputs() -> List[Path]:
     _ensure_dirs()
     files = []
-    for d in sorted(OUTPUTS_DIR.iterdir(), reverse=True):
-        if not d.is_dir():
-            continue
+    dirs = [d for d in OUTPUTS_DIR.iterdir() if d.is_dir()]
+    dirs.sort(key=lambda d: _parse_date_dir(d.name), reverse=True)
+    for d in dirs:
         for f in sorted(d.iterdir(), reverse=True):
             if f.suffix.lower() == ".png":
                 files.append(f)
