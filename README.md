@@ -76,6 +76,12 @@ models/
 ### Start the UI
 
 ```bash
+./launch.sh
+```
+
+Or, manually:
+
+```bash
 source .venv/bin/activate
 python app.py
 ```
@@ -108,6 +114,7 @@ that generation's settings.
 ├── utils.py            Directory scanning helpers (checkpoints, LoRAs, outputs)
 ├── requirements.txt    Python dependencies
 ├── setup.sh            One-shot setup (submodule init, venv, pip install)
+├── launch.sh           Activate venv and run `python app.py`
 ├── diffucore/          Git submodule — the Diffucore inference engine
 ├── models/             Model weight directories (user-provided)
 └── outputs/            Generated images, organised by date
