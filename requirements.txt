@@ -1,4 +1,6 @@
-gradio>=6.0
+fastapi>=0.115
+uvicorn>=0.30
+python-multipart>=0.0.9
 torch>=2.1
 numpy>=1.25
 safetensors>=0.4

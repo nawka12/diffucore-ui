@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Diffucore</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js"></script>
+  <script src="/static/alpine.min.js" defer></script>
+</head>
+<body x-data="app" x-init="init()">
+
+  <div class="shell" x-cloak>
+
+    <!-- ── header ──────────────────────────────────────────────── -->
+    <header class="topbar">
+      <span class="brand">Diffu<em>core</em></span>
+      <span class="version" x-text="uiId + ' · ' + diffId"></span>
+    </header>
+
+    <!-- ── model rack ─────────────────────────────────────────── -->
+    <section class="rack">
+      <div class="rack-row">
+        <div class="seg type-seg" role="radiogroup" aria-label="Model type">
+          <button :class="{active: modelType==='SD/SDXL'}" @click="setModelType('SD/SDXL')">SD / SDXL</button>
+          <button :class="{active: modelType==='Anima'}" @click="setModelType('Anima')">Anima</button>
+        </div>
+
+        <div class="rack-models">
+          <label class="field" x-show="modelType==='SD/SDXL'">
+            <span>Checkpoint</span>
+            <select x-model="checkpoint">
+              <template x-for="m in checkpointChoices" :key="m"><option :value="m" x-text="m"></option></template>
+            </select>
+          </label>
+          <div class="anima-grid" x-show="modelType==='Anima'">
+            <label class="field">
+              <span>DiT</span>
+              <select x-model="dit"><template x-for="m in ditChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+            </label>
+            <label class="field">
+              <span>VAE</span>
+              <select x-model="vae"><template x-for="m in vaeChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+            </label>
+            <label class="field">
+              <span>TE</span>
+              <select x-model="te"><template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+            </label>
+          </div>
+        </div>
+
+        <div class="rack-actions">
+          <button class="btn primary" @click="loadModel()" :disabled="loadingModel"
+                  x-text="loadingModel ? 'Loading…' : 'Load'"></button>
+          <button class="btn" @click="refreshModels()" :disabled="loadingModel">Refresh</button>
+        </div>
+      </div>
+
+      <div class="rack-row perf">
+        <label class="chip" :class="{on: perf.compile}">
+          <input type="checkbox" x-model="perf.compile" @change="if(!perf.compile) perf.cudaGraphs=false"> torch.compile
+        </label>
+        <label class="chip" :class="{on: perf.cudaGraphs, disabled: !perf.compile}">
+          <input type="checkbox" x-model="perf.cudaGraphs" :disabled="!perf.compile"> CUDA Graphs
+        </label>
+        <label class="chip" :class="{on: perf.channelsLast}">
+          <input type="checkbox" x-model="perf.channelsLast"> channels_last
+        </label>
+      </div>
+
+      <div class="status" :class="{live: modelLoaded}" x-text="status"></div>
+    </section>
+
+    <!-- ── nav ────────────────────────────────────────────────── -->
+    <nav class="tabs">
+      <button :class="{active: tab==='generate'}" @click="tab='generate'">Generate</button>
+      <button :class="{active: tab==='gallery'}" @click="openGallery()">Gallery</button>
+      <button :class="{active: tab==='metadata'}" @click="tab='metadata'">Metadata</button>
+    </nav>
+
+    <!-- ── GENERATE ───────────────────────────────────────────── -->
+    <section class="page gen-layout" x-show="tab==='generate'">
+
+      <!-- controls -->
+      <div class="controls">
+        <div class="seg modes" role="radiogroup" aria-label="Mode">
+          <button :class="{active: mode==='t2i'}" @click="mode='t2i'">txt2img</button>
+          <button :class="{active: mode==='i2i'}" @click="mode='i2i'">img2img</button>
+          <button :class="{active: mode==='inpaint'}" @click="mode='inpaint'">inpaint</button>
+        </div>
+
+        <label class="field">
+          <span>Prompt</span>
+          <textarea class="autosize" x-model="form.prompt" rows="3"
+                    x-effect="autogrow($el, form.prompt)" @input="autogrow($el)"
+                    placeholder="a watercolor fox in a misty forest"></textarea>
+        </label>
+        <label class="field">
+          <span>Negative prompt</span>
+          <textarea class="autosize" x-model="form.neg" rows="2"
+                    x-effect="autogrow($el, form.neg)" @input="autogrow($el)"
+                    placeholder="blurry, low quality"></textarea>
+        </label>
+        <p class="hint">LoRA — use <code>&lt;lora:name:mult&gt;</code> in your prompt, e.g. <code>&lt;lora:my_lora:0.75&gt;</code></p>
+
+        <!-- img2img / inpaint inputs -->
+        <fieldset x-show="mode==='i2i'">
+          <legend>Input image</legend>
+          <div class="drop" @click="$refs.i2iFile.click()">
+            <template x-if="inputImage"><img :src="inputImage" alt="input"></template>
+            <template x-if="!inputImage"><span>Click to upload</span></template>
+          </div>
+          <input type="file" accept="image/*" x-ref="i2iFile" class="hidden" @change="onFile($event,'inputImage')">
+          <button class="btn small" x-show="inputImage" @click="inputImage=null">Clear</button>
+        </fieldset>
+
+        <fieldset x-show="mode==='inpaint'">
+          <legend>Input &amp; mask</legend>
+          <div class="drop-pair">
+            <div>
+              <div class="drop" @click="$refs.inpFile.click()">
+                <template x-if="inputImage"><img :src="inputImage" alt="input"></template>
+                <template x-if="!inputImage"><span>Image</span></template>
+              </div>
+              <input type="file" accept="image/*" x-ref="inpFile" class="hidden" @change="onFile($event,'inputImage')">
+            </div>
+            <div>
+              <div class="drop" @click="$refs.maskFile.click()">
+                <template x-if="maskImage"><img :src="maskImage" alt="mask"></template>
+                <template x-if="!maskImage"><span>Mask (white = repaint)</span></template>
+              </div>
+              <input type="file" accept="image/*" x-ref="maskFile" class="hidden" @change="onFile($event,'maskImage')">
+            </div>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Sampling</legend>
+          <label class="field">
+            <span>Sampler</span>
+            <select x-model="form.sampler">
+              <template x-for="s in samplers" :key="s"><option :value="s" x-text="s"></option></template>
+            </select>
+          </label>
+          <label class="field">
+            <span>Scheduler</span>
+            <select x-model="form.scheduler">
+              <template x-for="s in schedulers" :key="s"><option :value="s" x-text="s"></option></template>
+            </select>
+          </label>
+          <div class="slider">
+            <div class="slider-head"><span>Steps</span>
+              <input type="number" x-model.number="form.steps" min="1" max="150" step="1"></div>
+            <input type="range" x-model.number="form.steps" min="1" max="150" step="1">
+          </div>
+          <div class="slider">
+            <div class="slider-head"><span>CFG scale</span>
+              <input type="number" x-model.number="form.cfg" min="1" max="30" step="0.5"></div>
+            <input type="range" x-model.number="form.cfg" min="1" max="30" step="0.5">
+          </div>
+        </fieldset>
+
+        <fieldset x-show="mode==='t2i'">
+          <legend>Size</legend>
+          <div class="slider">
+            <div class="slider-head"><span>Width</span>
+              <input type="number" x-model.number="form.width" min="256" max="2048" step="64"></div>
+            <input type="range" x-model.number="form.width" min="256" max="2048" step="64">
+          </div>
+          <div class="slider">
+            <div class="slider-head"><span>Height</span>
+              <input type="number" x-model.number="form.height" min="256" max="2048" step="64"></div>
+            <input type="range" x-model.number="form.height" min="256" max="2048" step="64">
+          </div>
+        </fieldset>
+
+        <fieldset x-show="mode!=='t2i'">
+          <legend>Denoising</legend>
+          <div class="slider">
+            <div class="slider-head"><span>Strength</span>
+              <input type="number" x-model.number="form.strength" min="0.05" max="1" step="0.05"></div>
+            <input type="range" x-model.number="form.strength" min="0.05" max="1" step="0.05">
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Seed</legend>
+          <div class="seed-row">
+            <input type="number" class="seed-input" x-model.number="form.seed" step="1">
+            <button class="btn icon" title="Recycle last seed" @click="form.seed = lastSeed >= 0 ? lastSeed : -1">♻</button>
+            <button class="btn icon" title="Randomize" @click="form.seed = -1">🎲</button>
+          </div>
+          <p class="sub">-1 = random</p>
+        </fieldset>
+
+        <fieldset x-show="mode==='t2i'">
+          <legend>X / Y / Z sweep</legend>
+          <label class="chip toggle" :class="{on: xyzSweep}">
+            <input type="checkbox" x-model="xyzSweep"> Enable sweep
+          </label>
+          <div class="axes-body" x-show="xyzSweep">
+            <div class="axis">
+              <span class="axis-label">X &middot; columns</span>
+              <select x-model="axes.x.type">
+                <template x-for="t in paramTypes" :key="t"><option :value="t" x-text="t"></option></template>
+              </select>
+              <div class="ms" x-data="{open:false}" @click.outside="open=false" x-show="axisIsList(axes.x)">
+                <button type="button" class="ms-btn" @click="open=!open"
+                        x-text="axes.x.list.length ? axes.x.list.join(', ') : 'Select values…'"></button>
+                <div class="ms-panel" x-show="open">
+                  <template x-for="opt in axisOptions(axes.x)" :key="opt">
+                    <label class="ms-opt"><input type="checkbox" :value="opt" x-model="axes.x.list"><span x-text="opt"></span></label>
+                  </template>
+                </div>
+              </div>
+              <input type="text" x-show="axes.x.type !== 'None' && !axisIsList(axes.x)"
+                     x-model="axes.x.text" placeholder="comma separated">
+            </div>
+            <div class="axis">
+              <span class="axis-label">Y &middot; rows</span>
+              <select x-model="axes.y.type">
+                <template x-for="t in paramTypes" :key="t"><option :value="t" x-text="t"></option></template>
+              </select>
+              <div class="ms" x-data="{open:false}" @click.outside="open=false" x-show="axisIsList(axes.y)">
+                <button type="button" class="ms-btn" @click="open=!open"
+                        x-text="axes.y.list.length ? axes.y.list.join(', ') : 'Select values…'"></button>
+                <div class="ms-panel" x-show="open">
+                  <template x-for="opt in axisOptions(axes.y)" :key="opt">
+                    <label class="ms-opt"><input type="checkbox" :value="opt" x-model="axes.y.list"><span x-text="opt"></span></label>
+                  </template>
+                </div>
+              </div>
+              <input type="text" x-show="axes.y.type !== 'None' && !axisIsList(axes.y)"
+                     x-model="axes.y.text" placeholder="comma separated">
+            </div>
+            <div class="axis">
+              <span class="axis-label">Z &middot; pages</span>
+              <select x-model="axes.z.type">
+                <template x-for="t in paramTypes" :key="t"><option :value="t" x-text="t"></option></template>
+              </select>
+              <div class="ms" x-data="{open:false}" @click.outside="open=false" x-show="axisIsList(axes.z)">
+                <button type="button" class="ms-btn" @click="open=!open"
+                        x-text="axes.z.list.length ? axes.z.list.join(', ') : 'Select values…'"></button>
+                <div class="ms-panel" x-show="open">
+                  <template x-for="opt in axisOptions(axes.z)" :key="opt">
+                    <label class="ms-opt"><input type="checkbox" :value="opt" x-model="axes.z.list"><span x-text="opt"></span></label>
+                  </template>
+                </div>
+              </div>
+              <input type="text" x-show="axes.z.type !== 'None' && !axisIsList(axes.z)"
+                     x-model="axes.z.text" placeholder="comma separated">
+            </div>
+          </div>
+        </fieldset>
+
+      </div>
+
+      <!-- output -->
+      <div class="output">
+        <button class="btn primary generate" @click="runGenerate()" :disabled="busy"
+                x-text="busy ? 'Generating…' : (sweeping ? 'Generate grid' : 'Generate')"></button>
+        <div class="progress" x-show="busy">
+          <div class="bar"><div class="fill" :style="`width:${progressPct}%`"></div></div>
+          <span class="progress-label" x-text="progressLabel"></span>
+        </div>
+        <div class="canvas" :class="{stack: sweeping}">
+          <template x-if="sweeping">
+            <div class="grids">
+              <template x-for="(url,i) in xyzGrids" :key="i"><img :src="url" class="grid-img" alt="grid"></template>
+              <div class="placeholder" x-show="xyzGrids.length===0 && !busy">No grid yet.</div>
+            </div>
+          </template>
+          <template x-if="!sweeping && resultUrl"><img :src="resultUrl" alt="result"></template>
+          <template x-if="!sweeping && !resultUrl"><div class="placeholder">No image yet</div></template>
+        </div>
+        <div class="info" x-text="sweeping ? xyzInfo : info"></div>
+      </div>
+    </section>
+
+    <!-- ── GALLERY ────────────────────────────────────────────── -->
+    <section class="page" x-show="tab==='gallery'">
+      <div class="page-bar">
+        <button class="btn" @click="openGallery()">Refresh</button>
+        <button class="btn primary" x-show="selected" @click="loadToWorkspace()">Load to Generate</button>
+      </div>
+      <div class="gallery-split">
+        <div class="gallery-grid">
+          <template x-for="img in gallery" :key="img.url">
+            <div class="thumb" :class="{sel: selected && selected.url===img.url}" @click="selectImage(img)">
+              <img :src="img.url" :alt="img.name" loading="lazy">
+            </div>
+          </template>
+          <p class="placeholder" x-show="gallery.length===0">No outputs yet.</p>
+        </div>
+        <aside class="gallery-detail" x-show="selected">
+          <img :src="selected ? selected.url : ''" class="detail-img" alt="selected">
+          <pre class="meta" x-text="selectedMeta || 'No metadata.'"></pre>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ── METADATA ───────────────────────────────────────────── -->
+    <section class="page" x-show="tab==='metadata'">
+      <div class="meta-layout">
+        <div class="drop big" @click="$refs.metaFile.click()">
+          <template x-if="metaPreview"><img :src="metaPreview" alt="upload"></template>
+          <template x-if="!metaPreview"><span>Click to upload a PNG</span></template>
+        </div>
+        <input type="file" accept="image/png" x-ref="metaFile" class="hidden" @change="uploadMeta($event)">
+        <div class="meta-out">
+          <pre class="meta" x-text="metaText || 'Upload a PNG image to view its metadata.'"></pre>
+          <button class="btn primary" x-show="metaFields" @click="sendMetaToGenerate()">Send to txt2img</button>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="toast" x-show="toast" x-transition x-text="toast"></div>
+
+</body>
+</html>

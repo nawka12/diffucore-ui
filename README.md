@@ -1,46 +1,59 @@
 # Diffucore UI
 
-**A Gradio web frontend for the Diffucore diffusion inference engine.**
+**A web frontend for the Diffucore diffusion inference engine.**
 
-Point it at your checkpoints, pick a prompt, and generate — with a darkroom-themed
-interface for txt2img, img2img, inpainting, and a gallery that recycles past
-generations' metadata back into the workspace.
+Point it at your checkpoints, pick a prompt, and generate — a darkroom-themed
+interface with a unified txt2img / img2img / inpaint workspace, an X/Y/Z
+parameter-sweep mode, and a gallery that recycles past generations' metadata
+back into the workspace.
 
-![status](https://img.shields.io/badge/status-alpha-orange)
+![status](https://img.shields.io/badge/status-under%20development-orange)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 
-```python
-from ui import build_ui
+> ⚠️ **Under active development.** Diffucore UI is pre-1.0 and moving quickly —
+> HTTP endpoints, APIs, and UI layout may change between commits without notice,
+> and rough edges are expected. Use it and report issues, but don't rely on
+> stability yet.
 
-app = build_ui()
-app.launch(server_name="0.0.0.0", server_port=7860)
+```bash
+python app.py            # serve on http://127.0.0.1:7860
 ```
 
-Then open `http://localhost:7860` in your browser.
+Then open `http://localhost:7860` in your browser. The backend is FastAPI +
+Uvicorn; the frontend is plain HTML/CSS/JS with Alpine.js (no build step).
 
 ## Highlights
 
 - **Three model families, one interface** — Stable Diffusion 1.5, SDXL, and
   **Anima** (a 2 B DiT built on Cosmos-Predict2). Switch between them from the
-  top bar.
-- **txt2img, img2img, and inpainting** tabs, each with full sampler / scheduler /
-  CFG / seed controls.
+  model bar.
+- **Unified Generate workspace** — one shared control panel with a
+  txt2img / img2img / inpaint mode toggle; switching modes keeps your prompt and
+  settings. Full sampler / scheduler / steps / CFG / seed controls.
+- **X/Y/Z parameter sweep** — toggle it on inside txt2img to render a comparison
+  grid across samplers, schedulers, steps, CFG, or seed. The assembled grid and
+  every individual cell are saved to `outputs/`, sharing one seed for a fair
+  comparison.
 - **Prompt-based LoRA loading** — embed `<lora:name:mult>` directly in your
   prompt to load adapters on the fly.
-- **10 samplers, multiple schedulers** — Euler, Heun, DPM++ family, ER-SDE;
-  Karras, exponential, sgm_uniform, flow, and more.
+- **11 samplers, multiple schedulers** — Euler, Heun, DPM++ family, ER-SDE,
+  SECANT; Karras, exponential, sgm_uniform, flow, and more.
 - **Gallery with metadata round-trip** — every generated image saves its full
-  generation parameters as PNG metadata. The Gallery tab browses past outputs
-  and can load any generation's settings back into the workspace.
+  generation parameters as PNG metadata. The Gallery browses past outputs and
+  loads any generation's settings back into the Generate view.
+- **Metadata reader** — drop in any PNG to inspect its AUTO1111 / Forge or
+  ComfyUI parameters and send them straight to txt2img.
 - **Anima auto-defaults** — switching to Anima mode sets sampler / steps / CFG
   to sensible values (er_sde, 30, 4.0) automatically.
 - **Seed recycle & randomize** — reuse the last seed or roll a new one with one
   click.
 - **CPU offload & tiled VAE** — run SDXL on modest GPUs without running out of
   VRAM.
-- **Custom darkroom theme** — warm amber safelight aesthetics, Fraunces serif +
-  IBM Plex Mono fonts, film grain overlay, and a CSS-only aperture iris logo.
+- **Live progress** — sampling step/total streams to a real progress bar as the
+  image is generated.
+- **Custom darkroom theme** — warm amber safelight aesthetics on a hand-rolled
+  dark UI, Fraunces serif + Inter + JetBrains Mono fonts.
 
 ## Install
 
@@ -86,6 +99,15 @@ source .venv/bin/activate
 python app.py
 ```
 
+By default the UI binds to `127.0.0.1` (localhost only). Flags passed to
+`launch.sh` are forwarded to `app.py`:
+
+```bash
+./launch.sh --listen        # bind 0.0.0.0 — reachable from other machines on the network
+./launch.sh --port 8000     # serve on a different port (default: 7860)
+./launch.sh --listen --port 8000
+```
+
 ### Load a model
 
 1. Select **SD/SDXL** or **Anima** from the top-bar radio.
@@ -94,24 +116,37 @@ python app.py
 
 ### Generate
 
-Switch to the **txt2img**, **img2img**, or **inpaint** tab, enter a prompt,
-adjust your sampler / steps / CFG, and click **Generate**.
+In the **Generate** view, pick a mode (**txt2img**, **img2img**, or
+**inpaint**), enter a prompt, adjust your sampler / steps / CFG, and click
+**Generate**. Progress streams to a live bar and the result lands in the panel
+on the right.
 
 LoRAs can be activated inline: `a castle in autumn, <lora:autumn_style:0.8>`.
 
+### Sweep parameters (X/Y/Z)
+
+In txt2img mode, enable **X/Y/Z sweep** to compare a grid of settings. Each axis
+picks a parameter (Sampler, Scheduler, Steps, CFG, Seed); Sampler and Scheduler
+axes get a multi-select dropdown, numeric axes take a comma-separated list. The
+assembled grid and every individual cell are saved to `outputs/`.
+
 ### Browse past outputs
 
-The **Gallery** tab shows every image you've generated. Click one to inspect its
-metadata, then click **Load metadata to workspace** to re-populate all tabs with
-that generation's settings.
+The **Gallery** shows every image you've generated. Click one to inspect its
+metadata, then click **Load to Generate** to load that generation's settings
+into the Generate view. The **Metadata** view reads parameters out of any PNG
+you drop in (AUTO1111 / Forge or ComfyUI) and can send them to txt2img.
 
 ## Project structure
 
 ```
-├── app.py              Entry point — builds and launches the Gradio UI
-├── ui.py               Gradio Blocks layout, callbacks, theme, and CSS
+├── app.py              Entry point — launches the FastAPI server (uvicorn)
+├── server.py           FastAPI app — REST + streaming endpoints over the engine
+├── metadata.py         PNG metadata — write params, read/parse AUTO1111 & ComfyUI
+├── static/             Frontend — index.html, app.js (Alpine), style.css
 ├── engine.py           Engine singleton — model lifecycle, generation, LoRA
 ├── utils.py            Directory scanning helpers (checkpoints, LoRAs, outputs)
+├── xyz_grid.py         X/Y/Z plot grid assembly
 ├── requirements.txt    Python dependencies
 ├── setup.sh            One-shot setup (submodule init, venv, pip install)
 ├── launch.sh           Activate venv and run `python app.py`
@@ -127,19 +162,22 @@ The project has two layers:
 | Layer | Location | Responsibility |
 |---|---|---|
 | **Engine** | `diffucore/` (submodule) | Checkpoint loading, text conditioning, sampling loop, VAE decode, LoRA fusion |
-| **UI** | Root project | Gradio web interface, model management, prompt parsing, PNG metadata, gallery |
+| **UI** | Root project | FastAPI server, browser frontend, model management, prompt parsing, PNG metadata, gallery |
 
 The [`Engine`](engine.py) class is the bridge: it holds the loaded model,
 exposes `generate_t2i`, `generate_i2i`, and `generate_inpaint` methods, and
-handles LoRA lifecycle. The UI code in [`ui.py`](ui.py) is pure layout and
-callbacks — no ML logic lives there.
+handles LoRA lifecycle. [`server.py`](server.py) wraps it in a FastAPI app —
+blocking generation runs in a threadpool while sampling progress streams to the
+browser as newline-delimited JSON. The frontend in [`static/`](static/) is plain
+HTML/CSS/JS with Alpine.js and no build step. No ML logic lives in the web layer.
 
 ## Status
 
-Diffucore UI is in **alpha**. The interface is functional and end-to-end working
-across all three model families, with full metadata round-trip and LoRA support.
-APIs and UI layout may still shift before 1.0. The engine itself is seed-
-reproducible and verified against reference implementations.
+Diffucore UI is **under active development** (pre-1.0). The interface is
+functional end-to-end across all three model families, with full metadata
+round-trip, LoRA support, and X/Y/Z sweeps — but APIs, HTTP endpoints, and UI
+layout may shift between commits, and rough edges are expected. The engine
+itself is seed-reproducible and verified against reference implementations.
 
 ## License
 
