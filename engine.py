@@ -184,7 +184,7 @@ class Engine:
     # ── model loading ──────────────────────────────────────────────
 
     def load_model(
-        self, model_name: str, offload: bool = True, vae_tile: bool = True,
+        self, model_name: str, offload: bool | str = True, vae_tile: bool = True,
         compile: bool = False, cuda_graphs: bool = False,
         channels_last: bool = False, tf32: bool = False,
     ) -> str:
@@ -279,7 +279,7 @@ class Engine:
 
     def load_flux(
         self, dit_name: str, vae_name: str, te_name: str, clip_name: str | None = None,
-        offload: bool = True, vae_tile: bool = True,
+        offload: bool | str = True, vae_tile: bool = True,
         compile: bool = False, cuda_graphs: bool = False,
     ) -> str:
         """Load a split-file FLUX model. ``te_name`` is the primary text encoder
@@ -351,6 +351,8 @@ class Engine:
             flags.append("offload=full")
         elif self._offload == "encoders":
             flags.append("offload=encoders")
+        elif self._offload == "stream":
+            flags.append("offload=stream")
         elif not self._offload:
             flags.append("no-offload")
         return f"  [{', '.join(flags)}]" if flags else ""

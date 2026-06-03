@@ -288,10 +288,13 @@ async def api_load(p: LoadPayload):
                 compile=p.compile, cuda_graphs=p.cuda_graphs,
             )
         if p.model_type == "FLUX":
+            # FLUX's ~23 GB transformer OOMs under whole-module staging
+            # (offload=True); "stream" block-streaming is the only mode that fits
+            # it on a 24 GB card. Applies to both the all-in-one and split paths.
             # All-in-one checkpoint takes precedence; otherwise load split files.
             if p.checkpoint and not p.checkpoint.startswith("("):
                 return ENGINE.load_model(
-                    p.checkpoint, offload=True, vae_tile=True,
+                    p.checkpoint, offload="stream", vae_tile=True,
                     compile=p.compile, cuda_graphs=p.cuda_graphs,
                 )
             for name in (p.dit, p.vae, p.te):
@@ -299,7 +302,7 @@ async def api_load(p: LoadPayload):
                     return "Select an all-in-one checkpoint, or DiT + VAE + Text encoder"
             return ENGINE.load_flux(
                 p.dit, p.vae, p.te, clip_name=p.clip,
-                offload=True, vae_tile=True,
+                offload="stream", vae_tile=True,
                 compile=p.compile, cuda_graphs=p.cuda_graphs,
             )
         if not p.checkpoint or p.checkpoint.startswith("("):
