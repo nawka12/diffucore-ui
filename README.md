@@ -40,8 +40,9 @@ Uvicorn; the frontend is plain HTML/CSS/JS with Alpine.js (no build step).
 - **11 samplers, multiple schedulers** — Euler, Heun, DPM++ family, ER-SDE,
   SECANT; Karras, exponential, sgm_uniform, flow, and more.
 - **Gallery with metadata round-trip** — every generated image saves its full
-  generation parameters as PNG metadata. The Gallery browses past outputs and
-  loads any generation's settings back into the Generate view.
+  generation parameters as PNG metadata. Browse past outputs in a swipeable
+  fullscreen carousel and load any generation's settings back into the Generate
+  view.
 - **Metadata reader** — drop in any PNG to inspect its AUTO1111 / Forge or
   ComfyUI parameters and send them straight to txt2img.
 - **Anima auto-defaults** — switching to Anima mode sets sampler / steps / CFG
@@ -121,6 +122,10 @@ In the **Generate** view, pick a mode (**txt2img**, **img2img**, or
 **Generate**. Progress streams to a live bar and the result lands in the panel
 on the right.
 
+For **img2img** and **inpaint**, drag an image onto the input zone (or click to
+browse); in **inpaint**, paint over the region to repaint — tune the brush size
+or clear the mask to start over.
+
 LoRAs can be activated inline: `a castle in autumn, <lora:autumn_style:0.8>`.
 
 ### Sweep parameters (X/Y/Z)
@@ -132,10 +137,12 @@ assembled grid and every individual cell are saved to `outputs/`.
 
 ### Browse past outputs
 
-The **Gallery** shows every image you've generated. Click one to inspect its
-metadata, then click **Load to Generate** to load that generation's settings
-into the Generate view. The **Metadata** view reads parameters out of any PNG
-you drop in (AUTO1111 / Forge or ComfyUI) and can send them to txt2img.
+The **Gallery** shows every image you've generated. Click or tap a thumbnail to
+open it in a fullscreen carousel — step through your outputs with the on-screen
+arrows, the ←/→ keys, or a swipe on touch; toggle **Info** to read the image's
+metadata, and hit **Load to Generate** to pull that generation's settings into
+the Generate view. The **Metadata** view reads parameters out of any PNG you
+drop in (AUTO1111 / Forge or ComfyUI) and can send them to txt2img.
 
 ## Project structure
 

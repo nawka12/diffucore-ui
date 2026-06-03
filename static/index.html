@@ -109,9 +109,11 @@
         <!-- img2img / inpaint inputs -->
         <fieldset x-show="mode==='i2i'">
           <legend>Input image</legend>
-          <div class="drop" @click="$refs.i2iFile.click()">
+          <div class="drop" :class="{dragging: dragKey==='i2i'}" @click="$refs.i2iFile.click()"
+               @dragover.prevent="dragKey='i2i'" @dragleave="dragKey=null"
+               @drop.prevent="onDrop($event,'inputImage')">
             <template x-if="inputImage"><img :src="inputImage" alt="input"></template>
-            <template x-if="!inputImage"><span>Click to upload</span></template>
+            <template x-if="!inputImage"><span>Click or drop an image</span></template>
           </div>
           <input type="file" accept="image/*" x-ref="i2iFile" class="hidden" @change="onFile($event,'inputImage')">
           <button class="btn small" x-show="inputImage" @click="inputImage=null">Clear</button>
@@ -119,22 +121,33 @@
 
         <fieldset x-show="mode==='inpaint'">
           <legend>Input &amp; mask</legend>
-          <div class="drop-pair">
-            <div>
-              <div class="drop" @click="$refs.inpFile.click()">
-                <template x-if="inputImage"><img :src="inputImage" alt="input"></template>
-                <template x-if="!inputImage"><span>Image</span></template>
-              </div>
-              <input type="file" accept="image/*" x-ref="inpFile" class="hidden" @change="onFile($event,'inputImage')">
+          <template x-if="!inputImage">
+            <div class="drop" :class="{dragging: dragKey==='inpaint'}" @click="$refs.inpFile.click()"
+                 @dragover.prevent="dragKey='inpaint'" @dragleave="dragKey=null"
+                 @drop.prevent="onDrop($event,'inputImage')">
+              <span>Click or drop an image</span>
             </div>
-            <div>
-              <div class="drop" @click="$refs.maskFile.click()">
-                <template x-if="maskImage"><img :src="maskImage" alt="mask"></template>
-                <template x-if="!maskImage"><span>Mask (white = repaint)</span></template>
+          </template>
+          <template x-if="inputImage">
+            <div class="mask-editor">
+              <canvas x-ref="maskCanvas" class="mask-canvas" x-init="initMask($el)"
+                      @pointerdown="maskDown($event)" @pointermove="maskMove($event)"
+                      @pointerup="maskUp($event)" @pointerleave="maskUp($event)"></canvas>
+              <div class="mask-tools">
+                <div class="slider">
+                  <div class="slider-head"><span>Brush</span>
+                    <input type="number" x-model.number="maskBrush" min="5" max="200" step="5"></div>
+                  <input type="range" x-model.number="maskBrush" min="5" max="200" step="5">
+                </div>
+                <div class="mask-tool-btns">
+                  <button class="btn small" @click="clearMask()">Clear mask</button>
+                  <button class="btn small" @click="inputImage=null; maskImage=null; maskPainted=false">Change image</button>
+                </div>
               </div>
-              <input type="file" accept="image/*" x-ref="maskFile" class="hidden" @change="onFile($event,'maskImage')">
             </div>
-          </div>
+          </template>
+          <input type="file" accept="image/*" x-ref="inpFile" class="hidden" @change="onFile($event,'inputImage')">
+          <p class="hint">Paint over the area to repaint (shown in orange).</p>
         </fieldset>
 
         <fieldset>
@@ -286,28 +299,24 @@
         <button class="btn" @click="openGallery()">Refresh</button>
         <button class="btn primary" x-show="selected" @click="loadToWorkspace()">Load to Generate</button>
       </div>
-      <div class="gallery-split">
-        <div class="gallery-grid">
-          <template x-for="img in gallery" :key="img.url">
-            <div class="thumb" :class="{sel: selected && selected.url===img.url}" @click="selectImage(img)">
-              <img :src="img.url" :alt="img.name" loading="lazy">
-            </div>
-          </template>
-          <p class="placeholder" x-show="gallery.length===0">No outputs yet.</p>
-        </div>
-        <aside class="gallery-detail" x-show="selected">
-          <img :src="selected ? selected.url : ''" class="detail-img" alt="selected">
-          <pre class="meta" x-text="selectedMeta || 'No metadata.'"></pre>
-        </aside>
+      <div class="gallery-grid">
+        <template x-for="(img, i) in gallery" :key="img.url">
+          <div class="thumb" :class="{sel: selected && selected.url===img.url}" @click="openLightbox(i)">
+            <img :src="img.url" :alt="img.name" loading="lazy">
+          </div>
+        </template>
+        <p class="placeholder" x-show="gallery.length===0">No outputs yet.</p>
       </div>
     </section>
 
     <!-- ── METADATA ───────────────────────────────────────────── -->
     <section class="page" x-show="tab==='metadata'">
       <div class="meta-layout">
-        <div class="drop big" @click="$refs.metaFile.click()">
+        <div class="drop big" :class="{dragging: dragKey==='meta'}" @click="$refs.metaFile.click()"
+             @dragover.prevent="dragKey='meta'" @dragleave="dragKey=null"
+             @drop.prevent="onMetaDrop($event)">
           <template x-if="metaPreview"><img :src="metaPreview" alt="upload"></template>
-          <template x-if="!metaPreview"><span>Click to upload a PNG</span></template>
+          <template x-if="!metaPreview"><span>Click or drop a PNG</span></template>
         </div>
         <input type="file" accept="image/png" x-ref="metaFile" class="hidden" @change="uploadMeta($event)">
         <div class="meta-out">
@@ -316,6 +325,28 @@
         </div>
       </div>
     </section>
+
+    <!-- ── GALLERY LIGHTBOX ───────────────────────────────────── -->
+    <div class="lightbox" x-show="lightbox.open" @keydown.window="lightboxKey($event)">
+      <div class="lb-backdrop" @click="closeLightbox()"></div>
+      <button class="lb-close" @click="closeLightbox()">✕</button>
+      <button class="lb-nav prev" x-show="gallery.length>1" @click="lbPrev()">‹</button>
+      <button class="lb-nav next" x-show="gallery.length>1" @click="lbNext()">›</button>
+      <div class="lb-stage" @touchstart="lbTouchStart($event)" @touchend="lbTouchEnd($event)">
+        <img class="lb-img" :src="selected ? selected.url : ''" alt="">
+      </div>
+      <div class="lb-panel">
+        <div class="lb-head">
+          <span class="lb-count" x-text="(lightbox.index+1)+' / '+gallery.length"></span>
+          <div class="lb-head-btns">
+            <button class="btn small" @click="lightbox.info=!lightbox.info"
+                    x-text="lightbox.info ? 'Hide info' : 'Info'"></button>
+            <button class="btn small primary" @click="loadToWorkspace()">Load to Generate</button>
+          </div>
+        </div>
+        <pre class="meta" x-show="lightbox.info" x-text="selectedMeta || 'No metadata.'"></pre>
+      </div>
+    </div>
 
   </div>
 

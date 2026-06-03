@@ -80,6 +80,7 @@ body {
   gap: 14px;
 }
 .rack-models { flex: 1 1 0; min-width: 0; }
+.rack-models .field { margin-bottom: 0; }
 .anima-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
 .rack-actions { display: flex; gap: 8px; }
 .rack-actions .btn { height: 38px; min-width: 84px; }
@@ -418,13 +419,26 @@ input[type="range"]::-moz-range-thumb {
   transition: border-color 120ms ease;
 }
 .drop:hover { border-color: var(--accent); }
+.drop.dragging { border-color: var(--accent); background: rgba(232,160,101,0.08); }
 .drop img { max-width: 100%; max-height: 220px; border-radius: 4px; }
 .drop.big { min-height: 220px; }
-.drop-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+/* ── inpaint mask editor ──────────────────────────────────────── */
+.mask-canvas {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--line-hi);
+  border-radius: var(--r);
+  background: var(--surface);
+  cursor: crosshair;
+  touch-action: none;
+}
+.mask-tools { margin-top: 10px; }
+.mask-tool-btns { display: flex; gap: 8px; margin-top: 8px; }
+.mask-tool-btns .btn { margin-top: 0; }
 
 /* ── gallery ──────────────────────────────────────────────────── */
 .page-bar { display: flex; gap: 10px; margin-bottom: 16px; }
-.gallery-split { display: grid; grid-template-columns: 1fr 360px; gap: 20px; align-items: start; }
 .gallery-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -442,13 +456,6 @@ input[type="range"]::-moz-range-thumb {
 .thumb:hover { border-color: var(--line-hi); }
 .thumb.sel { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(232,160,101,0.2); }
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.gallery-detail { position: sticky; top: 16px; }
-.detail-img {
-  width: 100%;
-  border-radius: var(--r);
-  border: 1px solid var(--line-hi);
-  margin-bottom: 12px;
-}
 .meta {
   background: var(--surface-2);
   border: 1px solid var(--line);
@@ -463,6 +470,68 @@ input[type="range"]::-moz-range-thumb {
   overflow: auto;
   margin: 0;
 }
+
+/* ── gallery lightbox carousel ────────────────────────────────── */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+}
+.lb-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.92); }
+.lb-stage {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  touch-action: pan-y;
+}
+.lb-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--r);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.lb-close, .lb-nav {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.45);
+  border: 1px solid var(--line-hi);
+  color: var(--txt);
+  cursor: pointer;
+  border-radius: var(--r);
+  transition: all 120ms ease;
+}
+.lb-close:hover, .lb-nav:hover { border-color: var(--accent); color: var(--accent); }
+.lb-close { top: 14px; right: 14px; width: 40px; height: 40px; font-size: 18px; }
+.lb-nav { top: 50%; transform: translateY(-50%); width: 46px; height: 64px; font-size: 30px; }
+.lb-nav.prev { left: 14px; }
+.lb-nav.next { right: 14px; }
+.lb-panel {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  max-height: 42vh;
+  overflow: auto;
+  padding: 14px 16px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+.lb-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.lb-head .btn { margin-top: 0; }
+.lb-head-btns { display: flex; gap: 8px; }
+.lb-count { font-family: var(--mono); font-size: 12px; color: var(--txt-3); }
+.lb-panel .meta { margin-top: 12px; max-height: 30vh; }
 
 /* ── metadata page ────────────────────────────────────────────── */
 .meta-layout { display: grid; grid-template-columns: 360px 1fr; gap: 20px; align-items: start; }
@@ -554,5 +623,11 @@ input[type="range"]::-moz-range-thumb {
 @media (max-width: 1100px) {
   .gen-layout { grid-template-columns: 1fr; }
   .output { position: static; }
-  .gallery-split, .meta-layout { grid-template-columns: 1fr; }
+  .meta-layout { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 640px) {
+  .rack-row:not(.perf) { flex-direction: column; align-items: stretch; }
+  .type-seg { align-self: flex-start; }
+  .rack-actions .btn { flex: 1; }
 }
