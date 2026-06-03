@@ -162,6 +162,17 @@ body {
 }
 .chip.disabled { opacity: 0.45; cursor: not-allowed; }
 .chip input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
+.chip.select { cursor: default; }
+.chip.select select {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--txt);
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  outline: none;
+}
 
 /* ── nav tabs ─────────────────────────────────────────────────── */
 .tabs {

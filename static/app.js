@@ -6,7 +6,7 @@ document.addEventListener('alpine:init', () => {
     modelType: 'SD/SDXL',
     checkpoints: [], dits: [], vaes: [], tes: [], loras: [],
     checkpoint: '', dit: '', vae: '', te: '', clip: '', fluxCheckpoint: '',
-    perf: { compile: false, cudaGraphs: false, channelsLast: false },
+    perf: { compile: false, cudaGraphs: false, channelsLast: false, offload: 'full' },
     status: 'No model loaded',
     modelLoaded: false,
     loadingModel: false,
@@ -76,6 +76,13 @@ document.addEventListener('alpine:init', () => {
       if (this.modelType === 'FLUX') return this.schedulersFlux;
       return this.schedulersSd;
     },
+    get offloadOptions() {
+      // "stream" streams the FLUX DiT blocks — FLUX-only; the rest stage the
+      // whole backbone (or keep it resident) and work for every family.
+      return this.modelType === 'FLUX'
+        ? ['stream', 'full', 'encoders', 'none']
+        : ['full', 'encoders', 'none'];
+    },
     get sweeping() {
       return this.mode === 't2i' && this.xyzSweep;
     },
@@ -130,6 +137,8 @@ document.addEventListener('alpine:init', () => {
     setModelType(type) {
       this.modelType = type;
       this.syncScheduler();
+      // FLUX must stream its DiT to fit a 24 GB card; the rest stage fully.
+      this.perf.offload = (type === 'FLUX') ? 'stream' : 'full';
       if (type === 'Anima' && !this.animaApplied) {
         // sensible Anima defaults, applied once
         this.animaApplied = true;
@@ -159,6 +168,7 @@ document.addEventListener('alpine:init', () => {
           model_type: this.modelType,
           checkpoint: this.modelType === 'FLUX' ? this.fluxCheckpoint : this.checkpoint,
           dit: this.dit, vae: this.vae, te: this.te, clip: this.clip,
+          offload: this.perf.offload,
           compile: this.perf.compile,
           cuda_graphs: this.perf.cudaGraphs,
           channels_last: this.perf.channelsLast,

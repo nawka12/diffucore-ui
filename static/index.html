@@ -79,13 +79,19 @@
         </div>
 
         <div class="rack-actions">
-          <button class="btn primary" @click="loadModel()" :disabled="loadingModel"
+          <button class="btn primary" @click="loadModel()" :disabled="loadingModel || busy"
                   x-text="loadingModel ? 'Loading…' : 'Load'"></button>
           <button class="btn" @click="refreshModels()" :disabled="loadingModel">Refresh</button>
         </div>
       </div>
 
       <div class="rack-row perf">
+        <label class="chip select">
+          offload
+          <select x-model="perf.offload">
+            <template x-for="o in offloadOptions" :key="o"><option :value="o" x-text="o"></option></template>
+          </select>
+        </label>
         <label class="chip" :class="{on: perf.compile}">
           <input type="checkbox" x-model="perf.compile" @change="if(!perf.compile) perf.cudaGraphs=false"> torch.compile
         </label>

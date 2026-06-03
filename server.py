@@ -48,6 +48,7 @@ class LoadPayload(BaseModel):
     vae: Optional[str] = None
     te: Optional[str] = None
     clip: Optional[str] = None          # FLUX.1 second text encoder (CLIP-L)
+    offload: Optional[str] = None       # full | encoders | stream | none; None = per-family default
     compile: bool = False
     cuda_graphs: bool = False
     channels_last: bool = False
@@ -278,23 +279,30 @@ def api_status():
 @app.post("/api/load")
 async def api_load(p: LoadPayload):
     def work():
+        # Offload: explicit UI choice, else the per-family default. FLUX's ~23 GB
+        # transformer OOMs under whole-module staging (full), so it defaults to
+        # "stream" block-streaming — the only mode that fits a 24 GB card. "stream"
+        # is FLUX-only (it streams the DiT blocks); full/encoders/none work for all.
+        if p.offload is None:
+            offload = "stream" if p.model_type == "FLUX" else True
+        else:
+            offload = {"none": False, "full": True,
+                       "encoders": "encoders", "stream": "stream"}.get(p.offload, True)
+
         if p.model_type == "Anima":
             for name in (p.dit, p.vae, p.te):
                 if not name or name.startswith("("):
                     return "Select all three Anima files"
             return ENGINE.load_anima(
                 p.dit, p.vae, p.te,
-                offload=True, vae_tile=True,
+                offload=offload, vae_tile=True,
                 compile=p.compile, cuda_graphs=p.cuda_graphs,
             )
         if p.model_type == "FLUX":
-            # FLUX's ~23 GB transformer OOMs under whole-module staging
-            # (offload=True); "stream" block-streaming is the only mode that fits
-            # it on a 24 GB card. Applies to both the all-in-one and split paths.
             # All-in-one checkpoint takes precedence; otherwise load split files.
             if p.checkpoint and not p.checkpoint.startswith("("):
                 return ENGINE.load_model(
-                    p.checkpoint, offload="stream", vae_tile=True,
+                    p.checkpoint, offload=offload, vae_tile=True,
                     compile=p.compile, cuda_graphs=p.cuda_graphs,
                 )
             for name in (p.dit, p.vae, p.te):
@@ -302,20 +310,30 @@ async def api_load(p: LoadPayload):
                     return "Select an all-in-one checkpoint, or DiT + VAE + Text encoder"
             return ENGINE.load_flux(
                 p.dit, p.vae, p.te, clip_name=p.clip,
-                offload="stream", vae_tile=True,
+                offload=offload, vae_tile=True,
                 compile=p.compile, cuda_graphs=p.cuda_graphs,
             )
         if not p.checkpoint or p.checkpoint.startswith("("):
             return "Select a model"
         return ENGINE.load_model(
             p.checkpoint,
-            offload=True, vae_tile=True,
+            offload=offload, vae_tile=True,
             compile=p.compile, cuda_graphs=p.cuda_graphs,
             channels_last=p.channels_last,
         )
 
+    def locked_work():
+        # Loading swaps the single in-memory model; never do it while a generation
+        # is using that model. Same lock the generators take — refuse if it's held.
+        if not GEN_LOCK.acquire(blocking=False):
+            return "Busy — finish the running generation first"
+        try:
+            return work()
+        finally:
+            GEN_LOCK.release()
+
     try:
-        status = await asyncio.to_thread(work)
+        status = await asyncio.to_thread(locked_work)
     except Exception as e:  # noqa: BLE001
         status = f"Error: {e}"
     return {"status": status}

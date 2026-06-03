@@ -49,8 +49,9 @@ Uvicorn; the frontend is plain HTML/CSS/JS with Alpine.js (no build step).
   to sensible values (er_sde, 30, 4.0) automatically.
 - **Seed recycle & randomize** — reuse the last seed or roll a new one with one
   click.
-- **CPU offload & tiled VAE** — run SDXL on modest GPUs without running out of
-  VRAM.
+- **Selectable CPU offload & tiled VAE** — pick the offload mode per load
+  (full / encoders / none, plus `stream` for FLUX) to fit the model on your GPU;
+  tiled VAE decode keeps large images within VRAM.
 - **Live progress** — sampling step/total streams to a real progress bar as the
   image is generated.
 - **Custom darkroom theme** — warm amber safelight aesthetics on a hand-rolled
