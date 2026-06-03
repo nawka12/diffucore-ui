@@ -342,7 +342,6 @@
     <section class="page" x-show="tab==='gallery'">
       <div class="page-bar">
         <button class="btn" @click="openGallery()">Refresh</button>
-        <button class="btn primary" x-show="selected" @click="loadToWorkspace()">Load to Generate</button>
       </div>
       <div class="gallery-grid">
         <template x-for="(img, i) in gallery" :key="img.url">
@@ -386,6 +385,8 @@
           <div class="lb-head-btns">
             <button class="btn small" @click="lightbox.info=!lightbox.info"
                     x-text="lightbox.info ? 'Hide info' : 'Info'"></button>
+            <a class="btn small" x-show="selected" :href="selected ? selected.url : '#'"
+               :download="selected ? selected.name : ''">Download</a>
             <button class="btn small primary" @click="loadToWorkspace()">Load to Generate</button>
           </div>
         </div>

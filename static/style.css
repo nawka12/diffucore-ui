@@ -343,6 +343,7 @@ input[type="range"]::-moz-range-thumb {
 }
 .btn.primary:hover { background: var(--accent-dim); color: #111; }
 .btn.small { padding: 5px 12px; font-size: 12px; margin-top: 8px; }
+a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .btn.icon {
   min-width: 40px;
   padding: 0 10px;
