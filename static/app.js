@@ -46,6 +46,11 @@ document.addEventListener('alpine:init', () => {
     info: '',
     lastSeed: -1,
 
+    // ── OSS calibration ─────────────────────────────────────────
+    calibrating: false,
+    ossCalibrated: null,          // null = unknown, true/false = checked
+    ossInfo: '',
+
     // ── gallery ─────────────────────────────────────────────────
     gallery: [],
     selected: null,
@@ -328,17 +333,27 @@ document.addEventListener('alpine:init', () => {
       this.busy = true;
       this.progress = { step: 0, total: 0 };
       this.info = '';
-      const payload = {
-        mode: this.mode,
-        prompt: this.form.prompt, neg: this.form.neg,
-        sampler: this.form.sampler, scheduler: this.form.scheduler,
-        steps: this.form.steps, cfg: this.form.cfg, seed: this.form.seed,
-        width: this.form.width, height: this.form.height,
-        strength: this.form.strength, shift: this.form.shift,
-        input_image: this.mode !== 't2i' ? this.inputImage : null,
-        mask_image: this.mode === 'inpaint' ? this.maskImage : null,
-      };
       try {
+        // Seamless OSS: calibrate this steps/size/shift on first use, then
+        // generate — all under one click. Re-check status fresh so a just-changed
+        // steps/size/shift isn't missed.
+        if (this.needsOss()) {
+          await this.checkOssStatus();
+          if (this.ossCalibrated === false) {
+            if (!await this._streamCalibrate()) return;
+            this.progress = { step: 0, total: 0 };
+          }
+        }
+        const payload = {
+          mode: this.mode,
+          prompt: this.form.prompt, neg: this.form.neg,
+          sampler: this.form.sampler, scheduler: this.form.scheduler,
+          steps: this.form.steps, cfg: this.form.cfg, seed: this.form.seed,
+          width: this.form.width, height: this.form.height,
+          strength: this.form.strength, shift: this.form.shift,
+          input_image: this.mode !== 't2i' ? this.inputImage : null,
+          mask_image: this.mode === 'inpaint' ? this.maskImage : null,
+        };
         await this.stream('/api/generate', payload, (ev) => {
           if (ev.type === 'progress') {
             this.progress = { step: ev.step, total: ev.total };
@@ -388,6 +403,72 @@ document.addEventListener('alpine:init', () => {
         });
       } catch (e) {
         this.xyzInfo = 'Error: ' + e;
+      } finally {
+        this.busy = false;
+      }
+    },
+
+    // ── OSS calibration ─────────────────────────────────────────
+    // Whether the current (steps, resolution, shift) already has a calibrated
+    // schedule. Reads form fields synchronously so Alpine's x-effect re-checks
+    // when any of them change.
+    async checkOssStatus() {
+      const { scheduler, steps, width, height, shift } = this.form;
+      if (this.modelType !== 'Anima' || scheduler !== 'oss' || !this.modelLoaded) {
+        this.ossCalibrated = null;
+        return;
+      }
+      const q = new URLSearchParams({ steps, width, height, shift });
+      try {
+        this.ossCalibrated = (await (await fetch('/api/oss_status?' + q)).json()).calibrated;
+      } catch (e) {
+        this.ossCalibrated = null;
+      }
+    },
+
+    needsOss() {
+      return this.modelType === 'Anima' && this.mode === 't2i' && this.form.scheduler === 'oss';
+    },
+
+    // Stream a calibration job. Updates progress/status but does NOT own `busy`
+    // — the caller does, so it can chain calibrate→generate under one spinner.
+    // Returns true on success.
+    async _streamCalibrate() {
+      this.calibrating = true;
+      this.ossInfo = '';
+      this.progress = { step: 0, total: 0 };
+      let ok = false;
+      try {
+        await this.stream('/api/calibrate_oss', {
+          prompt: this.form.prompt, neg: this.form.neg,
+          steps: this.form.steps, cfg: this.form.cfg, seed: this.form.seed,
+          width: this.form.width, height: this.form.height, shift: this.form.shift,
+        }, (ev) => {
+          if (ev.type === 'progress') {
+            this.progress = { step: ev.step, total: ev.total };
+          } else if (ev.type === 'done') {
+            this.ossInfo = ev.info;
+            this.ossCalibrated = true;
+            ok = true;
+          } else if (ev.type === 'error') {
+            this.ossInfo = 'Error: ' + ev.message;
+            this.flash(ev.message);
+          }
+        });
+      } catch (e) {
+        this.ossInfo = 'Error: ' + e;
+      } finally {
+        this.calibrating = false;
+      }
+      return ok;
+    },
+
+    // Manual "Calibrate" button.
+    async calibrateOss() {
+      if (!this.modelLoaded) { this.flash('Load a model first'); return; }
+      this.busy = true;
+      try {
+        if (await this._streamCalibrate()) this.flash('OSS calibrated');
       } finally {
         this.busy = false;
       }

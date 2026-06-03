@@ -71,6 +71,18 @@ class GeneratePayload(BaseModel):
     mask_image: Optional[str] = None
 
 
+class CalibratePayload(BaseModel):
+    prompt: str = ""
+    neg: str = ""
+    steps: int = 12
+    cfg: float = 4.0
+    seed: int = 0
+    width: int = 1024
+    height: int = 1024
+    shift: float = 3.0
+    grid: int = 80                    # dense teacher-trajectory candidate count (K)
+
+
 class XYZPayload(BaseModel):
     prompt: str = ""
     neg: str = ""
@@ -199,6 +211,18 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[[int, int], None]) -> dict:
         out = _save_output(grid, base_kwargs)
         urls.append(_output_url(out))
     return {"grids": urls, "info": info}
+
+
+def _run_calibrate(p: CalibratePayload, on_progress: Callable[[int, int], None]) -> dict:
+    if not ENGINE.loaded_name:
+        raise RuntimeError("Load a model first")
+    info = ENGINE.calibrate_oss(
+        prompt=p.prompt, negative_prompt=p.neg, steps=int(p.steps),
+        width=int(p.width), height=int(p.height), shift=float(p.shift),
+        cfg_scale=float(p.cfg), seed=int(p.seed), grid=int(p.grid),
+        progress_callback=on_progress,
+    )
+    return {"info": info}
 
 
 # ── streaming wrapper ───────────────────────────────────────────────
@@ -347,6 +371,16 @@ async def api_generate(p: GeneratePayload):
 @app.post("/api/xyz")
 async def api_xyz(p: XYZPayload):
     return await _stream_job(lambda cb: _run_xyz(p, cb))
+
+
+@app.post("/api/calibrate_oss")
+async def api_calibrate_oss(p: CalibratePayload):
+    return await _stream_job(lambda cb: _run_calibrate(p, cb))
+
+
+@app.get("/api/oss_status")
+def api_oss_status(steps: int, width: int, height: int, shift: float):
+    return {"calibrated": ENGINE.oss_calibrated(steps, width, height, shift)}
 
 
 @app.get("/api/gallery")

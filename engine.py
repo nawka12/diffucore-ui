@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import gc
+import json
 import re
 import sys
 import time
@@ -42,6 +43,7 @@ import torch
 from PIL import Image
 
 from diffucore import (
+    anima_calibrate_oss,
     apply_lora,
     clear_loras as clear_bundle_loras,
     load_anima_checkpoint,
@@ -73,8 +75,21 @@ SAMPLERS = [
 ]
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "sgm_uniform", "simple"]
-SCHEDULERS_ANIMA = ["flow", "acas", "sgm_uniform", "simple"]
+# "oss" is a calibrated optimal-stepsize schedule: it needs a one-time
+# calibration for the exact (model, steps, resolution, shift) before it works.
+# The UI's OSS panel runs that calibration (Engine.calibrate_oss) and writes the
+# cache; selecting "oss" before calibrating errors with a clear message.
+SCHEDULERS_ANIMA = ["flow", "flow_karras", "oss", "sgm_uniform", "simple"]
 SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple"]
+
+# Calibrated OSS schedules are cached one JSON (list of descending sigmas) per
+# (model, steps, resolution, shift); calibrate_oss.py writes them here.
+_OSS_CACHE_DIR = _ROOT / "models" / "oss_cache"
+
+
+def oss_cache_path(name: str, steps: int, width: int, height: int, shift: float) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+    return _OSS_CACHE_DIR / f"{safe}__{steps}s_{width}x{height}_shift{shift:g}.json"
 
 # (family, native_res) tuples — used for defaults
 MODEL_FAMILY_SD15 = "sd15"
@@ -418,6 +433,46 @@ class Engine:
         self._last_seed = seed
         return seed
 
+    def _load_oss_sigmas(self, steps: int, width: int, height: int, shift: float):
+        """Calibrated OSS sigma list for the current model/config, or None if
+        none has been calibrated yet."""
+        if not self._loaded:
+            return None
+        p = oss_cache_path(self._loaded.name, steps, width, height, shift)
+        if not p.exists():
+            return None
+        with open(p) as f:
+            return json.load(f)
+
+    def oss_calibrated(self, steps: int, width: int, height: int, shift: float) -> bool:
+        """Whether a calibrated OSS schedule already exists for this config."""
+        if not self._loaded:
+            return False
+        return oss_cache_path(self._loaded.name, steps, width, height, shift).exists()
+
+    def calibrate_oss(
+        self, *, prompt: str, negative_prompt: str = "",
+        steps: int, width: int, height: int, shift: float,
+        cfg_scale: float = 4.0, seed: int = 0, grid: int = 80,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> str:
+        """Calibrate and cache an OSS schedule for the current Anima model/config."""
+        if not self._loaded or self._loaded.family != MODEL_FAMILY_ANIMA:
+            raise RuntimeError("Load an Anima model first")
+        try:
+            sigmas = anima_calibrate_oss(
+                self._loaded.model, prompt, negative_prompt,
+                steps=steps, width=width, height=height, shift=shift,
+                cfg_scale=cfg_scale, grid=grid, seed=seed,
+                progress_callback=progress_callback,
+            )
+        finally:
+            self._reclaim_memory()
+        p = oss_cache_path(self._loaded.name, steps, width, height, shift)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps([round(s, 8) for s in sigmas]))
+        return f"Calibrated OSS: {steps} steps @ {width}x{height}, shift={shift:g} → {p.name}"
+
     def generate_t2i(
         self,
         prompt: str,
@@ -451,6 +506,8 @@ class Engine:
         )
         if self._loaded.family in (MODEL_FAMILY_ANIMA, *_FLUX_FAMILIES):
             kwargs["shift"] = shift
+        if self._loaded.family == MODEL_FAMILY_ANIMA and scheduler == "oss":
+            kwargs["oss_sigmas"] = self._load_oss_sigmas(steps, width, height, shift)
         try:
             image, pipeline_info = gen(**kwargs)
         finally:

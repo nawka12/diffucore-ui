@@ -196,6 +196,19 @@
               <template x-for="s in schedulers" :key="s"><option :value="s" x-text="s"></option></template>
             </select>
           </label>
+          <div class="oss-panel" x-show="modelType==='Anima' && mode==='t2i' && form.scheduler==='oss'" x-effect="checkOssStatus()">
+            <p class="hint" style="margin:0 0 8px" x-show="ossCalibrated === true">
+              ✓ Calibrated for <span x-text="form.steps"></span> steps @
+              <span x-text="form.width + '×' + form.height"></span>, shift <span x-text="form.shift"></span>.
+            </p>
+            <p class="hint" style="margin:0 0 8px" x-show="ossCalibrated === false">
+              Not calibrated for this steps / size / shift — <strong>Generate</strong> will calibrate it first (one-time). Or do it now:
+            </p>
+            <button class="btn" type="button" @click="calibrateOss()" :disabled="busy"
+                    x-text="calibrating ? 'Calibrating…' : (ossCalibrated ? 'Re-calibrate' : 'Calibrate now')"></button>
+            <p class="sub" x-show="ossInfo" x-text="ossInfo"></p>
+            <p class="sub">One-time per steps / size / shift; uses the current prompt &amp; CFG and runs a dense teacher pass.</p>
+          </div>
           <div class="slider">
             <div class="slider-head"><span>Steps</span>
               <input type="number" x-model.number="form.steps" min="1" max="150" step="1"></div>
@@ -306,10 +319,10 @@
       <!-- output -->
       <div class="output">
         <button class="btn primary generate" @click="runGenerate()" :disabled="busy"
-                x-text="busy ? 'Generating…' : (sweeping ? 'Generate grid' : 'Generate')"></button>
+                x-text="calibrating ? 'Calibrating OSS…' : (busy ? (sweeping ? 'Generating grid…' : 'Generating…') : (sweeping ? 'Generate grid' : 'Generate'))"></button>
         <div class="progress" x-show="busy">
           <div class="bar"><div class="fill" :style="`width:${progressPct}%`"></div></div>
-          <span class="progress-label" x-text="progressLabel"></span>
+          <span class="progress-label"><span x-show="calibrating">Calibrating (one-time) · </span><span x-text="progressLabel"></span></span>
         </div>
         <div class="canvas" :class="{stack: sweeping}">
           <template x-if="sweeping">
