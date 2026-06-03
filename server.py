@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
-from engine import ENGINE, SAMPLERS, SCHEDULERS_SD, SCHEDULERS_ANIMA
+from engine import ENGINE, SAMPLERS, SCHEDULERS_SD, SCHEDULERS_ANIMA, SCHEDULERS_FLUX
 from utils import (
     OUTPUTS_DIR,
     scan_checkpoints, scan_loras, scan_diffusion_models,
@@ -47,6 +47,7 @@ class LoadPayload(BaseModel):
     dit: Optional[str] = None
     vae: Optional[str] = None
     te: Optional[str] = None
+    clip: Optional[str] = None          # FLUX.1 second text encoder (CLIP-L)
     compile: bool = False
     cuda_graphs: bool = False
     channels_last: bool = False
@@ -260,6 +261,7 @@ def api_models():
         "samplers": SAMPLERS,
         "schedulers_sd": SCHEDULERS_SD,
         "schedulers_anima": SCHEDULERS_ANIMA,
+        "schedulers_flux": SCHEDULERS_FLUX,
         "xyz_param_types": XYZ_PARAM_TYPES,
         "status": ENGINE.status_text(),
         "last_seed": ENGINE.last_seed,
@@ -282,6 +284,21 @@ async def api_load(p: LoadPayload):
                     return "Select all three Anima files"
             return ENGINE.load_anima(
                 p.dit, p.vae, p.te,
+                offload=True, vae_tile=True,
+                compile=p.compile, cuda_graphs=p.cuda_graphs,
+            )
+        if p.model_type == "FLUX":
+            # All-in-one checkpoint takes precedence; otherwise load split files.
+            if p.checkpoint and not p.checkpoint.startswith("("):
+                return ENGINE.load_model(
+                    p.checkpoint, offload=True, vae_tile=True,
+                    compile=p.compile, cuda_graphs=p.cuda_graphs,
+                )
+            for name in (p.dit, p.vae, p.te):
+                if not name or name.startswith("("):
+                    return "Select an all-in-one checkpoint, or DiT + VAE + Text encoder"
+            return ENGINE.load_flux(
+                p.dit, p.vae, p.te, clip_name=p.clip,
                 offload=True, vae_tile=True,
                 compile=p.compile, cuda_graphs=p.cuda_graphs,
             )

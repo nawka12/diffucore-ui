@@ -5,18 +5,20 @@ document.addEventListener('alpine:init', () => {
     // ── model rack ──────────────────────────────────────────────
     modelType: 'SD/SDXL',
     checkpoints: [], dits: [], vaes: [], tes: [], loras: [],
-    checkpoint: '', dit: '', vae: '', te: '',
+    checkpoint: '', dit: '', vae: '', te: '', clip: '', fluxCheckpoint: '',
     perf: { compile: false, cudaGraphs: false, channelsLast: false },
     status: 'No model loaded',
     modelLoaded: false,
     loadingModel: false,
     animaApplied: false,
+    fluxApplied: false,
     uiId: 'diffucore-ui', diffId: 'diffucore',
 
     // ── shared option sets ──────────────────────────────────────
     samplers: [],
     schedulersSd: ['karras'],
     schedulersAnima: ['flow'],
+    schedulersFlux: ['flux'],
     paramTypes: ['None'],
 
     // ── navigation ──────────────────────────────────────────────
@@ -70,7 +72,9 @@ document.addEventListener('alpine:init', () => {
 
     // ── computed ────────────────────────────────────────────────
     get schedulers() {
-      return this.modelType === 'Anima' ? this.schedulersAnima : this.schedulersSd;
+      if (this.modelType === 'Anima') return this.schedulersAnima;
+      if (this.modelType === 'FLUX') return this.schedulersFlux;
+      return this.schedulersSd;
     },
     get sweeping() {
       return this.mode === 't2i' && this.xyzSweep;
@@ -110,6 +114,7 @@ document.addEventListener('alpine:init', () => {
       this.samplers = m.samplers;
       this.schedulersSd = m.schedulers_sd;
       this.schedulersAnima = m.schedulers_anima;
+      this.schedulersFlux = m.schedulers_flux;
       this.paramTypes = m.xyz_param_types;
       this.status = m.status;
       this.lastSeed = m.last_seed;
@@ -118,6 +123,7 @@ document.addEventListener('alpine:init', () => {
       this.dit = this.ditChoices[0];
       this.vae = this.vaeChoices[0];
       this.te = this.teChoices[0];
+      this.clip = this.teChoices[0];
       this.syncScheduler();
     },
 
@@ -130,6 +136,13 @@ document.addEventListener('alpine:init', () => {
         this.form.sampler = 'er_sde';
         this.form.steps = 30;
         this.form.cfg = 4.0;
+      }
+      if (type === 'FLUX' && !this.fluxApplied) {
+        // sensible FLUX-dev defaults, applied once (cfg = distilled guidance)
+        this.fluxApplied = true;
+        this.form.sampler = 'euler';
+        this.form.steps = 20;
+        this.form.cfg = 3.5;
       }
     },
 
@@ -144,8 +157,8 @@ document.addEventListener('alpine:init', () => {
       try {
         const body = {
           model_type: this.modelType,
-          checkpoint: this.checkpoint,
-          dit: this.dit, vae: this.vae, te: this.te,
+          checkpoint: this.modelType === 'FLUX' ? this.fluxCheckpoint : this.checkpoint,
+          dit: this.dit, vae: this.vae, te: this.te, clip: this.clip,
           compile: this.perf.compile,
           cuda_graphs: this.perf.cudaGraphs,
           channels_last: this.perf.channelsLast,

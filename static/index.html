@@ -27,6 +27,7 @@
         <div class="seg type-seg" role="radiogroup" aria-label="Model type">
           <button :class="{active: modelType==='SD/SDXL'}" @click="setModelType('SD/SDXL')">SD / SDXL</button>
           <button :class="{active: modelType==='Anima'}" @click="setModelType('Anima')">Anima</button>
+          <button :class="{active: modelType==='FLUX'}" @click="setModelType('FLUX')">FLUX</button>
         </div>
 
         <div class="rack-models">
@@ -48,6 +49,31 @@
             <label class="field">
               <span>TE</span>
               <select x-model="te"><template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+            </label>
+          </div>
+          <div class="anima-grid" x-show="modelType==='FLUX'">
+            <label class="field" style="grid-column: 1 / -1;">
+              <span>All-in-one checkpoint <small>(optional — else use files below)</small></span>
+              <select x-model="fluxCheckpoint">
+                <option value="">— none —</option>
+                <template x-for="m in checkpointChoices" :key="m"><option :value="m" x-text="m"></option></template>
+              </select>
+            </label>
+            <label class="field">
+              <span>DiT</span>
+              <select x-model="dit"><template x-for="m in ditChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+            </label>
+            <label class="field">
+              <span>VAE</span>
+              <select x-model="vae"><template x-for="m in vaeChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+            </label>
+            <label class="field">
+              <span>Text enc <small>(T5 / Mistral)</small></span>
+              <select x-model="te"><template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+            </label>
+            <label class="field">
+              <span>CLIP-L <small>(FLUX.1)</small></span>
+              <select x-model="clip"><template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
             </label>
           </div>
         </div>

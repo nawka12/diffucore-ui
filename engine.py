@@ -46,6 +46,7 @@ from diffucore import (
     clear_loras as clear_bundle_loras,
     load_anima_checkpoint,
     load_checkpoint,
+    load_flux_checkpoint,
     ImageToImage,
     Inpaint,
     TextToImage,
@@ -73,11 +74,15 @@ SAMPLERS = [
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "sgm_uniform", "simple"]
 SCHEDULERS_ANIMA = ["flow", "acas", "sgm_uniform", "simple"]
+SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple"]
 
 # (family, native_res) tuples — used for defaults
 MODEL_FAMILY_SD15 = "sd15"
 MODEL_FAMILY_SDXL = "sdxl"
 MODEL_FAMILY_ANIMA = "anima"
+MODEL_FAMILY_FLUX1 = "flux1"
+MODEL_FAMILY_FLUX2 = "flux2"
+_FLUX_FAMILIES = (MODEL_FAMILY_FLUX1, MODEL_FAMILY_FLUX2)
 
 
 @dataclass
@@ -125,6 +130,8 @@ class Engine:
     def available_schedulers(self) -> List[str]:
         if self._loaded and self._loaded.family == MODEL_FAMILY_ANIMA:
             return SCHEDULERS_ANIMA
+        if self._loaded and self._loaded.family in _FLUX_FAMILIES:
+            return SCHEDULERS_FLUX
         return SCHEDULERS_SD
 
     def status_text(self) -> str:
@@ -207,10 +214,12 @@ class Engine:
         )
 
         t0 = time.time()
-        family = self._detect_family(path)
         model = load_checkpoint(str(path), policy=policy)
         elapsed = time.time() - t0
 
+        # Family comes from the detected architecture (sd15/sdxl/flux1/flux2), so
+        # an all-in-one FLUX checkpoint dropped in checkpoints/ is recognised too.
+        family = model.spec.architecture
         self._loaded = LoadedModel(
             name=model_name,
             family=family,
@@ -268,6 +277,66 @@ class Engine:
         flags = self._perf_flag_summary()
         return f"Loaded Anima in {elapsed:.1f}s{flags}  (DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})"
 
+    def load_flux(
+        self, dit_name: str, vae_name: str, te_name: str, clip_name: str | None = None,
+        offload: bool = True, vae_tile: bool = True,
+        compile: bool = False, cuda_graphs: bool = False,
+    ) -> str:
+        """Load a split-file FLUX model. ``te_name`` is the primary text encoder
+        (T5-XXL for FLUX.1, Mistral-3 for FLUX.2); ``clip_name`` is the CLIP-L
+        encoder (FLUX.1 only — ignored for FLUX.2). The detector picks which path
+        applies from the transformer."""
+        label = f"FLUX({dit_name})"
+        if self._loaded and self._loaded.name == label:
+            return f"Model already loaded: {label}"
+
+        if compile and offload is True:
+            offload = "encoders"
+
+        self._unload()
+        self._offload = offload
+        self._vae_tile = vae_tile
+        self._compile = compile
+        self._cuda_graphs = cuda_graphs
+        self._channels_last = False
+        self._tf32 = False
+
+        dit_path = diffusion_model_path(dit_name)
+        vae_file = vae_path(vae_name)
+        te_file = te_path(te_name)
+        for p in (dit_path, vae_file, te_file):
+            if not p.exists():
+                raise FileNotFoundError(f"FLUX file not found: {p}")
+        clip_file = None
+        if clip_name and not clip_name.startswith("("):
+            clip_file = te_path(clip_name)
+            if not clip_file.exists():
+                raise FileNotFoundError(f"FLUX CLIP file not found: {clip_file}")
+
+        policy = DevicePolicy(
+            device=self.device, compute_dtype=self.dtype,
+            offload=offload, vae_tile=vae_tile,
+            compile=compile, cuda_graphs=cuda_graphs,
+        )
+
+        t0 = time.time()
+        # te_file is passed as both T5 and Mistral candidate; the loader uses
+        # whichever the detected architecture needs.
+        model = load_flux_checkpoint(
+            transformer_path=str(dit_path), vae_path=str(vae_file),
+            t5_path=str(te_file), mistral_path=str(te_file),
+            clip_path=str(clip_file) if clip_file else None,
+            policy=policy,
+        )
+        elapsed = time.time() - t0
+
+        family = model.spec.architecture
+        self._loaded = LoadedModel(
+            name=label, family=family, model=model, native_res=1024,
+        )
+        flags = self._perf_flag_summary()
+        return f"Loaded {family} in {elapsed:.1f}s{flags}  (DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})"
+
     def _perf_flag_summary(self) -> str:
         flags = []
         if self._compile:
@@ -315,15 +384,9 @@ class Engine:
         if _MALLOC_TRIM is not None:
             _MALLOC_TRIM(0)
 
-    def _detect_family(self, path: Path) -> str:
-        name_lower = path.stem.lower()
-        if "sdxl" in name_lower or "xl" in name_lower:
-            return MODEL_FAMILY_SDXL
-        return MODEL_FAMILY_SD15
-
     @staticmethod
     def _native_res(family: str) -> int:
-        if family == MODEL_FAMILY_SDXL:
+        if family in (MODEL_FAMILY_SDXL, MODEL_FAMILY_ANIMA, *_FLUX_FAMILIES):
             return 1024
         return 512
 
@@ -384,7 +447,7 @@ class Engine:
             progress_callback=progress_callback,
             return_info=True,
         )
-        if self._loaded.family == MODEL_FAMILY_ANIMA:
+        if self._loaded.family in (MODEL_FAMILY_ANIMA, *_FLUX_FAMILIES):
             kwargs["shift"] = shift
         try:
             image, pipeline_info = gen(**kwargs)
@@ -408,6 +471,8 @@ class Engine:
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
+        if self._loaded.family in _FLUX_FAMILIES:
+            raise RuntimeError("FLUX supports text-to-image only in this build")
         seed = self._resolve_seed(seed)
         gen = ImageToImage(self._loaded.model)
         gen_kwargs = dict(
@@ -446,6 +511,8 @@ class Engine:
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
+        if self._loaded.family in _FLUX_FAMILIES:
+            raise RuntimeError("FLUX supports text-to-image only in this build")
         seed = self._resolve_seed(seed)
         gen = Inpaint(self._loaded.model)
         gen_kwargs = dict(
