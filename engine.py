@@ -85,7 +85,7 @@ SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "sgm_uniform", "sim
 # calibration for the exact (model, steps, resolution, shift) before it works.
 # The UI's OSS panel runs that calibration (Engine.calibrate_oss) and writes the
 # cache; selecting "oss" before calibrating errors with a clear message.
-SCHEDULERS_ANIMA = ["flow", "oss", "sgm_uniform", "simple"]
+SCHEDULERS_ANIMA = ["flow", "flow_dyn", "oss", "sgm_uniform", "simple"]
 SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple"]
 
 # Calibrated OSS schedules are cached one JSON (list of descending sigmas) per
