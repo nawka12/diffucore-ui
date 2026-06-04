@@ -7,6 +7,7 @@ document.addEventListener('alpine:init', () => {
     checkpoints: [], dits: [], vaes: [], tes: [], loras: [], detailers: [],
     checkpoint: '', dit: '', vae: '', te: '', clip: '', fluxCheckpoint: '',
     perf: { compile: false, cudaGraphs: false, channelsLast: false, offload: 'full' },
+    recommendedOffload: 'full',   // GPU-VRAM-based default from the backend (set on init)
     status: 'No model loaded',
     modelLoaded: false,
     loadingModel: false,
@@ -143,6 +144,8 @@ document.addEventListener('alpine:init', () => {
       this.paramTypes = m.xyz_param_types;
       this.status = m.status;
       this.lastSeed = m.last_seed;
+      this.recommendedOffload = m.recommended_offload || 'full';
+      this.perf.offload = this.recommendedOffload;
       this.uiId = m.ui_id; this.diffId = m.diff_id;
       this.checkpoint = this.checkpointChoices[0];
       this.dit = this.ditChoices[0];
@@ -156,8 +159,9 @@ document.addEventListener('alpine:init', () => {
     setModelType(type) {
       this.modelType = type;
       this.syncScheduler();
-      // FLUX must stream its DiT to fit a 24 GB card; the rest stage fully.
-      this.perf.offload = (type === 'FLUX') ? 'stream' : 'full';
+      // FLUX must stream its DiT to fit a 24 GB card; the rest use the
+      // GPU-VRAM-based default the backend recommended at startup.
+      this.perf.offload = (type === 'FLUX') ? 'stream' : this.recommendedOffload;
       if (type === 'Anima' && !this.animaApplied) {
         // sensible Anima defaults, applied once
         this.animaApplied = true;

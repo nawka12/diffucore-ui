@@ -327,6 +327,8 @@ async def _stream_job(work_fn: Callable[..., dict]) -> StreamingResponse:
 # ── app ─────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Diffucore")
+print(f"[startup] offload default '{ENGINE.recommended_offload()}' "
+      f"(device: {ENGINE.device})")
 
 
 @app.get("/")
@@ -350,6 +352,7 @@ def api_models():
         "xyz_param_types": XYZ_PARAM_TYPES,
         "status": ENGINE.status_text(),
         "last_seed": ENGINE.last_seed,
+        "recommended_offload": ENGINE.recommended_offload(),
         "ui_id": md.UI_ID,
         "diff_id": md.DIFF_ID,
     }

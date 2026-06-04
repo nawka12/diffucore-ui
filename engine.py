@@ -175,6 +175,20 @@ class Engine:
         FLUX is text-to-image only in this build."""
         return bool(self._loaded) and self._loaded.family not in _FLUX_FAMILIES
 
+    def recommended_offload(self) -> str:
+        """A sensible default offload mode for the UI, picked from the GPU's VRAM.
+        More VRAM → keep more resident (faster): ``none`` > ``encoders`` > ``full``.
+        FLUX overrides this to ``stream`` in the UI regardless (it can't stage its
+        ~23 GB DiT as one blob). CPU-only falls back to ``full``."""
+        if self.device.type != "cuda":
+            return "full"
+        vram_gb = torch.cuda.get_device_properties(self.device).total_memory / 1024**3
+        if vram_gb >= 23:      # 24 GB-class (3090/4090): hold everything resident
+            return "none"
+        if vram_gb >= 15:      # 16 GB-class: backbone resident, park encoders + VAE
+            return "encoders"
+        return "full"          # ≤12 GB: shuttle everything (safest against OOM)
+
     @property
     def available_schedulers(self) -> List[str]:
         if self._loaded and self._loaded.family == MODEL_FAMILY_ANIMA:
