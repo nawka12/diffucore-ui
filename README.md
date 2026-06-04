@@ -40,6 +40,9 @@ Uvicorn; the frontend is plain HTML/CSS/JS with Alpine.js (no build step).
 - **Detailer** — an ADetailer-style toggle that detects faces/hands with a YOLO
   model and inpaints each region at native resolution after generation. Works on
   both UNet (SD/SDXL) and DiT (Anima) backbones.
+- **Live preview** — watch the image form during sampling. A fast latent→RGB
+  approximation (no VAE decode) streams a rough preview each step; toggle it off
+  in the Generate view. SD/SDXL and Anima.
 - **11 samplers, multiple schedulers** — Euler, Heun, DPM++ family, ER-SDE,
   SECANT; Karras, exponential, sgm_uniform, flow, and more.
 - **Gallery with metadata round-trip** — every generated image saves its full
@@ -127,8 +130,9 @@ By default the UI binds to `127.0.0.1` (localhost only). Flags passed to
 
 In the **Generate** view, pick a mode (**txt2img**, **img2img**, or
 **inpaint**), enter a prompt, adjust your sampler / steps / CFG, and click
-**Generate**. Progress streams to a live bar and the result lands in the panel
-on the right.
+**Generate**. Progress streams to a live bar, a rough **live preview** updates in
+the canvas as it samples (toggle it off beside the button), and the final result
+lands in the panel on the right.
 
 For **img2img** and **inpaint**, drag an image onto the input zone (or click to
 browse); in **inpaint**, paint over the region to repaint — tune the brush size

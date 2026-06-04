@@ -69,6 +69,7 @@ class GeneratePayload(BaseModel):
     shift: float = 3.0
     input_image: Optional[str] = None   # base64 / data-URL
     mask_image: Optional[str] = None
+    preview: bool = True                 # stream live latent previews while sampling
 
     # ── detailer (ADetailer-style pass run after the main image) ──
     detail_enabled: bool = False
@@ -141,7 +142,8 @@ def _save_output(image: Image.Image, gen_kwargs: dict) -> Path:
 
 # ── generation (ported from the old _generate_with_loras) ───────────
 
-def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None]) -> dict:
+def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
+                    on_preview: Optional[Callable] = None) -> dict:
     if not ENGINE.loaded_name:
         raise RuntimeError("Load a model first")
 
@@ -158,6 +160,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None])
             negative_prompt=clean_neg, steps=int(p.steps), cfg_scale=float(p.cfg),
             sampler=p.sampler, scheduler=p.scheduler, seed=int(p.seed),
             progress_callback=on_progress,
+            preview_callback=on_preview if p.preview else None,
         )
 
         if p.mode == "i2i":
@@ -262,8 +265,9 @@ def _run_calibrate(p: CalibratePayload, on_progress: Callable[[int, int], None])
 
 # ── streaming wrapper ───────────────────────────────────────────────
 
-async def _stream_job(work_fn: Callable[[Callable[[int, int], None]], dict]) -> StreamingResponse:
-    """Run ``work_fn`` on a worker thread; stream progress + result as ndjson."""
+async def _stream_job(work_fn: Callable[..., dict]) -> StreamingResponse:
+    """Run ``work_fn(on_progress, on_preview)`` on a worker thread; stream
+    progress + preview frames + result as ndjson."""
     loop = asyncio.get_running_loop()
     q: asyncio.Queue = asyncio.Queue()
 
@@ -271,6 +275,14 @@ async def _stream_job(work_fn: Callable[[Callable[[int, int], None]], dict]) -> 
         loop.call_soon_threadsafe(
             q.put_nowait, {"type": "progress", "step": int(step), "total": int(total)},
         )
+
+    def on_preview(image):
+        # Runs on the worker thread: encode the approx preview to a PNG data-URL
+        # here (off the event loop), then hand the small string to the queue.
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        data = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+        loop.call_soon_threadsafe(q.put_nowait, {"type": "preview", "image": data})
 
     def worker():
         if not GEN_LOCK.acquire(blocking=False):
@@ -280,7 +292,7 @@ async def _stream_job(work_fn: Callable[[Callable[[int, int], None]], dict]) -> 
             loop.call_soon_threadsafe(q.put_nowait, None)
             return
         try:
-            result = work_fn(on_progress)
+            result = work_fn(on_progress, on_preview)
             loop.call_soon_threadsafe(q.put_nowait, {"type": "done", **result})
         except Exception as e:  # noqa: BLE001 — surface any engine error to the UI
             loop.call_soon_threadsafe(q.put_nowait, {"type": "error", "message": str(e)})
@@ -401,17 +413,17 @@ async def api_load(p: LoadPayload):
 
 @app.post("/api/generate")
 async def api_generate(p: GeneratePayload):
-    return await _stream_job(lambda cb: _run_generation(p, cb))
+    return await _stream_job(lambda cb, pv: _run_generation(p, cb, pv))
 
 
 @app.post("/api/xyz")
 async def api_xyz(p: XYZPayload):
-    return await _stream_job(lambda cb: _run_xyz(p, cb))
+    return await _stream_job(lambda cb, pv: _run_xyz(p, cb))
 
 
 @app.post("/api/calibrate_oss")
 async def api_calibrate_oss(p: CalibratePayload):
-    return await _stream_job(lambda cb: _run_calibrate(p, cb))
+    return await _stream_job(lambda cb, pv: _run_calibrate(p, cb))
 
 
 @app.get("/api/oss_status")

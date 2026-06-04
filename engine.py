@@ -99,6 +99,34 @@ MODEL_FAMILY_FLUX1 = "flux1"
 MODEL_FAMILY_FLUX2 = "flux2"
 _FLUX_FAMILIES = (MODEL_FAMILY_FLUX1, MODEL_FAMILY_FLUX2)
 
+# Cheap latent→RGB approximation for live previews (factors from ComfyUI's
+# comfy/latent_formats.py). Per family: (factors[C][3], bias[3] | None). Applied
+# to the sampler's x0 estimate to render a rough preview without a VAE decode.
+# Anima uses the Wan2.1 latent format (its VAE carries Wan2.1 latent stats).
+_PREVIEW_RGB = {
+    MODEL_FAMILY_SD15: (
+        [[0.3512, 0.2297, 0.3227], [0.3250, 0.4974, 0.2350],
+         [-0.2829, 0.1762, 0.2721], [-0.2120, -0.2616, -0.7177]],
+        None,
+    ),
+    MODEL_FAMILY_SDXL: (
+        [[0.3651, 0.4232, 0.4341], [-0.2533, -0.0042, 0.1068],
+         [0.1076, 0.1111, -0.0362], [-0.3165, -0.2492, -0.2188]],
+        [0.1084, -0.0175, -0.0011],
+    ),
+    MODEL_FAMILY_ANIMA: (
+        [[-0.1299, -0.1692, 0.2932], [0.0671, 0.0406, 0.0442],
+         [0.3568, 0.2548, 0.1747], [0.0372, 0.2344, 0.1420],
+         [0.0313, 0.0189, -0.0328], [0.0296, -0.0956, -0.0665],
+         [-0.3477, -0.4059, -0.2925], [0.0166, 0.1902, 0.1975],
+         [-0.0412, 0.0267, -0.1364], [-0.1293, 0.0740, 0.1636],
+         [0.0680, 0.3019, 0.1128], [0.0032, 0.0581, 0.0639],
+         [-0.1251, 0.0927, 0.1699], [0.0060, -0.0633, 0.0005],
+         [0.3477, 0.2275, 0.2950], [0.1984, 0.0913, 0.1861]],
+        [-0.1835, -0.0868, -0.3360],
+    ),
+}
+
 
 @dataclass
 class LoadedModel:
@@ -479,6 +507,45 @@ class Engine:
         p.write_text(json.dumps([round(s, 8) for s in sigmas]))
         return f"Calibrated OSS: {steps} steps @ {width}x{height}, shift={shift:g} → {p.name}"
 
+    # ── live preview (cheap latent→RGB approximation) ──────────────
+
+    def _latent_to_preview(self, latent) -> Optional[Image.Image]:
+        """Render the sampler's x0 estimate to a small RGB preview, or None if the
+        loaded family has no factor table. Rough by design — no VAE decode."""
+        entry = _PREVIEW_RGB.get(self._loaded.family) if self._loaded else None
+        if entry is None:
+            return None
+        factors, bias = entry
+        x = latent
+        if x.ndim == 5:                 # (B, C, 1, H, W) → (B, C, H, W)
+            x = x[:, :, 0]
+        x = x[0].float()                # [C, H, W]
+        w = torch.tensor(factors, device=x.device, dtype=x.dtype).t()  # [3, C]
+        b = torch.tensor(bias, device=x.device, dtype=x.dtype) if bias else None
+        img = torch.nn.functional.linear(x.movedim(0, -1), w, b)       # [H, W, 3]
+        img = ((img + 1.0) / 2.0).clamp(0, 1).mul(255).to(torch.uint8).cpu().numpy()
+        return Image.fromarray(img)
+
+    def _make_preview_cb(self, out_cb, min_interval: float = 0.12):
+        """Wrap an ``out_cb(PIL.Image)`` consumer into the pipeline's
+        ``preview_callback(latent)``: throttle to ``min_interval`` seconds and
+        swallow any decode error so a preview never breaks a generation."""
+        state = {"last": 0.0}
+
+        def cb(latent):
+            now = time.perf_counter()
+            if now - state["last"] < min_interval:
+                return
+            try:
+                img = self._latent_to_preview(latent)
+            except Exception:  # noqa: BLE001 — a preview must never fail the job
+                img = None
+            if img is not None:
+                state["last"] = now
+                out_cb(img)
+
+        return cb
+
     def generate_t2i(
         self,
         prompt: str,
@@ -492,6 +559,7 @@ class Engine:
         seed: int = -1,
         shift: float = 1.0,
         progress_callback: Callable[[int, int], None] | None = None,
+        preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
@@ -508,6 +576,7 @@ class Engine:
             scheduler=scheduler,
             seed=seed,
             progress_callback=progress_callback,
+            preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
         )
         if self._loaded.family in (MODEL_FAMILY_ANIMA, *_FLUX_FAMILIES):
@@ -533,6 +602,7 @@ class Engine:
         scheduler: str = "karras",
         seed: int = -1,
         progress_callback: Callable[[int, int], None] | None = None,
+        preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
@@ -551,6 +621,7 @@ class Engine:
             scheduler=scheduler,
             seed=seed,
             progress_callback=progress_callback,
+            preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
         )
         try:
@@ -573,6 +644,7 @@ class Engine:
         scheduler: str = "karras",
         seed: int = -1,
         progress_callback: Callable[[int, int], None] | None = None,
+        preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
@@ -592,6 +664,7 @@ class Engine:
             scheduler=scheduler,
             seed=seed,
             progress_callback=progress_callback,
+            preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
         )
         try:

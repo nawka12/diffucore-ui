@@ -365,6 +365,9 @@
       <div class="output">
         <button class="btn primary generate" @click="runGenerate()" :disabled="busy"
                 x-text="calibrating ? 'Calibrating OSS…' : (busy ? (sweeping ? 'Generating grid…' : 'Generating…') : (sweeping ? 'Generate grid' : 'Generate'))"></button>
+        <label class="chip toggle preview-toggle" :class="{on: preview}" x-show="!sweeping">
+          <input type="checkbox" x-model="preview"> Live preview
+        </label>
         <div class="progress" x-show="busy">
           <div class="bar"><div class="fill" :style="`width:${progressPct}%`"></div></div>
           <span class="progress-label"><span x-show="calibrating">Calibrating (one-time) · </span><span x-text="progressLabel"></span></span>
@@ -376,8 +379,9 @@
               <div class="placeholder" x-show="xyzGrids.length===0 && !busy">No grid yet.</div>
             </div>
           </template>
-          <template x-if="!sweeping && resultUrl"><img :src="resultUrl" alt="result"></template>
-          <template x-if="!sweeping && !resultUrl"><div class="placeholder">No image yet</div></template>
+          <template x-if="!sweeping && busy && previewUrl"><img :src="previewUrl" class="preview-img" alt="preview"></template>
+          <template x-if="!sweeping && !(busy && previewUrl) && resultUrl"><img :src="resultUrl" alt="result"></template>
+          <template x-if="!sweeping && !(busy && previewUrl) && !resultUrl"><div class="placeholder">No image yet</div></template>
         </div>
         <div class="info" x-text="sweeping ? xyzInfo : info"></div>
       </div>

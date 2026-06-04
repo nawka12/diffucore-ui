@@ -50,6 +50,8 @@ document.addEventListener('alpine:init', () => {
     busy: false,
     progress: { step: 0, total: 0 },
     resultUrl: null,
+    previewUrl: null,
+    preview: true,
     info: '',
     lastSeed: -1,
 
@@ -342,6 +344,7 @@ document.addEventListener('alpine:init', () => {
       }
       this.busy = true;
       this.progress = { step: 0, total: 0 };
+      this.previewUrl = null;
       this.info = '';
       try {
         // Seamless OSS: calibrate this steps/size/shift on first use, then
@@ -363,6 +366,7 @@ document.addEventListener('alpine:init', () => {
           strength: this.form.strength, shift: this.form.shift,
           input_image: this.mode !== 't2i' ? this.inputImage : null,
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
+          preview: this.preview,
           detail_enabled: this.detail.enabled,
           detail_model: this.detail.model,
           detail_prompt: this.detail.prompt, detail_neg: this.detail.neg,
@@ -376,7 +380,10 @@ document.addEventListener('alpine:init', () => {
         await this.stream('/api/generate', payload, (ev) => {
           if (ev.type === 'progress') {
             this.progress = { step: ev.step, total: ev.total };
+          } else if (ev.type === 'preview') {
+            this.previewUrl = ev.image;
           } else if (ev.type === 'done') {
+            this.previewUrl = null;
             this.resultUrl = ev.image_url + '?t=' + Date.now();
             this.info = ev.info;
             this.lastSeed = ev.seed;
@@ -389,6 +396,7 @@ document.addEventListener('alpine:init', () => {
         this.info = 'Error: ' + e;
       } finally {
         this.busy = false;
+        this.previewUrl = null;
       }
     },
 
