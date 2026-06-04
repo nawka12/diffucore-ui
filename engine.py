@@ -85,7 +85,7 @@ SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "sgm_uniform", "sim
 # calibration for the exact (model, steps, resolution, shift) before it works.
 # The UI's OSS panel runs that calibration (Engine.calibrate_oss) and writes the
 # cache; selecting "oss" before calibrating errors with a clear message.
-SCHEDULERS_ANIMA = ["flow", "flow_karras", "oss", "sgm_uniform", "simple"]
+SCHEDULERS_ANIMA = ["flow", "oss", "sgm_uniform", "simple"]
 SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple"]
 
 # Calibrated OSS schedules are cached one JSON (list of descending sigmas) per
@@ -730,7 +730,7 @@ class Engine:
         # OSS is a full-trajectory t2i schedule (calibrated, not usable mid-denoise);
         # fall back to a plain scheduler for the masked inpaint passes.
         if scheduler == "oss":
-            scheduler = "flow_karras" if self._loaded.family == MODEL_FAMILY_ANIMA else "karras"
+            scheduler = "flow" if self._loaded.family == MODEL_FAMILY_ANIMA else "karras"
 
         from detailer import (
             bbox_to_mask, detect_regions, dilate_mask,
