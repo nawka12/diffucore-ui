@@ -565,6 +565,14 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .axes-body { display: flex; flex-direction: column; gap: 12px; }
 .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .detail-grid .field { margin-bottom: 0; }
+.detail-stack { display: flex; flex-direction: column; gap: 10px; }
+.detail-model {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px; background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: var(--r);
+}
+.detail-model-head { display: flex; align-items: center; justify-content: space-between; }
+.detail-model-head .btn { margin-top: 0; }
 .axis { display: flex; flex-direction: column; gap: 6px; }
 .axis-label {
   font-size: 11px;

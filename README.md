@@ -146,9 +146,12 @@ Enable **Detailer** in the Generate view to run an ADetailer-style refinement
 pass on each result. A YOLO model detects regions (faces, hands, …); each is
 cropped, inpainted at the model's native resolution, and composited back — the
 fix for soft, low-detail small faces. Unlike ADetailer it drives Diffucore's
-own inpaint, so it works for **UNet (SD/SDXL)** and **DiT (Anima)** alike. Give
-it an optional detailer prompt (blank reuses the main prompt) and tune
-confidence, denoise strength, and the mask padding / blur / dilation.
+own inpaint, so it works for **UNet (SD/SDXL)** and **DiT (Anima)** alike.
+
+**Stack multiple detection models** — add a pass per model (e.g. a face model
+then a hand model); each runs in sequence, refining the previous result, and
+carries its own optional prompt (blank reuses the main prompt). Confidence,
+denoise strength, and the mask padding / blur / dilation are shared across passes.
 FLUX is text-to-image only in this build, so the pass is skipped there.
 
 ### Sweep parameters (X/Y/Z)

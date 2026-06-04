@@ -14,7 +14,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
@@ -54,6 +54,12 @@ class LoadPayload(BaseModel):
     channels_last: bool = False
 
 
+class DetailerModel(BaseModel):
+    """One stacked detailer pass: a detection model + its own optional prompt."""
+    model: str = ""
+    prompt: str = ""
+
+
 class GeneratePayload(BaseModel):
     mode: str = "t2i"                 # t2i | i2i | inpaint
     prompt: str = ""
@@ -71,10 +77,10 @@ class GeneratePayload(BaseModel):
     mask_image: Optional[str] = None
     preview: bool = True                 # stream live latent previews while sampling
 
-    # ── detailer (ADetailer-style pass run after the main image) ──
+    # ── detailer (ADetailer-style passes run after the main image) ──
+    # Each entry is one detection model + its own prompt; the rest is shared.
     detail_enabled: bool = False
-    detail_model: Optional[str] = None
-    detail_prompt: str = ""
+    detail_models: List[DetailerModel] = []
     detail_neg: str = ""
     detail_confidence: float = 0.3
     detail_strength: float = 0.4
@@ -191,16 +197,21 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
         image, info = gen_fn(**gen_kwargs)
         elapsed = time.perf_counter() - t0
 
+        # Detailer: run each stacked detection model in sequence, feeding the
+        # refined image into the next pass. Per-model prompt; the rest is shared.
         detail_info = ""
-        if p.detail_enabled and p.detail_model and not p.detail_model.startswith("("):
-            if not ENGINE.can_inpaint:
-                detail_info = "  |  detailer skipped (no inpaint for this model)"
-            else:
+        active = [dm for dm in p.detail_models
+                  if dm.model and not dm.model.startswith("(")] if p.detail_enabled else []
+        if active and not ENGINE.can_inpaint:
+            detail_info = "  |  detailer skipped (no inpaint for this model)"
+        elif active:
+            notes = []
+            for dm in active:
                 try:
                     image, dnote = ENGINE.detail(
                         image,
-                        detector_path=str(detector_path(p.detail_model)),
-                        prompt=p.detail_prompt.strip() or clean_prompt,
+                        detector_path=str(detector_path(dm.model)),
+                        prompt=dm.prompt.strip() or clean_prompt,
                         negative_prompt=p.detail_neg.strip() or clean_neg,
                         confidence=float(p.detail_confidence),
                         strength=float(p.detail_strength),
@@ -210,9 +221,10 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                         blur=int(p.detail_blur), max_det=int(p.detail_max),
                         seed=int(p.seed), progress_callback=on_progress,
                     )
-                    detail_info = f"  |  {dnote}"
-                except Exception as e:  # noqa: BLE001 — keep base image on detailer failure
-                    detail_info = f"  |  detailer error: {e}"
+                    notes.append(f"{dm.model}: {dnote.replace('Detailer: ', '')}")
+                except Exception as e:  # noqa: BLE001 — keep current image on a pass failure
+                    notes.append(f"{dm.model} error: {e}")
+            detail_info = "  |  detailer [" + "; ".join(notes) + "]"
 
         out = _save_output(image, gen_kwargs)
         rel = out.relative_to(OUTPUTS_DIR)

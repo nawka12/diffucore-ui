@@ -39,9 +39,11 @@ document.addEventListener('alpine:init', () => {
     maskBrush: 40,
     maskPainted: false,
 
-    // ── detailer (ADetailer-style pass after generate) ──────────
+    // ── detailer (ADetailer-style passes after generate) ────────
+    // `models` is a stack of {model, prompt} run in sequence; rest is shared.
     detail: {
-      enabled: false, model: '', prompt: '', neg: '',
+      enabled: false, neg: '',
+      models: [{ model: '', prompt: '' }],
       confidence: 0.3, strength: 0.4,
       dilation: 4, padding: 32, blur: 4, maxDet: 0,
     },
@@ -147,7 +149,7 @@ document.addEventListener('alpine:init', () => {
       this.vae = this.vaeChoices[0];
       this.te = this.teChoices[0];
       this.clip = this.teChoices[0];
-      this.detail.model = this.detailerChoices[0];
+      this.detail.models[0].model = this.detailerChoices[0];
       this.syncScheduler();
     },
 
@@ -368,8 +370,8 @@ document.addEventListener('alpine:init', () => {
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
           preview: this.preview,
           detail_enabled: this.detail.enabled,
-          detail_model: this.detail.model,
-          detail_prompt: this.detail.prompt, detail_neg: this.detail.neg,
+          detail_models: this.detail.models,
+          detail_neg: this.detail.neg,
           detail_confidence: this.detail.confidence,
           detail_strength: this.detail.strength,
           detail_dilation: this.detail.dilation,
@@ -499,6 +501,15 @@ document.addEventListener('alpine:init', () => {
       } finally {
         this.busy = false;
       }
+    },
+
+    // ── detailer model stack ────────────────────────────────────
+    addDetailModel() {
+      this.detail.models.push({ model: this.detailerChoices[0], prompt: '' });
+    },
+    removeDetailModel(i) {
+      this.detail.models.splice(i, 1);
+      if (!this.detail.models.length) this.detail.models.push({ model: this.detailerChoices[0], prompt: '' });
     },
 
     // ── gallery ─────────────────────────────────────────────────

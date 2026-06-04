@@ -227,22 +227,29 @@
             <input type="checkbox" x-model="detail.enabled"> Enable detailer
           </label>
           <div class="axes-body" x-show="detail.enabled">
-            <label class="field">
-              <span>Detection model</span>
-              <select x-model="detail.model">
-                <template x-for="m in detailerChoices" :key="m"><option :value="m" x-text="m"></option></template>
-              </select>
-            </label>
             <p class="hint" x-show="detailers.length===0" style="margin:0">
               Drop a YOLO <code>.pt</code> (e.g. <code>face_yolov8n.pt</code>) into
               <code>models/detailers/</code> and Refresh. Requires <code>pip install ultralytics</code>.
             </p>
-            <label class="field">
-              <span>Detailer prompt <small>(blank = reuse main prompt)</small></span>
-              <textarea class="autosize" x-model="detail.prompt" rows="2"
-                        x-effect="autogrow($el, detail.prompt)" @input="autogrow($el)"
-                        placeholder="detailed face"></textarea>
-            </label>
+            <div class="detail-stack">
+              <template x-for="(dm, i) in detail.models" :key="i">
+                <div class="detail-model">
+                  <div class="detail-model-head">
+                    <span class="axis-label" x-text="'Pass ' + (i+1)"></span>
+                    <button class="btn small" type="button" x-show="detail.models.length > 1"
+                            @click="removeDetailModel(i)">Remove</button>
+                  </div>
+                  <select x-model="dm.model">
+                    <template x-for="m in detailerChoices" :key="m"><option :value="m" x-text="m"></option></template>
+                  </select>
+                  <textarea class="autosize" x-model="dm.prompt" rows="1"
+                            x-effect="autogrow($el, dm.prompt)" @input="autogrow($el)"
+                            placeholder="prompt for this model (blank = main prompt)"></textarea>
+                </div>
+              </template>
+              <button class="btn small" type="button" @click="addDetailModel()">+ Add detection model</button>
+            </div>
+            <p class="hint" style="margin:0">Each model runs in sequence, refining the previous result.</p>
             <div class="slider">
               <div class="slider-head"><span>Confidence</span>
                 <input type="number" x-model.number="detail.confidence" min="0.05" max="1" step="0.05"></div>
