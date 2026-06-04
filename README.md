@@ -154,6 +154,12 @@ carries its own optional prompt (blank reuses the main prompt). Confidence,
 denoise strength, and the mask padding / blur / dilation are shared across passes.
 FLUX is text-to-image only in this build, so the pass is skipped there.
 
+**Denoise strength is model-aware** — Anima's `shift = 3` flow schedule turns a
+given strength into far more effective noise than SD/SDXL's EDM, so the same
+number regenerates much more of the face. Loading an Anima model therefore
+defaults the detailer strength to **0.25** (a true refine); SD/SDXL keeps **0.4**.
+Lower it to preserve more of the original, raise it to regenerate more.
+
 ### Sweep parameters (X/Y/Z)
 
 In txt2img mode, enable **X/Y/Z sweep** to compare a grid of settings. Each axis

@@ -164,6 +164,9 @@ document.addEventListener('alpine:init', () => {
         this.form.sampler = 'er_sde';
         this.form.steps = 30;
         this.form.cfg = 4.0;
+        // Anima's shift=3 flow schedule turns a given strength into far more
+        // effective noise than SDXL's EDM, so 0.4 over-regenerates faces; ~0.25 refines.
+        this.detail.strength = 0.25;
       }
       if (type === 'FLUX' && !this.fluxApplied) {
         // sensible FLUX-dev defaults, applied once (cfg = distilled guidance)
