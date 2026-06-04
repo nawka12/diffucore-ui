@@ -16,7 +16,9 @@ document.addEventListener('alpine:init', () => {
     uiId: 'diffucore-ui', diffId: 'diffucore',
 
     // ── shared option sets ──────────────────────────────────────
-    samplers: [],
+    samplersSd: [],
+    samplersAnima: [],
+    samplersFlux: [],
     schedulersSd: ['karras'],
     schedulersAnima: ['flow'],
     schedulersFlux: ['flux'],
@@ -89,6 +91,11 @@ document.addEventListener('alpine:init', () => {
     toast: '',
 
     // ── computed ────────────────────────────────────────────────
+    get samplers() {
+      if (this.modelType === 'Anima') return this.samplersAnima;
+      if (this.modelType === 'FLUX') return this.samplersFlux;
+      return this.samplersSd;
+    },
     get schedulers() {
       if (this.modelType === 'Anima') return this.schedulersAnima;
       if (this.modelType === 'FLUX') return this.schedulersFlux;
@@ -138,7 +145,9 @@ document.addEventListener('alpine:init', () => {
       this.checkpoints = m.checkpoints; this.dits = m.dits;
       this.vaes = m.vaes; this.tes = m.tes; this.loras = m.loras;
       this.detailers = m.detailers || [];
-      this.samplers = m.samplers;
+      this.samplersSd = m.samplers_sd;
+      this.samplersAnima = m.samplers_anima;
+      this.samplersFlux = m.samplers_flux;
       this.schedulersSd = m.schedulers_sd;
       this.schedulersAnima = m.schedulers_anima;
       this.schedulersFlux = m.schedulers_flux;
@@ -154,11 +163,13 @@ document.addEventListener('alpine:init', () => {
       this.te = this.teChoices[0];
       this.clip = this.teChoices[0];
       this.detail.models[0].model = this.detailerChoices[0];
+      this.syncSampler();
       this.syncScheduler();
     },
 
     setModelType(type) {
       this.modelType = type;
+      this.syncSampler();
       this.syncScheduler();
       // FLUX must stream its DiT to fit a 24 GB card; the rest use the
       // GPU-VRAM-based default the backend recommended at startup.
@@ -180,6 +191,11 @@ document.addEventListener('alpine:init', () => {
         this.form.steps = 20;
         this.form.cfg = 3.5;
       }
+    },
+
+    syncSampler() {
+      const list = this.samplers;
+      if (!list.includes(this.form.sampler)) this.form.sampler = list[0];
     },
 
     syncScheduler() {

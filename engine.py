@@ -60,7 +60,10 @@ from utils import checkpoint_path, lora_path, diffusion_model_path, vae_path, te
 
 LORA_PROMPT_RE = re.compile(r"<lora:([^:]+):([^>]+)>")
 
-SAMPLERS = [
+# The flow families (Anima, FLUX) only drive the flow-friendly subset; their
+# pipelines reject "heun" and "euler_ancestral" (see _ANIMA_SAMPLERS /
+# _FLUX_SAMPLERS), so the UI must not offer those when a flow model is selected.
+SAMPLERS_SD = [
     "euler",
     "heun",
     "euler_ancestral",
@@ -73,6 +76,9 @@ SAMPLERS = [
     "er_sde",
     "secant",
 ]
+SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s not in ("heun", "euler_ancestral")]
+SAMPLERS_ANIMA = SAMPLERS_FLOW
+SAMPLERS_FLUX = SAMPLERS_FLOW
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "sgm_uniform", "simple"]
 # "oss" is a calibrated optimal-stepsize schedule: it needs a one-time

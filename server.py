@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
-from engine import ENGINE, SAMPLERS, SCHEDULERS_SD, SCHEDULERS_ANIMA, SCHEDULERS_FLUX
+from engine import ENGINE, SAMPLERS_SD, SAMPLERS_ANIMA, SAMPLERS_FLUX, SCHEDULERS_SD, SCHEDULERS_ANIMA, SCHEDULERS_FLUX
 from utils import (
     OUTPUTS_DIR, detector_path,
     scan_checkpoints, scan_loras, scan_diffusion_models,
@@ -363,7 +363,9 @@ def api_models():
         "tes": scan_text_encoders(),
         "loras": scan_loras(),
         "detailers": scan_detectors(),
-        "samplers": SAMPLERS,
+        "samplers_sd": SAMPLERS_SD,
+        "samplers_anima": SAMPLERS_ANIMA,
+        "samplers_flux": SAMPLERS_FLUX,
         "schedulers_sd": SCHEDULERS_SD,
         "schedulers_anima": SCHEDULERS_ANIMA,
         "schedulers_flux": SCHEDULERS_FLUX,
