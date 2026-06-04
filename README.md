@@ -25,9 +25,9 @@ Uvicorn; the frontend is plain HTML/CSS/JS with Alpine.js (no build step).
 
 ## Highlights
 
-- **Three model families, one interface** — Stable Diffusion 1.5, SDXL, and
-  **Anima** (a 2 B DiT built on Cosmos-Predict2). Switch between them from the
-  model bar.
+- **Four model families, one interface** — Stable Diffusion 1.5, SDXL,
+  **Anima** (a 2 B DiT built on Cosmos-Predict2), and **FLUX** (FLUX.1 and
+  FLUX.2 Klein, text-to-image only). Switch between them from the model bar.
 - **Unified Generate workspace** — one shared control panel with a
   txt2img / img2img / inpaint mode toggle; switching modes keeps your prompt and
   settings. Full sampler / scheduler / steps / CFG / seed controls.
@@ -55,9 +55,11 @@ Uvicorn; the frontend is plain HTML/CSS/JS with Alpine.js (no build step).
   to sensible values (er_sde, 30, 4.0) automatically.
 - **Seed recycle & randomize** — reuse the last seed or roll a new one with one
   click.
-- **Selectable CPU offload & tiled VAE** — pick the offload mode per load
-  (full / encoders / none, plus `stream` for FLUX) to fit the model on your GPU;
-  tiled VAE decode keeps large images within VRAM.
+- **Selectable CPU offload & tiled VAE** — the offload default is auto-picked
+  from your GPU's VRAM on startup (24 GB → keep everything resident, 16 GB → park
+  encoders, ≤12 GB → full offload), and you can override it per load
+  (full / encoders / none, plus `stream` for FLUX) to fit the model on your GPU.
+  Tiled VAE decode keeps large images within VRAM.
 - **Live progress** — sampling step/total streams to a real progress bar as the
   image is generated.
 - **Custom darkroom theme** — warm amber safelight aesthetics on a hand-rolled
@@ -87,10 +89,10 @@ Or run `./setup.sh` to do all of the above automatically.
 
 ```
 models/
-├── checkpoints/             # SD/SDXL .safetensors or .ckpt
-├── diffusion-models/        # Anima DiT .safetensors
-├── vae/                     # Anima VAE .safetensors
-├── text-encoders/           # Anima text encoder .safetensors
+├── checkpoints/             # SD/SDXL .safetensors or .ckpt (+ FLUX all-in-one)
+├── diffusion-models/        # Anima / FLUX DiT .safetensors
+├── vae/                     # Anima / FLUX VAE .safetensors
+├── text-encoders/           # Anima / FLUX text encoders .safetensors
 ├── loras/                   # LoRA adapters (.safetensors)
 └── detailers/               # YOLO detection models for the detailer (.pt)
 ```
@@ -122,8 +124,9 @@ By default the UI binds to `127.0.0.1` (localhost only). Flags passed to
 
 ### Load a model
 
-1. Select **SD/SDXL** or **Anima** from the top-bar radio.
-2. Pick your checkpoint files from the dropdowns.
+1. Select **SD/SDXL**, **Anima**, or **FLUX** from the top-bar radio.
+2. Pick your checkpoint files from the dropdowns. FLUX takes either an all-in-one
+   checkpoint or split DiT / VAE / text-encoder files (CLIP-L for FLUX.1 only).
 3. Click **Load** — the status bar shows model info and VRAM usage.
 
 ### Generate
@@ -188,6 +191,7 @@ as the input. The **Metadata** view reads parameters out of any PNG you drop in
 ├── detailer.py         YOLO detection + crop/expand geometry for the detailer
 ├── utils.py            Directory scanning helpers (checkpoints, LoRAs, outputs)
 ├── xyz_grid.py         X/Y/Z plot grid assembly
+├── calibrate_oss.py    Headless CLI to calibrate an Anima OSS schedule
 ├── requirements.txt    Python dependencies
 ├── setup.sh            One-shot setup (submodule init, venv, pip install)
 ├── launch.sh           Activate venv and run `python app.py`
@@ -215,7 +219,7 @@ HTML/CSS/JS with Alpine.js and no build step. No ML logic lives in the web layer
 ## Status
 
 Diffucore UI is **under active development** (pre-1.0). The interface is
-functional end-to-end across all three model families, with full metadata
+functional end-to-end across its model families, with full metadata
 round-trip, LoRA support, and X/Y/Z sweeps — but APIs, HTTP endpoints, and UI
 layout may shift between commits, and rough edges are expected. The engine
 itself is seed-reproducible and verified against reference implementations.
