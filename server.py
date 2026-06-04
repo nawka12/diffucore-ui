@@ -38,6 +38,19 @@ _STATIC = _ROOT / "static"
 # Only one generation may touch the GPU at a time.
 GEN_LOCK = threading.Lock()
 
+# Set by /api/cancel; checked in the progress callback to abort the running job
+# at its next sampling step. Cleared by the worker before each job starts.
+CANCEL_EVENT = threading.Event()
+
+
+class _Cancelled(BaseException):
+    """Raised from the progress callback to unwind a running generation.
+
+    Inherits ``BaseException`` so it slips past the engine's broad
+    ``except Exception`` handlers (e.g. the per-pass detailer guard) and is only
+    ever caught by the worker — while ``finally`` blocks still reclaim VRAM and
+    clear temp LoRAs on the way out."""
+
 
 # ── request models ─────────────────────────────────────────────────
 
@@ -284,6 +297,8 @@ async def _stream_job(work_fn: Callable[..., dict]) -> StreamingResponse:
     q: asyncio.Queue = asyncio.Queue()
 
     def on_progress(step, total):
+        if CANCEL_EVENT.is_set():
+            raise _Cancelled  # unwinds the sampler; caught in worker()
         loop.call_soon_threadsafe(
             q.put_nowait, {"type": "progress", "step": int(step), "total": int(total)},
         )
@@ -303,9 +318,12 @@ async def _stream_job(work_fn: Callable[..., dict]) -> StreamingResponse:
             )
             loop.call_soon_threadsafe(q.put_nowait, None)
             return
+        CANCEL_EVENT.clear()  # drop any stale cancel before this job starts
         try:
             result = work_fn(on_progress, on_preview)
             loop.call_soon_threadsafe(q.put_nowait, {"type": "done", **result})
+        except _Cancelled:
+            loop.call_soon_threadsafe(q.put_nowait, {"type": "cancelled"})
         except Exception as e:  # noqa: BLE001 — surface any engine error to the UI
             loop.call_soon_threadsafe(q.put_nowait, {"type": "error", "message": str(e)})
         finally:
@@ -429,6 +447,14 @@ async def api_load(p: LoadPayload):
 @app.post("/api/generate")
 async def api_generate(p: GeneratePayload):
     return await _stream_job(lambda cb, pv: _run_generation(p, cb, pv))
+
+
+@app.post("/api/cancel")
+def api_cancel():
+    """Signal the running job to stop at its next sampling step."""
+    running = GEN_LOCK.locked()
+    CANCEL_EVENT.set()
+    return {"cancelling": running}
 
 
 @app.post("/api/xyz")

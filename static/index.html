@@ -370,8 +370,10 @@
 
       <!-- output -->
       <div class="output">
-        <button class="btn primary generate" @click="runGenerate()" :disabled="busy"
-                x-text="calibrating ? 'Calibrating OSS…' : (busy ? (sweeping ? 'Generating grid…' : 'Generating…') : (sweeping ? 'Generate grid' : 'Generate'))"></button>
+        <button class="btn primary generate" x-show="!busy" @click="runGenerate()"
+                x-text="sweeping ? 'Generate grid' : 'Generate'"></button>
+        <button class="btn generate cancel" x-show="busy" @click="cancel()" :disabled="cancelling"
+                x-text="cancelling ? 'Cancelling…' : 'Cancel'"></button>
         <label class="chip toggle preview-toggle" :class="{on: preview}" x-show="!sweeping">
           <input type="checkbox" x-model="preview"> Live preview
         </label>

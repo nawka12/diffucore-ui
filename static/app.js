@@ -51,6 +51,7 @@ document.addEventListener('alpine:init', () => {
 
     // ── generation output ───────────────────────────────────────
     busy: false,
+    cancelling: false,
     progress: { step: 0, total: 0 },
     resultUrl: null,
     previewUrl: null,
@@ -396,6 +397,9 @@ document.addEventListener('alpine:init', () => {
             this.resultUrl = ev.image_url + '?t=' + Date.now();
             this.info = ev.info;
             this.lastSeed = ev.seed;
+          } else if (ev.type === 'cancelled') {
+            this.previewUrl = null;
+            this.info = 'Cancelled';
           } else if (ev.type === 'error') {
             this.info = 'Error: ' + ev.message;
             this.flash(ev.message);
@@ -405,7 +409,20 @@ document.addEventListener('alpine:init', () => {
         this.info = 'Error: ' + e;
       } finally {
         this.busy = false;
+        this.cancelling = false;
         this.previewUrl = null;
+      }
+    },
+
+    // Ask the server to stop the running job at its next sampling step. The
+    // open stream then resolves with a `cancelled` event (or completes first).
+    async cancel() {
+      if (!this.busy || this.cancelling) return;
+      this.cancelling = true;
+      try {
+        await fetch('/api/cancel', { method: 'POST' });
+      } catch (e) {
+        /* the stream still resolves; just drop the cancelling state below */
       }
     },
 
@@ -432,6 +449,8 @@ document.addEventListener('alpine:init', () => {
           } else if (ev.type === 'done') {
             this.xyzGrids = ev.grids;
             this.xyzInfo = ev.info;
+          } else if (ev.type === 'cancelled') {
+            this.xyzInfo = 'Cancelled';
           } else if (ev.type === 'error') {
             this.xyzInfo = 'Error: ' + ev.message;
             this.flash(ev.message);
@@ -441,6 +460,7 @@ document.addEventListener('alpine:init', () => {
         this.xyzInfo = 'Error: ' + e;
       } finally {
         this.busy = false;
+        this.cancelling = false;
       }
     },
 
@@ -486,6 +506,8 @@ document.addEventListener('alpine:init', () => {
             this.ossInfo = ev.info;
             this.ossCalibrated = true;
             ok = true;
+          } else if (ev.type === 'cancelled') {
+            this.ossInfo = 'Cancelled';
           } else if (ev.type === 'error') {
             this.ossInfo = 'Error: ' + ev.message;
             this.flash(ev.message);
@@ -507,6 +529,7 @@ document.addEventListener('alpine:init', () => {
         if (await this._streamCalibrate()) this.flash('OSS calibrated');
       } finally {
         this.busy = false;
+        this.cancelling = false;
       }
     },
 

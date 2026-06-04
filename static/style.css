@@ -8,6 +8,8 @@
   --surface-3: #2a2a2e;
   --accent:    #e8a065;
   --accent-dim:#c4884f;
+  --danger:    #d9655b;
+  --danger-dim:#c1554c;
   --teal:      #5dd6c0;
   --line:      rgba(255,255,255,0.08);
   --line-hi:   rgba(255,255,255,0.14);
@@ -357,6 +359,12 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   font-size: 14px;
   letter-spacing: 1px;
 }
+.btn.cancel {
+  background: var(--danger);
+  color: #fff;
+  border-color: transparent;
+}
+.btn.cancel:hover { background: var(--danger-dim); color: #fff; }
 
 /* ── generate layout ──────────────────────────────────────────── */
 .gen-layout {
