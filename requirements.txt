@@ -9,3 +9,4 @@ transformers>=4.40
 Pillow>=10.0
 einops>=0.7
 tqdm
+ultralytics>=8.1   # YOLO detection for the detailer (lazy-imported)

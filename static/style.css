@@ -548,7 +548,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 }
 .lb-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .lb-head .btn { margin-top: 0; }
-.lb-head-btns { display: flex; gap: 8px; }
+.lb-head-btns { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .lb-count { font-family: var(--mono); font-size: 12px; color: var(--txt-3); }
 .lb-panel .meta { margin-top: 12px; max-height: 30vh; }
 
@@ -560,6 +560,8 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 /* ── x/y/z sweep ──────────────────────────────────────────────── */
 .chip.toggle { margin-bottom: 12px; }
 .axes-body { display: flex; flex-direction: column; gap: 12px; }
+.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.detail-grid .field { margin-bottom: 0; }
 .axis { display: flex; flex-direction: column; gap: 6px; }
 .axis-label {
   font-size: 11px;

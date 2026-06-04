@@ -4,7 +4,7 @@ document.addEventListener('alpine:init', () => {
   Alpine.data('app', () => ({
     // ── model rack ──────────────────────────────────────────────
     modelType: 'SD/SDXL',
-    checkpoints: [], dits: [], vaes: [], tes: [], loras: [],
+    checkpoints: [], dits: [], vaes: [], tes: [], loras: [], detailers: [],
     checkpoint: '', dit: '', vae: '', te: '', clip: '', fluxCheckpoint: '',
     perf: { compile: false, cudaGraphs: false, channelsLast: false, offload: 'full' },
     status: 'No model loaded',
@@ -38,6 +38,13 @@ document.addEventListener('alpine:init', () => {
     dragKey: null,
     maskBrush: 40,
     maskPainted: false,
+
+    // ── detailer (ADetailer-style pass after generate) ──────────
+    detail: {
+      enabled: false, model: '', prompt: '', neg: '',
+      confidence: 0.3, strength: 0.4,
+      dilation: 4, padding: 32, blur: 4, maxDet: 0,
+    },
 
     // ── generation output ───────────────────────────────────────
     busy: false,
@@ -109,6 +116,7 @@ document.addEventListener('alpine:init', () => {
     get ditChoices()        { return this.choices(this.dits, 'models/diffusion-models/'); },
     get vaeChoices()        { return this.choices(this.vaes, 'models/vae/'); },
     get teChoices()         { return this.choices(this.tes, 'models/text-encoders/'); },
+    get detailerChoices()   { return this.choices(this.detailers, 'models/detailers/'); },
 
     choices(list, where) {
       return list.length ? list : [`(none in ${where})`];
@@ -123,6 +131,7 @@ document.addEventListener('alpine:init', () => {
       const m = await (await fetch('/api/models')).json();
       this.checkpoints = m.checkpoints; this.dits = m.dits;
       this.vaes = m.vaes; this.tes = m.tes; this.loras = m.loras;
+      this.detailers = m.detailers || [];
       this.samplers = m.samplers;
       this.schedulersSd = m.schedulers_sd;
       this.schedulersAnima = m.schedulers_anima;
@@ -136,6 +145,7 @@ document.addEventListener('alpine:init', () => {
       this.vae = this.vaeChoices[0];
       this.te = this.teChoices[0];
       this.clip = this.teChoices[0];
+      this.detail.model = this.detailerChoices[0];
       this.syncScheduler();
     },
 
@@ -353,6 +363,15 @@ document.addEventListener('alpine:init', () => {
           strength: this.form.strength, shift: this.form.shift,
           input_image: this.mode !== 't2i' ? this.inputImage : null,
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
+          detail_enabled: this.detail.enabled,
+          detail_model: this.detail.model,
+          detail_prompt: this.detail.prompt, detail_neg: this.detail.neg,
+          detail_confidence: this.detail.confidence,
+          detail_strength: this.detail.strength,
+          detail_dilation: this.detail.dilation,
+          detail_padding: this.detail.padding,
+          detail_blur: this.detail.blur,
+          detail_max: this.detail.maxDet,
         };
         await this.stream('/api/generate', payload, (ev) => {
           if (ev.type === 'progress') {
@@ -522,6 +541,30 @@ document.addEventListener('alpine:init', () => {
       this.tab = 'generate';
       this.resizeTextareas();
       this.flash('Loaded settings into Generate');
+    },
+
+    // Send the selected gallery image into img2img / inpaint as the input image.
+    async sendToMode(mode) {
+      if (!this.selected) return;
+      try {
+        const blob = await (await fetch(this.selected.url)).blob();
+        this.inputImage = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result);
+          r.onerror = rej;
+          r.readAsDataURL(blob);
+        });
+      } catch (e) {
+        this.flash('Could not load image: ' + e);
+        return;
+      }
+      this.maskImage = null;
+      this.maskPainted = false;
+      this.mode = mode;
+      this.closeLightbox();
+      this.tab = 'generate';
+      this.resizeTextareas();
+      this.flash('Sent to ' + (mode === 'i2i' ? 'img2img' : 'inpaint'));
     },
 
     // ── metadata reader ─────────────────────────────────────────

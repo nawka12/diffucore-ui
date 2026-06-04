@@ -13,12 +13,15 @@ DIFFUSION_DIR = MODELS_DIR / "diffusion-models"
 VAE_DIR = MODELS_DIR / "vae"
 TE_DIR = MODELS_DIR / "text-encoders"
 LORAS_DIR = MODELS_DIR / "loras"
+DETAILERS_DIR = MODELS_DIR / "detailers"
 OUTPUTS_DIR = ROOT / "outputs"
 
 _CHECKPOINT_EXTS = {".safetensors", ".ckpt", ".pt", ".pth"}
 _LORA_EXTS = {".safetensors"}
+_DETECTOR_EXTS = {".pt", ".pth"}
 
-_ALL_DIRS = (CHECKPOINTS_DIR, DIFFUSION_DIR, VAE_DIR, TE_DIR, LORAS_DIR, OUTPUTS_DIR)
+_ALL_DIRS = (CHECKPOINTS_DIR, DIFFUSION_DIR, VAE_DIR, TE_DIR, LORAS_DIR,
+             DETAILERS_DIR, OUTPUTS_DIR)
 
 
 def _ensure_dirs() -> None:
@@ -54,6 +57,10 @@ def scan_loras() -> List[str]:
     return _scan(LORAS_DIR, _LORA_EXTS)
 
 
+def scan_detectors() -> List[str]:
+    return _scan(DETAILERS_DIR, _DETECTOR_EXTS)
+
+
 def checkpoint_path(name: str) -> Path:
     return CHECKPOINTS_DIR / name
 
@@ -72,6 +79,10 @@ def te_path(name: str) -> Path:
 
 def lora_path(name: str) -> Path:
     return LORAS_DIR / name
+
+
+def detector_path(name: str) -> Path:
+    return DETAILERS_DIR / name
 
 
 def _parse_date_dir(name: str) -> date:

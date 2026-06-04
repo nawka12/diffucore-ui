@@ -37,6 +37,9 @@ Uvicorn; the frontend is plain HTML/CSS/JS with Alpine.js (no build step).
   comparison.
 - **Prompt-based LoRA loading** — embed `<lora:name:mult>` directly in your
   prompt to load adapters on the fly.
+- **Detailer** — an ADetailer-style toggle that detects faces/hands with a YOLO
+  model and inpaints each region at native resolution after generation. Works on
+  both UNet (SD/SDXL) and DiT (Anima) backbones.
 - **11 samplers, multiple schedulers** — Euler, Heun, DPM++ family, ER-SDE,
   SECANT; Karras, exponential, sgm_uniform, flow, and more.
 - **Gallery with metadata round-trip** — every generated image saves its full
@@ -85,8 +88,12 @@ models/
 ├── diffusion-models/        # Anima DiT .safetensors
 ├── vae/                     # Anima VAE .safetensors
 ├── text-encoders/           # Anima text encoder .safetensors
-└── loras/                   # LoRA adapters (.safetensors)
+├── loras/                   # LoRA adapters (.safetensors)
+└── detailers/               # YOLO detection models for the detailer (.pt)
 ```
+
+The detailer needs `ultralytics` (installed via `requirements.txt`) and at least
+one YOLO model in `detailers/` — e.g. ADetailer's `face_yolov8n.pt` / `hand_yolov8n.pt`.
 
 ### Start the UI
 
@@ -129,6 +136,17 @@ or clear the mask to start over.
 
 LoRAs can be activated inline: `a castle in autumn, <lora:autumn_style:0.8>`.
 
+### Detailer (after generate)
+
+Enable **Detailer** in the Generate view to run an ADetailer-style refinement
+pass on each result. A YOLO model detects regions (faces, hands, …); each is
+cropped, inpainted at the model's native resolution, and composited back — the
+fix for soft, low-detail small faces. Unlike ADetailer it drives Diffucore's
+own inpaint, so it works for **UNet (SD/SDXL)** and **DiT (Anima)** alike. Give
+it an optional detailer prompt (blank reuses the main prompt) and tune
+confidence, denoise strength, and the mask padding / blur / dilation.
+FLUX is text-to-image only in this build, so the pass is skipped there.
+
 ### Sweep parameters (X/Y/Z)
 
 In txt2img mode, enable **X/Y/Z sweep** to compare a grid of settings. Each axis
@@ -142,8 +160,9 @@ The **Gallery** shows every image you've generated. Click or tap a thumbnail to
 open it in a fullscreen carousel — step through your outputs with the on-screen
 arrows, the ←/→ keys, or a swipe on touch; toggle **Info** to read the image's
 metadata, and hit **Load to Generate** to pull that generation's settings into
-the Generate view. The **Metadata** view reads parameters out of any PNG you
-drop in (AUTO1111 / Forge or ComfyUI) and can send them to txt2img.
+the Generate view, or **To img2img** / **To inpaint** to send the image itself in
+as the input. The **Metadata** view reads parameters out of any PNG you drop in
+(AUTO1111 / Forge or ComfyUI) and can send them to txt2img.
 
 ## Project structure
 
@@ -152,7 +171,8 @@ drop in (AUTO1111 / Forge or ComfyUI) and can send them to txt2img.
 ├── server.py           FastAPI app — REST + streaming endpoints over the engine
 ├── metadata.py         PNG metadata — write params, read/parse AUTO1111 & ComfyUI
 ├── static/             Frontend — index.html, app.js (Alpine), style.css
-├── engine.py           Engine singleton — model lifecycle, generation, LoRA
+├── engine.py           Engine singleton — model lifecycle, generation, LoRA, detailer
+├── detailer.py         YOLO detection + crop/expand geometry for the detailer
 ├── utils.py            Directory scanning helpers (checkpoints, LoRAs, outputs)
 ├── xyz_grid.py         X/Y/Z plot grid assembly
 ├── requirements.txt    Python dependencies

@@ -25,9 +25,9 @@ from PIL.PngImagePlugin import PngInfo
 
 from engine import ENGINE, SAMPLERS, SCHEDULERS_SD, SCHEDULERS_ANIMA, SCHEDULERS_FLUX
 from utils import (
-    OUTPUTS_DIR,
+    OUTPUTS_DIR, detector_path,
     scan_checkpoints, scan_loras, scan_diffusion_models,
-    scan_vae, scan_text_encoders, scan_outputs, next_output_path,
+    scan_vae, scan_text_encoders, scan_detectors, scan_outputs, next_output_path,
 )
 from xyz_grid import generate_xyz_grid, PARAM_TYPES as XYZ_PARAM_TYPES
 import metadata as md
@@ -69,6 +69,18 @@ class GeneratePayload(BaseModel):
     shift: float = 3.0
     input_image: Optional[str] = None   # base64 / data-URL
     mask_image: Optional[str] = None
+
+    # ── detailer (ADetailer-style pass run after the main image) ──
+    detail_enabled: bool = False
+    detail_model: Optional[str] = None
+    detail_prompt: str = ""
+    detail_neg: str = ""
+    detail_confidence: float = 0.3
+    detail_strength: float = 0.4
+    detail_dilation: int = 4
+    detail_padding: int = 32
+    detail_blur: int = 4
+    detail_max: int = 0                  # 0 = all detections
 
 
 class CalibratePayload(BaseModel):
@@ -176,11 +188,34 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None])
         image, info = gen_fn(**gen_kwargs)
         elapsed = time.perf_counter() - t0
 
+        detail_info = ""
+        if p.detail_enabled and p.detail_model and not p.detail_model.startswith("("):
+            if not ENGINE.can_inpaint:
+                detail_info = "  |  detailer skipped (no inpaint for this model)"
+            else:
+                try:
+                    image, dnote = ENGINE.detail(
+                        image,
+                        detector_path=str(detector_path(p.detail_model)),
+                        prompt=p.detail_prompt.strip() or clean_prompt,
+                        negative_prompt=p.detail_neg.strip() or clean_neg,
+                        confidence=float(p.detail_confidence),
+                        strength=float(p.detail_strength),
+                        steps=int(p.steps), cfg_scale=float(p.cfg),
+                        sampler=p.sampler, scheduler=p.scheduler,
+                        dilation=int(p.detail_dilation), padding=int(p.detail_padding),
+                        blur=int(p.detail_blur), max_det=int(p.detail_max),
+                        seed=int(p.seed), progress_callback=on_progress,
+                    )
+                    detail_info = f"  |  {dnote}"
+                except Exception as e:  # noqa: BLE001 — keep base image on detailer failure
+                    detail_info = f"  |  detailer error: {e}"
+
         out = _save_output(image, gen_kwargs)
         rel = out.relative_to(OUTPUTS_DIR)
         return {
             "image_url": _output_url(out),
-            "info": f"{lora_info}{info}  |  inference: {elapsed:.2f}s  |  saved to {rel}",
+            "info": f"{lora_info}{info}  |  inference: {elapsed:.2f}s{detail_info}  |  saved to {rel}",
             "seed": ENGINE.last_seed,
         }
     finally:
@@ -283,6 +318,7 @@ def api_models():
         "vaes": scan_vae(),
         "tes": scan_text_encoders(),
         "loras": scan_loras(),
+        "detailers": scan_detectors(),
         "samplers": SAMPLERS,
         "schedulers_sd": SCHEDULERS_SD,
         "schedulers_anima": SCHEDULERS_ANIMA,

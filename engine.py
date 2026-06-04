@@ -40,7 +40,7 @@ if _LOCAL_DIFFUCORE_SRC.exists():
     sys.path.insert(0, str(_LOCAL_DIFFUCORE_SRC))
 
 import torch
-from PIL import Image
+from PIL import Image, ImageFilter
 
 from diffucore import (
     anima_calibrate_oss,
@@ -140,6 +140,12 @@ class Engine:
     @property
     def last_seed(self) -> int:
         return self._last_seed
+
+    @property
+    def can_inpaint(self) -> bool:
+        """Whether the loaded family supports inpainting (the detailer's backbone).
+        FLUX is text-to-image only in this build."""
+        return bool(self._loaded) and self._loaded.family not in _FLUX_FAMILIES
 
     @property
     def available_schedulers(self) -> List[str]:
@@ -594,6 +600,92 @@ class Engine:
             self._reclaim_memory()
         info = f"Seed: {seed} | inpainted | {steps} steps | VAE: {pipeline_info.vae_decode_mode}"
         return image, info
+
+    # ── detailer (ADetailer-style region refinement) ───────────────
+
+    def detail(
+        self,
+        image: Image.Image,
+        *,
+        detector_path: str,
+        prompt: str = "",
+        negative_prompt: str = "",
+        confidence: float = 0.3,
+        strength: float = 0.4,
+        steps: int = 25,
+        cfg_scale: float = 6.0,
+        sampler: str = "dpmpp_2m",
+        scheduler: str = "karras",
+        dilation: int = 4,
+        padding: int = 32,
+        blur: int = 4,
+        max_det: int = 0,
+        seed: int = -1,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> Tuple[Image.Image, str]:
+        """Detect regions with a YOLO model, then inpaint each one at the model's
+        native resolution and composite it back — the same idea as ADetailer, but
+        driven through diffucore's ``Inpaint`` so it works for UNet and DiT alike.
+
+        Does not touch ``last_seed`` so the caller's generation seed is preserved
+        for output naming/metadata."""
+        if not self._loaded:
+            raise RuntimeError("No model loaded")
+        if not self.can_inpaint:
+            raise RuntimeError("Detailer needs inpaint, unavailable for this model")
+
+        # OSS is a full-trajectory t2i schedule (calibrated, not usable mid-denoise);
+        # fall back to a plain scheduler for the masked inpaint passes.
+        if scheduler == "oss":
+            scheduler = "flow_karras" if self._loaded.family == MODEL_FAMILY_ANIMA else "karras"
+
+        from detailer import (
+            bbox_to_mask, detect_regions, dilate_mask,
+            expand_crop_region, get_crop_region,
+        )
+
+        dets = detect_regions(detector_path, image, confidence)
+        if max_det and max_det > 0:
+            dets = dets[:max_det]
+        n = len(dets)
+        if n == 0:
+            return image, "Detailer: no detections"
+
+        base_seed = seed if seed is not None and seed >= 0 else \
+            int(torch.randint(0, 2**32 - 1, (1,)).item())
+
+        result = image.convert("RGB")
+        W, H = result.size
+        gen = Inpaint(self._loaded.model)
+        try:
+            for i, (bbox, _conf) in enumerate(dets):
+                mask = dilate_mask(bbox_to_mask(bbox, (W, H)), dilation)
+                region = get_crop_region(mask, padding)
+                if region is None:
+                    continue
+                # square the region so the native-res inpaint doesn't distort it
+                region = expand_crop_region(region, 1, 1, W, H)
+                crop = result.crop(region)
+                crop_mask = mask.crop(region)
+
+                def sub_cb(step, total, _i=i):
+                    if progress_callback:
+                        progress_callback(_i * total + step, n * total)
+
+                out, _ = gen(
+                    prompt=prompt, init_image=crop, mask_image=crop_mask,
+                    negative_prompt=negative_prompt, strength=strength,
+                    steps=steps, cfg_scale=cfg_scale, sampler=sampler,
+                    scheduler=scheduler, seed=base_seed + i,
+                    progress_callback=sub_cb, return_info=True,
+                )
+                out = out.resize(crop.size, Image.LANCZOS)
+                alpha = crop_mask.filter(ImageFilter.GaussianBlur(blur)) if blur else crop_mask
+                result.paste(out, region, alpha)
+                self._reclaim_memory()
+        finally:
+            self._reclaim_memory()
+        return result, f"Detailer: refined {n} region(s)"
 
 
 # ── singleton ──────────────────────────────────────────────────────

@@ -221,6 +221,51 @@
           </div>
         </fieldset>
 
+        <fieldset x-show="!sweeping">
+          <legend>Detailer <small>(after generate)</small></legend>
+          <label class="chip toggle" :class="{on: detail.enabled}">
+            <input type="checkbox" x-model="detail.enabled"> Enable detailer
+          </label>
+          <div class="axes-body" x-show="detail.enabled">
+            <label class="field">
+              <span>Detection model</span>
+              <select x-model="detail.model">
+                <template x-for="m in detailerChoices" :key="m"><option :value="m" x-text="m"></option></template>
+              </select>
+            </label>
+            <p class="hint" x-show="detailers.length===0" style="margin:0">
+              Drop a YOLO <code>.pt</code> (e.g. <code>face_yolov8n.pt</code>) into
+              <code>models/detailers/</code> and Refresh. Requires <code>pip install ultralytics</code>.
+            </p>
+            <label class="field">
+              <span>Detailer prompt <small>(blank = reuse main prompt)</small></span>
+              <textarea class="autosize" x-model="detail.prompt" rows="2"
+                        x-effect="autogrow($el, detail.prompt)" @input="autogrow($el)"
+                        placeholder="detailed face"></textarea>
+            </label>
+            <div class="slider">
+              <div class="slider-head"><span>Confidence</span>
+                <input type="number" x-model.number="detail.confidence" min="0.05" max="1" step="0.05"></div>
+              <input type="range" x-model.number="detail.confidence" min="0.05" max="1" step="0.05">
+            </div>
+            <div class="slider">
+              <div class="slider-head"><span>Denoise strength</span>
+                <input type="number" x-model.number="detail.strength" min="0.05" max="1" step="0.05"></div>
+              <input type="range" x-model.number="detail.strength" min="0.05" max="1" step="0.05">
+            </div>
+            <div class="detail-grid">
+              <label class="field"><span>Mask padding</span>
+                <input type="number" x-model.number="detail.padding" min="0" max="256" step="4"></label>
+              <label class="field"><span>Mask blur</span>
+                <input type="number" x-model.number="detail.blur" min="0" max="64" step="1"></label>
+              <label class="field"><span>Mask dilation</span>
+                <input type="number" x-model.number="detail.dilation" min="0" max="64" step="1"></label>
+              <label class="field"><span>Max detections <small>(0 = all)</small></span>
+                <input type="number" x-model.number="detail.maxDet" min="0" max="20" step="1"></label>
+            </div>
+          </div>
+        </fieldset>
+
         <fieldset x-show="mode==='t2i'">
           <legend>Size</legend>
           <div class="slider">
@@ -387,6 +432,8 @@
                     x-text="lightbox.info ? 'Hide info' : 'Info'"></button>
             <a class="btn small" x-show="selected" :href="selected ? selected.url : '#'"
                :download="selected ? selected.name : ''">Download</a>
+            <button class="btn small" @click="sendToMode('i2i')">To img2img</button>
+            <button class="btn small" @click="sendToMode('inpaint')">To inpaint</button>
             <button class="btn small primary" @click="loadToWorkspace()">Load to Generate</button>
           </div>
         </div>
