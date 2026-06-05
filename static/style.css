@@ -494,7 +494,8 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   touch-action: none;
 }
 .mask-tools { margin-top: 10px; }
-.mask-tool-btns { display: flex; gap: 8px; margin-top: 8px; }
+.mask-tools > .seg { margin-bottom: 10px; }
+.mask-tool-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .mask-tool-btns .btn { margin-top: 0; }
 
 /* ── gallery ──────────────────────────────────────────────────── */

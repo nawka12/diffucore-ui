@@ -174,12 +174,19 @@
                       @pointerdown="maskDown($event)" @pointermove="maskMove($event)"
                       @pointerup="maskUp($event)" @pointerleave="maskUp($event)"></canvas>
               <div class="mask-tools">
-                <div class="slider">
-                  <div class="slider-head"><span>Brush</span>
+                <div class="seg" role="radiogroup" aria-label="Mask tool">
+                  <button :class="{active: maskTool==='brush'}" @click="maskTool='brush'">Brush</button>
+                  <button :class="{active: maskTool==='eraser'}" @click="maskTool='eraser'">Eraser</button>
+                  <button :class="{active: maskTool==='rect'}" @click="maskTool='rect'">Rectangle</button>
+                </div>
+                <div class="slider" x-show="maskTool!=='rect'">
+                  <div class="slider-head"><span>Brush size</span>
                     <input type="number" x-model.number="maskBrush" min="5" max="200" step="5"></div>
                   <input type="range" x-model.number="maskBrush" min="5" max="200" step="5">
                 </div>
                 <div class="mask-tool-btns">
+                  <button class="btn small" @click="undoMask()">Undo</button>
+                  <button class="btn small" @click="invertMask()">Invert</button>
                   <button class="btn small" @click="clearMask()">Clear mask</button>
                   <button class="btn small" @click="inputImage=null; maskImage=null; maskPainted=false">Change image</button>
                 </div>
@@ -187,7 +194,7 @@
             </div>
           </template>
           <input type="file" accept="image/*" x-ref="inpFile" class="hidden" @change="onFile($event,'inputImage')">
-          <p class="hint">Paint over the area to repaint (shown in orange).</p>
+          <p class="hint">Mark the area to repaint (shown in orange). Brush to paint, drag the rectangle for big regions, eraser to fix mistakes, or invert to repaint everything else.</p>
         </fieldset>
 
         <fieldset>

@@ -44,6 +44,7 @@ document.addEventListener('alpine:init', () => {
     maskImage: null,
     dragKey: null,
     maskBrush: 40,
+    maskTool: 'brush',   // brush | eraser | rect
     maskPainted: false,
 
     // ── detailer (ADetailer-style passes after generate) ────────
@@ -351,46 +352,89 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── inpaint mask painting ───────────────────────────────────
-    // Draw the input image onto the visible canvas and keep a same-size
-    // offscreen buffer that holds the mask as white-on-black (the convention
-    // the engine expects). Both buffers are stashed on the canvas element so
-    // Alpine never proxies the DOM nodes.
+    // The offscreen `_mask` buffer is the source of truth: transparent where
+    // untouched, opaque white where masked. The visible canvas is always a
+    // pure redraw of `base + orange-tinted mask`, so the brush, eraser,
+    // rectangle, undo and invert tools all just mutate `_mask` and redraw.
+    // Export flattens the mask onto black (the white-on-black PNG the engine
+    // expects). All buffers live on the canvas element so Alpine never proxies
+    // the DOM nodes.
     initMask(c) {
       if (!c || !this.inputImage) return;
       const img = new Image();
       img.onload = () => {
         c.width = img.naturalWidth;
         c.height = img.naturalHeight;
-        c.getContext('2d').drawImage(img, 0, 0);
-        const m = document.createElement('canvas');
-        m.width = img.naturalWidth;
-        m.height = img.naturalHeight;
-        const mctx = m.getContext('2d');
-        mctx.fillStyle = '#000';
-        mctx.fillRect(0, 0, m.width, m.height);
-        c._mask = m;
+        const blank = (w, h) => {
+          const x = document.createElement('canvas');
+          x.width = w; x.height = h;
+          return x;
+        };
+        c._mask = blank(img.naturalWidth, img.naturalHeight);
+        c._tint = blank(img.naturalWidth, img.naturalHeight);
         c._base = img;
         c._painting = false;
+        c._dragging = false;
+        c._undo = [];
         this.maskPainted = false;
+        this.redrawMask(c);
       };
       img.src = this.inputImage;
+    },
+
+    // Repaint the visible canvas: base image, then the mask tinted orange.
+    redrawMask(c) {
+      const ctx = c.getContext('2d');
+      ctx.clearRect(0, 0, c.width, c.height);
+      ctx.drawImage(c._base, 0, 0);
+      const t = c._tint, tctx = t.getContext('2d');
+      tctx.clearRect(0, 0, t.width, t.height);
+      tctx.drawImage(c._mask, 0, 0);
+      tctx.globalCompositeOperation = 'source-in';
+      tctx.fillStyle = '#e8a065';
+      tctx.fillRect(0, 0, t.width, t.height);
+      tctx.globalCompositeOperation = 'source-over';
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      ctx.drawImage(t, 0, 0);
+      ctx.restore();
     },
 
     maskDown(e) {
       const c = e.currentTarget;
       if (!c._mask) return;
-      c._painting = true;
-      c._last = this.maskPos(c, e);
-      this.maskStroke(c, c._last, c._last);
+      const p = this.maskPos(c, e);
+      if (this.maskTool === 'rect') {
+        c._dragging = true;
+        c._dragStart = p;
+      } else {
+        this.pushUndo(c);
+        c._painting = true;
+        c._last = p;
+        this.paintSeg(c, p, p);
+      }
     },
     maskMove(e) {
       const c = e.currentTarget;
-      if (!c._painting) return;
       const p = this.maskPos(c, e);
-      this.maskStroke(c, c._last, p);
-      c._last = p;
+      if (c._dragging) {
+        this.redrawMask(c);
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = 'rgba(232,160,101,0.5)';
+        ctx.fillRect(c._dragStart.x, c._dragStart.y, p.x - c._dragStart.x, p.y - c._dragStart.y);
+      } else if (c._painting) {
+        this.paintSeg(c, c._last, p);
+        c._last = p;
+      }
     },
-    maskUp(e) { e.currentTarget._painting = false; },
+    maskUp(e) {
+      const c = e.currentTarget;
+      if (c._dragging) {
+        c._dragging = false;
+        this.fillRectMask(c, c._dragStart, this.maskPos(c, e));
+      }
+      c._painting = false;
+    },
 
     maskPos(c, e) {
       const r = c.getBoundingClientRect();
@@ -399,33 +443,85 @@ document.addEventListener('alpine:init', () => {
         y: (e.clientY - r.top) * (c.height / r.height),
       };
     },
-    maskStroke(c, a, b) {
-      this.maskSeg(c.getContext('2d'), a, b, 'rgba(232,160,101,0.5)');
-      this.maskSeg(c._mask.getContext('2d'), a, b, '#fff');
-      this.maskPainted = true;
+    // Stroke white (brush) or erase (eraser) along a segment of the mask.
+    paintSeg(c, a, b) {
+      const mctx = c._mask.getContext('2d');
+      mctx.save();
+      mctx.globalCompositeOperation = this.maskTool === 'eraser' ? 'destination-out' : 'source-over';
+      mctx.strokeStyle = '#fff';
+      mctx.lineWidth = this.maskBrush;
+      mctx.lineCap = 'round';
+      mctx.lineJoin = 'round';
+      mctx.beginPath();
+      mctx.moveTo(a.x, a.y);
+      mctx.lineTo(b.x, b.y);
+      mctx.stroke();
+      mctx.restore();
+      if (this.maskTool !== 'eraser') this.maskPainted = true;
+      this.redrawMask(c);
     },
-    maskSeg(ctx, a, b, color) {
-      ctx.strokeStyle = color;
-      ctx.lineWidth = this.maskBrush;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-      ctx.stroke();
+    fillRectMask(c, a, b) {
+      const w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y);
+      if (!w || !h) { this.redrawMask(c); return; }
+      this.pushUndo(c);
+      const mctx = c._mask.getContext('2d');
+      mctx.fillStyle = '#fff';
+      mctx.fillRect(Math.min(a.x, b.x), Math.min(a.y, b.y), w, h);
+      this.maskPainted = true;
+      this.redrawMask(c);
+    },
+    // Snapshot the mask before a mutating op so it can be undone. The first
+    // snapshot of any chain is the empty mask, so a non-empty undo stack
+    // means something is painted (drives maskPainted after undo).
+    pushUndo(c) {
+      const mctx = c._mask.getContext('2d');
+      c._undo.push(mctx.getImageData(0, 0, c._mask.width, c._mask.height));
+      if (c._undo.length > 30) c._undo.shift();
+    },
+    undoMask() {
+      const c = this.$refs.maskCanvas;
+      if (!c || !c._undo || !c._undo.length) return;
+      c._mask.getContext('2d').putImageData(c._undo.pop(), 0, 0);
+      this.maskPainted = c._undo.length > 0;
+      this.redrawMask(c);
+    },
+    invertMask() {
+      const c = this.$refs.maskCanvas;
+      if (!c || !c._mask) return;
+      this.pushUndo(c);
+      const m = c._mask, mctx = m.getContext('2d');
+      const inv = document.createElement('canvas');
+      inv.width = m.width; inv.height = m.height;
+      const ictx = inv.getContext('2d');
+      ictx.fillStyle = '#fff';
+      ictx.fillRect(0, 0, inv.width, inv.height);
+      ictx.globalCompositeOperation = 'destination-out';
+      ictx.drawImage(m, 0, 0);
+      mctx.clearRect(0, 0, m.width, m.height);
+      mctx.drawImage(inv, 0, 0);
+      this.maskPainted = true;
+      this.redrawMask(c);
     },
     clearMask() {
       const c = this.$refs.maskCanvas;
       if (!c || !c._base) return;
-      c.getContext('2d').drawImage(c._base, 0, 0);
-      const mctx = c._mask.getContext('2d');
-      mctx.fillStyle = '#000';
-      mctx.fillRect(0, 0, c._mask.width, c._mask.height);
+      this.pushUndo(c);
+      c._mask.getContext('2d').clearRect(0, 0, c._mask.width, c._mask.height);
       this.maskPainted = false;
+      this.redrawMask(c);
     },
+    // Flatten the transparent mask onto black → the white-on-black PNG the
+    // engine expects (decoded as RGB, so transparency must be made opaque).
     exportMask() {
       const c = this.$refs.maskCanvas;
-      return c && c._mask ? c._mask.toDataURL('image/png') : null;
+      if (!c || !c._mask) return null;
+      const o = document.createElement('canvas');
+      o.width = c._mask.width; o.height = c._mask.height;
+      const octx = o.getContext('2d');
+      octx.fillStyle = '#000';
+      octx.fillRect(0, 0, o.width, o.height);
+      octx.drawImage(c._mask, 0, 0);
+      return o.toDataURL('image/png');
     },
 
     // ── auto-growing textareas ──────────────────────────────────
