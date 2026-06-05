@@ -21,6 +21,7 @@ from collections import deque
 from pathlib import Path
 from typing import Callable, List, Optional
 
+import uvicorn
 from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -320,6 +321,31 @@ CURRENT: Optional[Job] = None
 SUBSCRIBERS: "set[asyncio.Queue]" = set()
 APP_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
+# The /api/events SSE streams are long-lived, so uvicorn's graceful shutdown would
+# wait on them forever — Ctrl+C appears to hang until a second, forced Ctrl+C.
+# uvicorn calls Server.handle_exit the instant a signal arrives (before it starts
+# waiting for connections to close), so wrap it to set SHUTDOWN and wake every
+# stream with a sentinel; each gen() then returns and the server exits cleanly.
+SHUTDOWN = asyncio.Event()
+
+
+def _wake_for_shutdown() -> None:
+    SHUTDOWN.set()
+    for q in list(SUBSCRIBERS):
+        q.put_nowait(None)
+
+
+_uvicorn_handle_exit = uvicorn.Server.handle_exit
+
+
+def _handle_exit(self, sig, frame):
+    if APP_LOOP is not None:
+        APP_LOOP.call_soon_threadsafe(_wake_for_shutdown)
+    _uvicorn_handle_exit(self, sig, frame)
+
+
+uvicorn.Server.handle_exit = _handle_exit
+
 # The last successful /api/load payload, so a fresh device can restore the exact
 # checkpoint/DiT/VAE/offload selections (not just "a model is loaded").
 LAST_LOAD_FORM: Optional[dict] = None
@@ -603,12 +629,15 @@ async def api_events(request: Request):
 
     async def gen():
         try:
-            while True:
+            while not SHUTDOWN.is_set():
                 try:
                     ev = await asyncio.wait_for(q.get(), timeout=15)
-                    yield "data: " + json.dumps(ev) + "\n\n"
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"   # keep-alive; also surfaces disconnects
+                    continue
+                if ev is None:           # shutdown sentinel — let the server exit
+                    break
+                yield "data: " + json.dumps(ev) + "\n\n"
         finally:
             SUBSCRIBERS.discard(q)
 
