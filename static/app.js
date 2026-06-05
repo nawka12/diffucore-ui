@@ -333,7 +333,20 @@ document.addEventListener('alpine:init', () => {
     readImage(f, key) {
       if (!f) return;
       const r = new FileReader();
-      r.onload = () => { this[key] = r.result; };
+      r.onload = () => {
+        this[key] = r.result;
+        // Match the output size to the source for img2img/inpaint (rounded to
+        // ×8, the VAE's latent grid) so the input isn't stretched by default.
+        if (key === 'inputImage') {
+          const img = new Image();
+          img.onload = () => {
+            const r8 = n => Math.max(8, Math.round(n / 8) * 8);
+            this.form.width = r8(img.naturalWidth);
+            this.form.height = r8(img.naturalHeight);
+          };
+          img.src = r.result;
+        }
+      };
       r.readAsDataURL(f);
     },
 

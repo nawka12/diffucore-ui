@@ -188,6 +188,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                 raise RuntimeError("Provide an input image")
             gen_kwargs = dict(
                 prompt=clean_prompt, input_image=_decode_image(p.input_image),
+                width=int(p.width), height=int(p.height),
                 strength=float(p.strength), **common,
             )
             gen_fn = ENGINE.generate_i2i
@@ -197,6 +198,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             gen_kwargs = dict(
                 prompt=clean_prompt, input_image=_decode_image(p.input_image),
                 mask_image=_decode_image(p.mask_image),
+                width=int(p.width), height=int(p.height),
                 strength=float(p.strength), **common,
             )
             gen_fn = ENGINE.generate_inpaint

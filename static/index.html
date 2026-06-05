@@ -281,8 +281,9 @@
           </div>
         </fieldset>
 
-        <fieldset x-show="mode==='t2i'">
+        <fieldset>
           <legend>Size</legend>
+          <p class="hint" x-show="mode!=='t2i'" style="margin:0 0 8px">Defaults to the input image; the image is resized to fit.</p>
           <div class="slider">
             <div class="slider-head"><span>Width</span>
               <input type="number" x-model.number="form.width" min="256" max="2048" step="64"></div>
