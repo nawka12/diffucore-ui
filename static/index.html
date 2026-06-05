@@ -172,7 +172,7 @@
             <div class="mask-editor">
               <canvas x-ref="maskCanvas" class="mask-canvas" x-init="initMask($el)"
                       @pointerdown="maskDown($event)" @pointermove="maskMove($event)"
-                      @pointerup="maskUp($event)" @pointerleave="maskUp($event)"></canvas>
+                      @pointerup="maskUp($event)"></canvas>
               <div class="mask-tools">
                 <div class="seg" role="radiogroup" aria-label="Mask tool">
                   <button :class="{active: maskTool==='brush'}" @click="maskTool='brush'">Brush</button>

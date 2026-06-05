@@ -403,6 +403,9 @@ document.addEventListener('alpine:init', () => {
     maskDown(e) {
       const c = e.currentTarget;
       if (!c._mask) return;
+      // Capture the pointer so move/up keep firing on the canvas even when the
+      // cursor strays outside its bounds — lets a stroke run off the edge.
+      try { c.setPointerCapture(e.pointerId); } catch (_) {}
       const p = this.maskPos(c, e);
       if (this.maskTool === 'rect') {
         c._dragging = true;
