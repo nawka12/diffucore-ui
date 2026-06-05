@@ -87,7 +87,23 @@ pip install -e ./diffucore
 pip install torch --index-url https://download.pytorch.org/whl/cu124
 ```
 
-Or run `./setup.sh` to do all of the above automatically.
+Or run `./setup.sh` to do all of the above automatically. On Windows, run
+`setup.bat` instead (double-click it or run it from a terminal).
+
+### Update
+
+To pull the latest UI code, sync the `diffucore` submodule to its pinned
+revision, and refresh dependencies:
+
+```bash
+./update.sh          # Linux / macOS
+```
+
+```bat
+update.bat           REM Windows
+```
+
+Both reuse the existing `.venv` — run setup first if you don't have one yet.
 
 ## Usage
 
@@ -109,7 +125,11 @@ one YOLO model in `detailers/` — e.g. ADetailer's `face_yolov8n.pt` / `hand_yo
 ### Start the UI
 
 ```bash
-./launch.sh
+./launch.sh          # Linux / macOS
+```
+
+```bat
+launch.bat           REM Windows
 ```
 
 Or, manually:
@@ -231,8 +251,9 @@ as the input. The **Metadata** view reads parameters out of any PNG you drop in
 ├── xyz_grid.py         X/Y/Z plot grid assembly
 ├── calibrate_oss.py    Headless CLI to calibrate an Anima OSS schedule
 ├── requirements.txt    Python dependencies
-├── setup.sh            One-shot setup (submodule init, venv, pip install)
-├── launch.sh           Activate venv and run `python app.py`
+├── setup.sh / setup.bat    One-shot setup (submodule init, venv, pip install) — Linux / Windows
+├── launch.sh / launch.bat  Activate venv and run `python app.py` — Linux / Windows
+├── update.sh / update.bat  Pull latest, sync submodule, refresh deps — Linux / Windows
 ├── diffucore/          Git submodule — the Diffucore inference engine
 ├── models/             Model weight directories (user-provided)
 └── outputs/            Generated images, organised by date
