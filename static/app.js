@@ -36,6 +36,10 @@ document.addEventListener('alpine:init', () => {
       width: 1024, height: 1024,
       strength: 0.6, shift: 3.0,
     },
+
+    // ── <lora:…> autocomplete in the prompt ─────────────────────
+    loraAC: { open: false, items: [], index: 0, start: -1 },
+
     inputImage: null,
     maskImage: null,
     dragKey: null,
@@ -420,6 +424,48 @@ document.addEventListener('alpine:init', () => {
     resizeTextareas() {
       this.$nextTick(() => {
         this.$root.querySelectorAll('textarea.autosize').forEach((el) => this.autogrow(el));
+      });
+    },
+
+    // ── <lora:…> autocomplete ───────────────────────────────────
+    // Typing `<` opens a list of available LoRAs; the fragment after the last
+    // unclosed `<` (optionally past a `lora:` prefix) filters it. Selecting one
+    // inserts `<lora:name:1.0>`. Names are the exact filenames the backend
+    // expects (see lora_path); the dropdown hides the .safetensors suffix.
+    loraLabel(name) {
+      return name.replace(/\.safetensors$/i, '');
+    },
+    loraAutocomplete(el) {
+      const before = el.value.slice(0, el.selectionStart);
+      const lt = before.lastIndexOf('<');
+      const m = lt === -1 ? null : before.slice(lt + 1).match(/^(?:lora:)?([^:>]*)$/i);
+      if (!m) { this.loraAC.open = false; return; }
+      const q = m[1].toLowerCase();
+      const items = this.loras.filter((n) => n.toLowerCase().includes(q));
+      if (!items.length) { this.loraAC.open = false; return; }
+      Object.assign(this.loraAC, { open: true, items, index: 0, start: lt });
+    },
+    loraKeydown(e) {
+      const ac = this.loraAC;
+      if (!ac.open) return;
+      const n = ac.items.length;
+      if (e.key === 'ArrowDown') { e.preventDefault(); ac.index = (ac.index + 1) % n; }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); ac.index = (ac.index - 1 + n) % n; }
+      else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); this.applyLora(ac.items[ac.index]); }
+      else if (e.key === 'Escape') { e.preventDefault(); ac.open = false; }
+    },
+    applyLora(name) {
+      const el = this.$refs.promptEl;
+      const before = el.value.slice(0, this.loraAC.start);
+      const after = el.value.slice(el.selectionStart);
+      const insert = `<lora:${name}:1.0>`;
+      this.form.prompt = before + insert + after;
+      this.loraAC.open = false;
+      this.$nextTick(() => {
+        const caret = before.length + insert.length;
+        el.focus();
+        el.setSelectionRange(caret, caret);
+        this.autogrow(el);
       });
     },
 

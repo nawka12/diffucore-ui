@@ -124,11 +124,19 @@
           <button :class="{active: mode==='inpaint'}" @click="mode='inpaint'">inpaint</button>
         </div>
 
-        <label class="field">
+        <label class="field lora-ac-wrap" @click.outside="loraAC.open=false">
           <span>Prompt</span>
-          <textarea class="autosize" x-model="form.prompt" rows="3"
-                    x-effect="autogrow($el, form.prompt)" @input="autogrow($el)"
+          <textarea class="autosize" x-model="form.prompt" rows="3" x-ref="promptEl"
+                    x-effect="autogrow($el, form.prompt)"
+                    @input="autogrow($el); loraAutocomplete($el)"
+                    @keydown="loraKeydown($event)"
                     placeholder="a watercolor fox in a misty forest"></textarea>
+          <ul class="lora-ac" x-show="loraAC.open" @mousedown.prevent>
+            <template x-for="(name, i) in loraAC.items" :key="name">
+              <li :class="{active: i===loraAC.index}" @click="applyLora(name)"
+                  @mouseenter="loraAC.index=i" x-text="loraLabel(name)"></li>
+            </template>
+          </ul>
         </label>
         <label class="field">
           <span>Negative prompt</span>
