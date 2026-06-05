@@ -136,6 +136,10 @@ class CancelPayload(BaseModel):
     job: Optional[int] = None        # None = cancel whatever is currently running
 
 
+class ParseTextPayload(BaseModel):
+    text: str = ""
+
+
 # ── helpers ─────────────────────────────────────────────────────────
 
 def _decode_image(data: str) -> Image.Image:
@@ -709,6 +713,14 @@ async def api_metadata_parse(file: UploadFile = File(...)):
         fields = md.workspace_fields(md.parse_comfyui_metadata(comfyui))
 
     return {"text": "\n".join(lines), "fields": fields}
+
+
+@app.post("/api/metadata/parse_text")
+def api_metadata_parse_text(p: ParseTextPayload):
+    """Parse a pasted AUTO1111-style ``parameters`` string into workspace
+    fields — the same path as a gallery image, but for text dropped straight
+    into the prompt box (SD WebUI's read-generation-parameters)."""
+    return {"fields": md.workspace_fields(md.parse_metadata(p.text))}
 
 
 # Static mounts (declared last so /api routes win).

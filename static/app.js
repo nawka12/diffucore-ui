@@ -874,6 +874,7 @@ document.addEventListener('alpine:init', () => {
       }
       this.maskImage = null;
       this.maskPainted = false;
+      this.applyFields(this.selectedFields);
       this.mode = mode;
       this.closeLightbox();
       this.tab = 'generate';
@@ -910,6 +911,31 @@ document.addEventListener('alpine:init', () => {
       const keys = ['prompt', 'neg', 'steps', 'cfg', 'sampler', 'scheduler',
                     'seed', 'shift', 'strength', 'width', 'height'];
       for (const k of keys) if (f[k] !== undefined) this.form[k] = f[k];
+    },
+
+    // Parse AUTO1111-style parameters pasted into the prompt box and apply them
+    // to the form (prompt/negative/settings), like SD WebUI's read-params arrow.
+    async importFromPrompt() {
+      const text = this.form.prompt;
+      if (!text || !text.trim()) { this.flash('Paste generation parameters into the prompt first'); return; }
+      try {
+        const r = await (await fetch('/api/metadata/parse_text', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        })).json();
+        // workspace_fields always echoes a default seed, so "has params" means
+        // an actual settings key was parsed — not just prompt/neg/seed.
+        const f = r.fields || {};
+        const hasSettings = ['steps', 'cfg', 'sampler', 'scheduler', 'width', 'height', 'strength', 'shift']
+          .some((k) => f[k] !== undefined);
+        if (!hasSettings) { this.flash('No generation parameters found'); return; }
+        this.applyFields(f);
+        this.resizeTextareas();
+        this.flash('Imported generation settings');
+      } catch (e) {
+        this.flash('Could not parse: ' + e);
+      }
     },
 
     // ── toast ───────────────────────────────────────────────────

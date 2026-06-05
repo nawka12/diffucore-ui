@@ -125,7 +125,10 @@
         </div>
 
         <label class="field lora-ac-wrap" @click.outside="loraAC.open=false">
-          <span>Prompt</span>
+          <span class="prompt-head">Prompt
+            <button type="button" class="btn small" @click="importFromPrompt()"
+                    title="Read AUTO1111 generation parameters pasted into the prompt box">Import params ↙</button>
+          </span>
           <textarea class="autosize" x-model="form.prompt" rows="3" x-ref="promptEl"
                     x-effect="autogrow($el, form.prompt)"
                     @input="autogrow($el); loraAutocomplete($el)"

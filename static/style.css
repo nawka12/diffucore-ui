@@ -621,6 +621,8 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 }
 .detail-model-head { display: flex; align-items: center; justify-content: space-between; }
 .detail-model-head .btn { margin-top: 0; }
+.field > span.prompt-head { display: flex; align-items: center; justify-content: space-between; }
+.prompt-head .btn { margin-top: 0; }
 .axis { display: flex; flex-direction: column; gap: 6px; }
 .axis-label {
   font-size: 11px;
