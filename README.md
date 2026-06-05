@@ -155,6 +155,31 @@ or clear the mask to start over.
 
 LoRAs can be activated inline: `a castle in autumn, <lora:autumn_style:0.8>`.
 
+### Working with Anima
+
+Anima is an LLM-conditioned DiT, and its `shift = 3` flow schedule makes a few
+settings behave differently from SD/SDXL. Three things worth knowing — none are
+bugs, just how the model responds:
+
+- **Write detailed prompts.** Anima conditions on a language model (Qwen3 +
+  T5-XXL) trained on long, descriptive captions, so short tag-style prompts give
+  weak guidance and drifty, low-quality results. Describe the whole scene in
+  natural language, not just keywords. This matters most in img2img and inpaint,
+  where the prompt has to carry more of the image.
+
+- **img2img strength is more aggressive than the number suggests.** The
+  `shift = 3` schedule front-loads noise, so a given strength injects far more
+  than the same value on SD/SDXL — around `0.6` already noises away most of the
+  input's structure. To restyle while keeping the composition, use a **low
+  strength (~0.2–0.4)** and a detailed prompt; reserve higher values for
+  near-full regeneration. If img2img seems to "lose" your input, lower the
+  strength.
+
+- **Inpaint wants high denoise.** Anima has no dedicated inpaint conditioning, so
+  at partial denoise the original content bleeds into the masked region and
+  ghosts through the fill. For a clean repaint use **denoise ~0.9–1.0**; drop to
+  ~0.35–0.45 only for subtle, structure-preserving edits.
+
 ### Detailer (after generate)
 
 Enable **Detailer** in the Generate view to run an ADetailer-style refinement
