@@ -237,6 +237,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                         dilation=int(p.detail_dilation), padding=int(p.detail_padding),
                         blur=int(p.detail_blur), max_det=int(p.detail_max),
                         seed=int(p.seed), progress_callback=on_progress,
+                        preview_callback=on_preview if p.preview else None,
                     )
                     notes.append(f"{dm.model}: {dnote.replace('Detailer: ', '')}")
                 except Exception as e:  # noqa: BLE001 — keep current image on a pass failure

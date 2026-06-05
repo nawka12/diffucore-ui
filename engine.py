@@ -723,6 +723,7 @@ class Engine:
         max_det: int = 0,
         seed: int = -1,
         progress_callback: Callable[[int, int], None] | None = None,
+        preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
         """Detect regions with a YOLO model, then inpaint each one at the model's
         native resolution and composite it back — the same idea as ADetailer, but
@@ -758,6 +759,10 @@ class Engine:
         result = image.convert("RGB")
         W, H = result.size
         gen = Inpaint(self._loaded.model)
+        # Show each region's crop being refined in the live preview (shared
+        # throttle across regions). The crop denoises at native res, so the
+        # preview shows just the region, not the full image.
+        preview_cb = self._make_preview_cb(preview_callback) if preview_callback else None
         try:
             for i, (bbox, _conf) in enumerate(dets):
                 mask = dilate_mask(bbox_to_mask(bbox, (W, H)), dilation)
@@ -778,7 +783,8 @@ class Engine:
                     negative_prompt=negative_prompt, strength=strength,
                     steps=steps, cfg_scale=cfg_scale, sampler=sampler,
                     scheduler=scheduler, seed=base_seed + i,
-                    progress_callback=sub_cb, return_info=True,
+                    progress_callback=sub_cb, preview_callback=preview_cb,
+                    return_info=True,
                 )
                 out = out.resize(crop.size, Image.LANCZOS)
                 alpha = crop_mask.filter(ImageFilter.GaussianBlur(blur)) if blur else crop_mask
