@@ -61,6 +61,13 @@ document.addEventListener('alpine:init', () => {
     info: '',
     lastSeed: -1,
 
+    // ── shared queue (broadcast over /api/events to every device) ──
+    queue: [],            // [{id, kind, label, status}] — running first, then pending
+    runningJob: null,     // id of the job currently on the GPU (any device)
+    runProg: { step: 0, total: 0 },  // progress of the running job (for the queue panel)
+    myJobId: null,        // id of the job THIS device submitted and is watching
+    _jobWaiters: {},      // id -> resolve fn, fulfilled by the terminal SSE event
+
     // ── OSS calibration ─────────────────────────────────────────
     calibrating: false,
     ossCalibrated: null,          // null = unknown, true/false = checked
@@ -68,6 +75,7 @@ document.addEventListener('alpine:init', () => {
 
     // ── gallery ─────────────────────────────────────────────────
     gallery: [],
+    galleryGroups: [],
     selected: null,
     selectedMeta: '',
     selectedFields: {},
@@ -138,6 +146,82 @@ document.addEventListener('alpine:init', () => {
     // ── init ────────────────────────────────────────────────────
     async init() {
       await this.refreshModels();
+      this.connectEvents();
+    },
+
+    // ── shared events (one SSE stream per device) ───────────────
+    connectEvents() {
+      const es = new EventSource('/api/events');
+      es.onmessage = (e) => this.onServerEvent(JSON.parse(e.data));
+      // On error the browser auto-reconnects; the fresh snapshot re-syncs us.
+    },
+
+    onServerEvent(ev) {
+      switch (ev.type) {
+        case 'snapshot':
+          this.applyState(ev);
+          this.queue = ev.jobs; this.runningJob = ev.running;
+          if (ev.progress) this.runProg = { step: ev.progress.step, total: ev.progress.total };
+          break;
+        case 'queue':
+          this.queue = ev.jobs; this.runningJob = ev.running;
+          break;
+        case 'status':
+          this.applyState(ev);
+          break;
+        case 'progress':
+          // Running-job progress feeds the queue panel; the main bar only
+          // tracks THIS device's own job, so a queued device isn't shown
+          // another device's progress.
+          this.runProg = { step: ev.step, total: ev.total };
+          if (ev.job === this.myJobId) this.progress = { step: ev.step, total: ev.total };
+          break;
+        case 'preview':
+          if (ev.job === this.myJobId) this.previewUrl = ev.image;
+          break;
+        case 'done':
+        case 'error':
+        case 'cancelled': {
+          const w = this._jobWaiters[ev.job];
+          if (w) { delete this._jobWaiters[ev.job]; w(ev); }
+          break;
+        }
+      }
+    },
+
+    // Submit a job, then resolve once its terminal event arrives on the stream.
+    // Live progress/preview are handled globally by onServerEvent.
+    async submitJob(url, payload) {
+      const r = await (await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })).json();
+      this.myJobId = r.job;
+      return new Promise((resolve) => { this._jobWaiters[r.job] = resolve; });
+    },
+
+    // Reflect server-side model-load state (shared across devices/refresh).
+    applyState(s) {
+      this.status = s.status;
+      this.modelLoaded = !!s.loaded;
+      if (s.last_seed !== undefined) this.lastSeed = s.last_seed;
+      if (s.load_form) this.restoreLoadForm(s.load_form);
+    },
+
+    restoreLoadForm(f) {
+      this.modelType = f.model_type;
+      if (f.model_type === 'FLUX') this.fluxCheckpoint = f.checkpoint || '';
+      else if (f.checkpoint) this.checkpoint = f.checkpoint;
+      if (f.dit) this.dit = f.dit;
+      if (f.vae) this.vae = f.vae;
+      if (f.te) this.te = f.te;
+      if (f.clip) this.clip = f.clip;
+      if (f.offload) this.perf.offload = f.offload;
+      this.perf.compile = !!f.compile;
+      this.perf.cudaGraphs = !!f.cuda_graphs;
+      this.perf.channelsLast = !!f.channels_last;
+      this.syncSampler();
+      this.syncScheduler();
     },
 
     async refreshModels() {
@@ -152,8 +236,6 @@ document.addEventListener('alpine:init', () => {
       this.schedulersAnima = m.schedulers_anima;
       this.schedulersFlux = m.schedulers_flux;
       this.paramTypes = m.xyz_param_types;
-      this.status = m.status;
-      this.lastSeed = m.last_seed;
       this.recommendedOffload = m.recommended_offload || 'full';
       this.perf.offload = this.recommendedOffload;
       this.uiId = m.ui_id; this.diffId = m.diff_id;
@@ -165,6 +247,9 @@ document.addEventListener('alpine:init', () => {
       this.detail.models[0].model = this.detailerChoices[0];
       this.syncSampler();
       this.syncScheduler();
+      // Hydrate from server-side load state last, so a model already loaded by
+      // another device (or before a refresh) restores its exact selections.
+      this.applyState(m);
     },
 
     setModelType(type) {
@@ -216,18 +301,25 @@ document.addEventListener('alpine:init', () => {
           cuda_graphs: this.perf.cudaGraphs,
           channels_last: this.perf.channelsLast,
         };
-        const r = await (await fetch('/api/load', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        })).json();
-        this.status = r.status;
-        this.modelLoaded = /^(Loaded|Model already loaded)/.test(r.status);
-        if (!this.modelLoaded) this.flash(r.status);
+        // Load is queued like any job; it waits for a running generation to
+        // finish. The server also broadcasts the new state to every device.
+        const ev = await this.submitJob('/api/load', body);
+        if (ev.type === 'done') {
+          this.status = ev.status;
+          this.modelLoaded = !!ev.loaded;
+          if (!this.modelLoaded) this.flash(ev.status);
+        } else if (ev.type === 'cancelled') {
+          this.status = 'Load cancelled';
+        } else if (ev.type === 'error') {
+          this.status = 'Error: ' + ev.message;
+          this.flash(ev.message);
+        }
       } catch (e) {
         this.status = 'Error: ' + e;
         this.flash('' + e);
       } finally {
         this.loadingModel = false;
+        this.myJobId = null;
       }
     },
 
@@ -331,30 +423,6 @@ document.addEventListener('alpine:init', () => {
       });
     },
 
-    // ── ndjson streaming ────────────────────────────────────────
-    async stream(url, payload, onEvent) {
-      const res = await fetch(url, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let nl;
-        while ((nl = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (line) onEvent(JSON.parse(line));
-        }
-      }
-      buf = buf.trim();
-      if (buf) onEvent(JSON.parse(buf));
-    },
-
     // ── generate ────────────────────────────────────────────────
     runGenerate() {
       return this.sweeping ? this.generateXyz() : this.generate();
@@ -403,42 +471,43 @@ document.addEventListener('alpine:init', () => {
           detail_blur: this.detail.blur,
           detail_max: this.detail.maxDet,
         };
-        await this.stream('/api/generate', payload, (ev) => {
-          if (ev.type === 'progress') {
-            this.progress = { step: ev.step, total: ev.total };
-          } else if (ev.type === 'preview') {
-            this.previewUrl = ev.image;
-          } else if (ev.type === 'done') {
-            this.previewUrl = null;
-            this.resultUrl = ev.image_url + '?t=' + Date.now();
-            this.info = ev.info;
-            this.lastSeed = ev.seed;
-          } else if (ev.type === 'cancelled') {
-            this.previewUrl = null;
-            this.info = 'Cancelled';
-          } else if (ev.type === 'error') {
-            this.info = 'Error: ' + ev.message;
-            this.flash(ev.message);
-          }
-        });
+        // Progress + preview arrive on the shared stream; we await the result.
+        const ev = await this.submitJob('/api/generate', payload);
+        if (ev.type === 'done') {
+          this.previewUrl = null;
+          this.resultUrl = ev.image_url + '?t=' + Date.now();
+          this.info = ev.info;
+          this.lastSeed = ev.seed;
+        } else if (ev.type === 'cancelled') {
+          this.previewUrl = null;
+          this.info = 'Cancelled';
+        } else if (ev.type === 'error') {
+          this.info = 'Error: ' + ev.message;
+          this.flash(ev.message);
+        }
       } catch (e) {
         this.info = 'Error: ' + e;
       } finally {
         this.busy = false;
         this.cancelling = false;
         this.previewUrl = null;
+        this.myJobId = null;
       }
     },
 
-    // Ask the server to stop the running job at its next sampling step. The
-    // open stream then resolves with a `cancelled` event (or completes first).
-    async cancel() {
-      if (!this.busy || this.cancelling) return;
-      this.cancelling = true;
+    // Cancel a job by id (defaults to this device's running job). A running job
+    // stops at its next sampling step; a still-queued job is dropped.
+    async cancel(jobId) {
+      const id = jobId ?? this.myJobId ?? this.runningJob;
+      if (id == null) return;
+      if (id === this.myJobId) this.cancelling = true;
       try {
-        await fetch('/api/cancel', { method: 'POST' });
+        await fetch('/api/cancel', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job: id }),
+        });
       } catch (e) {
-        /* the stream still resolves; just drop the cancelling state below */
+        /* the stream still resolves; just drop the cancelling state */
       }
     },
 
@@ -459,24 +528,22 @@ document.addEventListener('alpine:init', () => {
         z_type: this.axes.z.type, z_vals: this.axisValues(this.axes.z),
       };
       try {
-        await this.stream('/api/xyz', payload, (ev) => {
-          if (ev.type === 'progress') {
-            this.progress = { step: ev.step, total: ev.total };
-          } else if (ev.type === 'done') {
-            this.xyzGrids = ev.grids;
-            this.xyzInfo = ev.info;
-          } else if (ev.type === 'cancelled') {
-            this.xyzInfo = 'Cancelled';
-          } else if (ev.type === 'error') {
-            this.xyzInfo = 'Error: ' + ev.message;
-            this.flash(ev.message);
-          }
-        });
+        const ev = await this.submitJob('/api/xyz', payload);
+        if (ev.type === 'done') {
+          this.xyzGrids = ev.grids;
+          this.xyzInfo = ev.info;
+        } else if (ev.type === 'cancelled') {
+          this.xyzInfo = 'Cancelled';
+        } else if (ev.type === 'error') {
+          this.xyzInfo = 'Error: ' + ev.message;
+          this.flash(ev.message);
+        }
       } catch (e) {
         this.xyzInfo = 'Error: ' + e;
       } finally {
         this.busy = false;
         this.cancelling = false;
+        this.myJobId = null;
       }
     },
 
@@ -502,7 +569,7 @@ document.addEventListener('alpine:init', () => {
       return this.modelType === 'Anima' && this.mode === 't2i' && this.form.scheduler === 'oss';
     },
 
-    // Stream a calibration job. Updates progress/status but does NOT own `busy`
+    // Queue a calibration job. Updates progress/status but does NOT own `busy`
     // — the caller does, so it can chain calibrate→generate under one spinner.
     // Returns true on success.
     async _streamCalibrate() {
@@ -511,24 +578,21 @@ document.addEventListener('alpine:init', () => {
       this.progress = { step: 0, total: 0 };
       let ok = false;
       try {
-        await this.stream('/api/calibrate_oss', {
+        const ev = await this.submitJob('/api/calibrate_oss', {
           prompt: this.form.prompt, neg: this.form.neg,
           steps: this.form.steps, cfg: this.form.cfg, seed: this.form.seed,
           width: this.form.width, height: this.form.height, shift: this.form.shift,
-        }, (ev) => {
-          if (ev.type === 'progress') {
-            this.progress = { step: ev.step, total: ev.total };
-          } else if (ev.type === 'done') {
-            this.ossInfo = ev.info;
-            this.ossCalibrated = true;
-            ok = true;
-          } else if (ev.type === 'cancelled') {
-            this.ossInfo = 'Cancelled';
-          } else if (ev.type === 'error') {
-            this.ossInfo = 'Error: ' + ev.message;
-            this.flash(ev.message);
-          }
         });
+        if (ev.type === 'done') {
+          this.ossInfo = ev.info;
+          this.ossCalibrated = true;
+          ok = true;
+        } else if (ev.type === 'cancelled') {
+          this.ossInfo = 'Cancelled';
+        } else if (ev.type === 'error') {
+          this.ossInfo = 'Error: ' + ev.message;
+          this.flash(ev.message);
+        }
       } catch (e) {
         this.ossInfo = 'Error: ' + e;
       } finally {
@@ -564,6 +628,33 @@ document.addEventListener('alpine:init', () => {
       this.selected = null;
       this.selectedMeta = '';
       this.gallery = (await (await fetch('/api/gallery')).json()).images;
+      this.buildGalleryGroups();
+    },
+
+    // Group the (date-desc) gallery list into day sections, carrying each
+    // image's flat index so the lightbox carousel still pages across all of them.
+    buildGalleryGroups() {
+      const groups = [];
+      let cur = null;
+      this.gallery.forEach((img, i) => {
+        if (!cur || cur.date !== img.date) {
+          cur = { date: img.date, label: this.dateLabel(img.date), images: [] };
+          groups.push(cur);
+        }
+        cur.images.push({ img, index: i });
+      });
+      this.galleryGroups = groups;
+    },
+
+    dateLabel(d) {
+      const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(d || '');
+      if (!m) return d || 'Unknown date';
+      const dt = new Date(+m[3], +m[2] - 1, +m[1]);
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const diff = Math.round((today - dt) / 86400000);
+      if (diff === 0) return 'Today';
+      if (diff === 1) return 'Yesterday';
+      return dt.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
     },
 
     async selectImage(img) {

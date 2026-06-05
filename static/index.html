@@ -381,6 +381,19 @@
           <div class="bar"><div class="fill" :style="`width:${progressPct}%`"></div></div>
           <span class="progress-label"><span x-show="calibrating">Calibrating (one-time) · </span><span x-text="progressLabel"></span></span>
         </div>
+
+        <!-- shared queue — visible to every device -->
+        <div class="queue" x-show="queue.length">
+          <template x-for="j in queue" :key="j.id">
+            <div class="queue-item" :class="{running: j.status==='running', mine: j.id===myJobId}">
+              <span class="queue-dot" x-text="j.status==='running' ? '●' : '◷'"></span>
+              <span class="queue-label" x-text="j.label"></span>
+              <span class="queue-prog" x-show="j.status==='running' && runProg.total"
+                    x-text="runProg.step + '/' + runProg.total"></span>
+              <button class="queue-x" @click="cancel(j.id)" title="Cancel">✕</button>
+            </div>
+          </template>
+        </div>
         <div class="canvas" :class="{stack: sweeping}">
           <template x-if="sweeping">
             <div class="grids">
@@ -401,14 +414,19 @@
       <div class="page-bar">
         <button class="btn" @click="openGallery()">Refresh</button>
       </div>
-      <div class="gallery-grid">
-        <template x-for="(img, i) in gallery" :key="img.url">
-          <div class="thumb" :class="{sel: selected && selected.url===img.url}" @click="openLightbox(i)">
-            <img :src="img.url" :alt="img.name" loading="lazy">
+      <template x-for="g in galleryGroups" :key="g.date">
+        <section class="gallery-day">
+          <h2 class="gallery-date" x-text="g.label"></h2>
+          <div class="gallery-grid">
+            <template x-for="item in g.images" :key="item.img.url">
+              <div class="thumb" :class="{sel: selected && selected.url===item.img.url}" @click="openLightbox(item.index)">
+                <img :src="item.img.url" :alt="item.img.name" loading="lazy">
+              </div>
+            </template>
           </div>
-        </template>
-        <p class="placeholder" x-show="gallery.length===0">No outputs yet.</p>
-      </div>
+        </section>
+      </template>
+      <p class="placeholder" x-show="gallery.length===0">No outputs yet.</p>
     </section>
 
     <!-- ── METADATA ───────────────────────────────────────────── -->

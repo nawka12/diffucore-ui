@@ -432,6 +432,36 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   color: var(--teal);
 }
 
+/* ── shared job queue ─────────────────────────────────────────── */
+.queue { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  font-size: 12px;
+  color: var(--txt-2);
+}
+.queue-item.running { border-color: var(--accent); }
+.queue-item.mine .queue-label { color: var(--txt); }
+.queue-dot { color: var(--txt-3); font-size: 10px; }
+.queue-item.running .queue-dot { color: var(--accent); }
+.queue-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-prog { font-family: var(--mono); color: var(--teal); }
+.queue-x {
+  background: none;
+  border: none;
+  color: var(--txt-3);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+  line-height: 1;
+}
+.queue-x:hover { color: var(--accent); }
+
 /* ── dropzones ────────────────────────────────────────────────── */
 .drop {
   display: flex;
@@ -469,6 +499,15 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 
 /* ── gallery ──────────────────────────────────────────────────── */
 .page-bar { display: flex; gap: 10px; margin-bottom: 16px; }
+.gallery-day { margin-bottom: 24px; }
+.gallery-date {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--txt-2);
+  margin: 0 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
 .gallery-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));

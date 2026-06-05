@@ -1,8 +1,11 @@
 """FastAPI web layer for Diffucore.
 
 Wraps the framework-agnostic ``ENGINE`` singleton. Generation is blocking torch
-code, so it runs in a threadpool while sampling progress is streamed back to the
-browser as newline-delimited JSON (one job at a time, guarded by ``GEN_LOCK``).
+code, so jobs (generate / xyz / calibrate / load) are queued and run one at a
+time on a single background worker thread. Every connected device subscribes to
+one shared Server-Sent-Events stream (``/api/events``); queue changes, sampling
+progress, live previews, and model-load status are broadcast to all of them, so
+a second device — or a refresh — stays in sync without reloading the model.
 """
 
 from __future__ import annotations
@@ -10,13 +13,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import itertools
 import json
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -34,14 +39,6 @@ import metadata as md
 
 _ROOT = Path(__file__).resolve().parent
 _STATIC = _ROOT / "static"
-
-# Only one generation may touch the GPU at a time.
-GEN_LOCK = threading.Lock()
-
-# Set by /api/cancel; checked in the progress callback to abort the running job
-# at its next sampling step. Cleared by the worker before each job starts.
-CANCEL_EVENT = threading.Event()
-
 
 class _Cancelled(BaseException):
     """Raised from the progress callback to unwind a running generation.
@@ -132,6 +129,10 @@ class XYZPayload(BaseModel):
     y_vals: str = ""
     z_type: str = "None"
     z_vals: str = ""
+
+
+class CancelPayload(BaseModel):
+    job: Optional[int] = None        # None = cancel whatever is currently running
 
 
 # ── helpers ─────────────────────────────────────────────────────────
@@ -288,58 +289,132 @@ def _run_calibrate(p: CalibratePayload, on_progress: Callable[[int, int], None])
     return {"info": info}
 
 
-# ── streaming wrapper ───────────────────────────────────────────────
+# ── job queue + SSE broadcast ───────────────────────────────────────
+# A single background worker runs jobs one at a time (the GPU can only do one),
+# so the worker thread itself is the serialization — no lock needed. Every
+# device subscribes to one shared SSE stream and sees the same queue + progress.
 
-async def _stream_job(work_fn: Callable[..., dict]) -> StreamingResponse:
-    """Run ``work_fn(on_progress, on_preview)`` on a worker thread; stream
-    progress + preview frames + result as ndjson."""
-    loop = asyncio.get_running_loop()
-    q: asyncio.Queue = asyncio.Queue()
+_job_ids = itertools.count(1)
 
+
+class Job:
+    def __init__(self, kind: str, label: str, run: Callable[["Job"], dict]):
+        self.id = next(_job_ids)
+        self.kind = kind            # generate | xyz | calibrate | load
+        self.label = label          # short human description for the queue list
+        self.run = run              # run(job) -> result dict; may raise _Cancelled
+        self.status = "queued"      # queued | running | done | error | cancelled
+        self.cancel = threading.Event()
+        self.step = 0               # live progress, for snapshots on (re)connect
+        self.total = 0
+
+
+QUEUE: "deque[Job]" = deque()
+QUEUE_LOCK = threading.Lock()
+QUEUE_WAKE = threading.Event()
+CURRENT: Optional[Job] = None
+
+# One asyncio.Queue per connected SSE client; the worker fans events out to all.
+SUBSCRIBERS: "set[asyncio.Queue]" = set()
+APP_LOOP: Optional[asyncio.AbstractEventLoop] = None
+
+# The last successful /api/load payload, so a fresh device can restore the exact
+# checkpoint/DiT/VAE/offload selections (not just "a model is loaded").
+LAST_LOAD_FORM: Optional[dict] = None
+
+
+def _push(ev: dict) -> None:
+    """Fan one event out to every connected SSE client. Thread-safe: callable
+    from the worker thread or a request handler."""
+    loop = APP_LOOP
+    if loop is None:
+        return
+    def deliver():
+        for q in list(SUBSCRIBERS):
+            q.put_nowait(ev)
+    loop.call_soon_threadsafe(deliver)
+
+
+def _state_payload() -> dict:
+    """Model-load state shared on connect and after every load."""
+    return {
+        "status": ENGINE.status_text(),
+        "loaded": bool(ENGINE.loaded_name),
+        "load_form": LAST_LOAD_FORM,
+        "last_seed": ENGINE.last_seed,
+    }
+
+
+def _queue_list() -> list:
+    with QUEUE_LOCK:
+        jobs = ([CURRENT] if CURRENT else []) + list(QUEUE)
+        return [{"id": j.id, "kind": j.kind, "label": j.label, "status": j.status}
+                for j in jobs]
+
+
+def _broadcast_queue() -> None:
+    _push({"type": "queue", "jobs": _queue_list(),
+           "running": CURRENT.id if CURRENT else None})
+
+
+def _make_callbacks(job: Job):
     def on_progress(step, total):
-        if CANCEL_EVENT.is_set():
-            raise _Cancelled  # unwinds the sampler; caught in worker()
-        loop.call_soon_threadsafe(
-            q.put_nowait, {"type": "progress", "step": int(step), "total": int(total)},
-        )
+        if job.cancel.is_set():
+            raise _Cancelled  # unwinds the sampler; caught in the worker
+        job.step, job.total = int(step), int(total)
+        _push({"type": "progress", "job": job.id, "step": int(step), "total": int(total)})
 
     def on_preview(image):
-        # Runs on the worker thread: encode the approx preview to a PNG data-URL
-        # here (off the event loop), then hand the small string to the queue.
+        # Encode the approx preview to a PNG data-URL on the worker thread, then
+        # hand the small string to the broadcaster.
         buf = io.BytesIO()
         image.save(buf, format="PNG")
         data = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-        loop.call_soon_threadsafe(q.put_nowait, {"type": "preview", "image": data})
+        _push({"type": "preview", "job": job.id, "image": data})
 
-    def worker():
-        if not GEN_LOCK.acquire(blocking=False):
-            loop.call_soon_threadsafe(
-                q.put_nowait, {"type": "error", "message": "Busy — another job is running"},
-            )
-            loop.call_soon_threadsafe(q.put_nowait, None)
-            return
-        CANCEL_EVENT.clear()  # drop any stale cancel before this job starts
+    return on_progress, on_preview
+
+
+def _enqueue(job: Job) -> None:
+    with QUEUE_LOCK:
+        QUEUE.append(job)
+    QUEUE_WAKE.set()
+    _broadcast_queue()
+
+
+def _worker() -> None:
+    global CURRENT
+    while True:
+        with QUEUE_LOCK:
+            CURRENT = QUEUE.popleft() if QUEUE else None
+        job = CURRENT
+        if job is None:
+            QUEUE_WAKE.wait()       # sleep until something is enqueued
+            QUEUE_WAKE.clear()
+            continue
+        if job.cancel.is_set():     # cancelled while still queued
+            job.status = "cancelled"
+            with QUEUE_LOCK:
+                CURRENT = None
+            _push({"type": "cancelled", "job": job.id})
+            _broadcast_queue()
+            continue
+        job.status = "running"
+        _broadcast_queue()
         try:
-            result = work_fn(on_progress, on_preview)
-            loop.call_soon_threadsafe(q.put_nowait, {"type": "done", **result})
+            result = job.run(job)
+            job.status = "done"
+            _push({"type": "done", "job": job.id, **result})
         except _Cancelled:
-            loop.call_soon_threadsafe(q.put_nowait, {"type": "cancelled"})
+            job.status = "cancelled"
+            _push({"type": "cancelled", "job": job.id})
         except Exception as e:  # noqa: BLE001 — surface any engine error to the UI
-            loop.call_soon_threadsafe(q.put_nowait, {"type": "error", "message": str(e)})
+            job.status = "error"
+            _push({"type": "error", "job": job.id, "message": str(e)})
         finally:
-            GEN_LOCK.release()
-            loop.call_soon_threadsafe(q.put_nowait, None)
-
-    loop.run_in_executor(None, worker)
-
-    async def events():
-        while True:
-            ev = await q.get()
-            if ev is None:
-                break
-            yield json.dumps(ev) + "\n"
-
-    return StreamingResponse(events(), media_type="application/x-ndjson")
+            with QUEUE_LOCK:
+                CURRENT = None
+            _broadcast_queue()
 
 
 # ── app ─────────────────────────────────────────────────────────────
@@ -347,6 +422,15 @@ async def _stream_job(work_fn: Callable[..., dict]) -> StreamingResponse:
 app = FastAPI(title="Diffucore")
 print(f"[startup] offload default '{ENGINE.recommended_offload()}' "
       f"(device: {ENGINE.device})")
+
+
+@app.on_event("startup")
+async def _startup():
+    # Capture the event loop so the worker thread can broadcast SSE events, then
+    # start the single job worker.
+    global APP_LOOP
+    APP_LOOP = asyncio.get_running_loop()
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 @app.get("/")
@@ -371,6 +455,8 @@ def api_models():
         "schedulers_flux": SCHEDULERS_FLUX,
         "xyz_param_types": XYZ_PARAM_TYPES,
         "status": ENGINE.status_text(),
+        "loaded": bool(ENGINE.loaded_name),
+        "load_form": LAST_LOAD_FORM,
         "last_seed": ENGINE.last_seed,
         "recommended_offload": ENGINE.recommended_offload(),
         "ui_id": md.UI_ID,
@@ -383,90 +469,148 @@ def api_status():
     return {"status": ENGINE.status_text(), "last_seed": ENGINE.last_seed}
 
 
-@app.post("/api/load")
-async def api_load(p: LoadPayload):
-    def work():
-        # Offload: explicit UI choice, else the per-family default. FLUX's ~23 GB
-        # transformer OOMs under whole-module staging (full), so it defaults to
-        # "stream" block-streaming — the only mode that fits a 24 GB card. "stream"
-        # is FLUX-only (it streams the DiT blocks); full/encoders/none work for all.
-        if p.offload is None:
-            offload = "stream" if p.model_type == "FLUX" else True
-        else:
-            offload = {"none": False, "full": True,
-                       "encoders": "encoders", "stream": "stream"}.get(p.offload, True)
+def _do_load(p: LoadPayload) -> str:
+    # Offload: explicit UI choice, else the per-family default. FLUX's ~23 GB
+    # transformer OOMs under whole-module staging (full), so it defaults to
+    # "stream" block-streaming — the only mode that fits a 24 GB card. "stream"
+    # is FLUX-only (it streams the DiT blocks); full/encoders/none work for all.
+    if p.offload is None:
+        offload = "stream" if p.model_type == "FLUX" else True
+    else:
+        offload = {"none": False, "full": True,
+                   "encoders": "encoders", "stream": "stream"}.get(p.offload, True)
 
-        if p.model_type == "Anima":
-            for name in (p.dit, p.vae, p.te):
-                if not name or name.startswith("("):
-                    return "Select all three Anima files"
-            return ENGINE.load_anima(
-                p.dit, p.vae, p.te,
-                offload=offload, vae_tile=True,
-                compile=p.compile, cuda_graphs=p.cuda_graphs,
-            )
-        if p.model_type == "FLUX":
-            # All-in-one checkpoint takes precedence; otherwise load split files.
-            if p.checkpoint and not p.checkpoint.startswith("("):
-                return ENGINE.load_model(
-                    p.checkpoint, offload=offload, vae_tile=True,
-                    compile=p.compile, cuda_graphs=p.cuda_graphs,
-                )
-            for name in (p.dit, p.vae, p.te):
-                if not name or name.startswith("("):
-                    return "Select an all-in-one checkpoint, or DiT + VAE + Text encoder"
-            return ENGINE.load_flux(
-                p.dit, p.vae, p.te, clip_name=p.clip,
-                offload=offload, vae_tile=True,
-                compile=p.compile, cuda_graphs=p.cuda_graphs,
-            )
-        if not p.checkpoint or p.checkpoint.startswith("("):
-            return "Select a model"
-        return ENGINE.load_model(
-            p.checkpoint,
+    if p.model_type == "Anima":
+        for name in (p.dit, p.vae, p.te):
+            if not name or name.startswith("("):
+                return "Select all three Anima files"
+        return ENGINE.load_anima(
+            p.dit, p.vae, p.te,
             offload=offload, vae_tile=True,
             compile=p.compile, cuda_graphs=p.cuda_graphs,
-            channels_last=p.channels_last,
         )
+    if p.model_type == "FLUX":
+        # All-in-one checkpoint takes precedence; otherwise load split files.
+        if p.checkpoint and not p.checkpoint.startswith("("):
+            return ENGINE.load_model(
+                p.checkpoint, offload=offload, vae_tile=True,
+                compile=p.compile, cuda_graphs=p.cuda_graphs,
+            )
+        for name in (p.dit, p.vae, p.te):
+            if not name or name.startswith("("):
+                return "Select an all-in-one checkpoint, or DiT + VAE + Text encoder"
+        return ENGINE.load_flux(
+            p.dit, p.vae, p.te, clip_name=p.clip,
+            offload=offload, vae_tile=True,
+            compile=p.compile, cuda_graphs=p.cuda_graphs,
+        )
+    if not p.checkpoint or p.checkpoint.startswith("("):
+        return "Select a model"
+    return ENGINE.load_model(
+        p.checkpoint,
+        offload=offload, vae_tile=True,
+        compile=p.compile, cuda_graphs=p.cuda_graphs,
+        channels_last=p.channels_last,
+    )
 
-    def locked_work():
-        # Loading swaps the single in-memory model; never do it while a generation
-        # is using that model. Same lock the generators take — refuse if it's held.
-        if not GEN_LOCK.acquire(blocking=False):
-            return "Busy — finish the running generation first"
-        try:
-            return work()
-        finally:
-            GEN_LOCK.release()
 
-    try:
-        status = await asyncio.to_thread(locked_work)
-    except Exception as e:  # noqa: BLE001
-        status = f"Error: {e}"
-    return {"status": status}
+@app.post("/api/load")
+async def api_load(p: LoadPayload):
+    """Queue a model load. Loading swaps the single in-memory model, so it runs
+    on the same worker as generation — it simply waits its turn instead of being
+    refused. On success the new load state is broadcast to every device."""
+    def run(job: Job) -> dict:
+        global LAST_LOAD_FORM
+        status = _do_load(p)
+        if status.startswith(("Loaded", "Model already loaded")):
+            LAST_LOAD_FORM = p.dict()
+        _push({"type": "status", **_state_payload()})
+        return {"status": status, "loaded": bool(ENGINE.loaded_name)}
+
+    job = Job("load", f"load {p.model_type}", run)
+    _enqueue(job)
+    return {"job": job.id}
 
 
 @app.post("/api/generate")
 async def api_generate(p: GeneratePayload):
-    return await _stream_job(lambda cb, pv: _run_generation(p, cb, pv))
-
-
-@app.post("/api/cancel")
-def api_cancel():
-    """Signal the running job to stop at its next sampling step."""
-    running = GEN_LOCK.locked()
-    CANCEL_EVENT.set()
-    return {"cancelling": running}
+    def run(job: Job) -> dict:
+        on_progress, on_preview = _make_callbacks(job)
+        return _run_generation(p, on_progress, on_preview)
+    job = Job("generate", f"{p.mode} {p.width}×{p.height} · {p.steps} steps", run)
+    _enqueue(job)
+    return {"job": job.id}
 
 
 @app.post("/api/xyz")
 async def api_xyz(p: XYZPayload):
-    return await _stream_job(lambda cb, pv: _run_xyz(p, cb))
+    def run(job: Job) -> dict:
+        on_progress, _ = _make_callbacks(job)
+        return _run_xyz(p, on_progress)
+    job = Job("xyz", "x/y/z grid", run)
+    _enqueue(job)
+    return {"job": job.id}
 
 
 @app.post("/api/calibrate_oss")
 async def api_calibrate_oss(p: CalibratePayload):
-    return await _stream_job(lambda cb, pv: _run_calibrate(p, cb))
+    def run(job: Job) -> dict:
+        on_progress, _ = _make_callbacks(job)
+        return _run_calibrate(p, on_progress)
+    job = Job("calibrate", "OSS calibrate", run)
+    _enqueue(job)
+    return {"job": job.id}
+
+
+@app.post("/api/cancel")
+def api_cancel(p: CancelPayload):
+    """Cancel a job by id. A running job aborts at its next sampling step; a
+    still-queued job is dropped from the queue. ``job=None`` targets whatever is
+    currently running."""
+    with QUEUE_LOCK:
+        target = CURRENT if p.job is None else None
+        if p.job is not None:
+            if CURRENT and CURRENT.id == p.job:
+                target = CURRENT
+            else:
+                target = next((j for j in QUEUE if j.id == p.job), None)
+        queued = target is not None and target in QUEUE
+        if queued:
+            QUEUE.remove(target)
+    if target is None:
+        return {"cancelling": False}
+    target.cancel.set()
+    if queued:  # never ran — report its cancellation now
+        target.status = "cancelled"
+        _push({"type": "cancelled", "job": target.id})
+        _broadcast_queue()
+    return {"cancelling": True}
+
+
+@app.get("/api/events")
+async def api_events(request: Request):
+    """Shared SSE stream: queue changes, progress, previews, and model status
+    are broadcast here to every connected device."""
+    q: asyncio.Queue = asyncio.Queue()
+    SUBSCRIBERS.add(q)
+    snapshot = {"type": "snapshot", **_state_payload(),
+                "jobs": _queue_list(), "running": CURRENT.id if CURRENT else None}
+    if CURRENT:
+        snapshot["progress"] = {"job": CURRENT.id, "step": CURRENT.step, "total": CURRENT.total}
+    await q.put(snapshot)
+
+    async def gen():
+        try:
+            while True:
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=15)
+                    yield "data: " + json.dumps(ev) + "\n\n"
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"   # keep-alive; also surfaces disconnects
+        finally:
+            SUBSCRIBERS.discard(q)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @app.get("/api/oss_status")
@@ -481,6 +625,7 @@ def api_gallery():
             "url": _output_url(f),
             "name": f.name,
             "path": f.relative_to(OUTPUTS_DIR).as_posix(),
+            "date": f.parent.name,
         }
         for f in scan_outputs()
     ]}
