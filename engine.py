@@ -252,16 +252,34 @@ class Engine:
 
     # ── model loading ──────────────────────────────────────────────
 
+    def _settings_match(
+        self, offload: bool | str, vae_tile: bool, compile: bool,
+        cuda_graphs: bool, channels_last: bool, tf32: bool,
+    ) -> bool:
+        """Whether the requested load-time staging settings equal those of the
+        currently loaded model. Offload and the perf flags are baked in at load
+        via DevicePolicy, so a same-name reload only skips re-staging when these
+        also match — otherwise the change would be silently dropped."""
+        return (
+            self._offload == offload
+            and self._vae_tile == vae_tile
+            and self._compile == compile
+            and self._cuda_graphs == cuda_graphs
+            and self._channels_last == channels_last
+            and self._tf32 == tf32
+        )
+
     def load_model(
         self, model_name: str, offload: bool | str = True, vae_tile: bool = True,
         compile: bool = False, cuda_graphs: bool = False,
         channels_last: bool = False, tf32: bool = False,
     ) -> str:
-        if self._loaded and self._loaded.name == model_name:
-            return f"Model already loaded: {model_name}"
-
         if compile and offload is True:
             offload = "encoders"
+        if (self._loaded and self._loaded.name == model_name
+                and self._settings_match(offload, vae_tile, compile,
+                                         cuda_graphs, channels_last, tf32)):
+            return f"Model already loaded: {model_name}"
 
         self._unload()
         self._offload = offload
@@ -304,11 +322,12 @@ class Engine:
         compile: bool = False, cuda_graphs: bool = False,
     ) -> str:
         label = f"Anima({dit_name})"
-        if self._loaded and self._loaded.name == label:
-            return f"Model already loaded: {label}"
-
         if compile and offload is True:
             offload = "encoders"
+        if (self._loaded and self._loaded.name == label
+                and self._settings_match(offload, vae_tile, compile,
+                                         cuda_graphs, False, False)):
+            return f"Model already loaded: {label}"
 
         self._unload()
         self._offload = offload
@@ -356,11 +375,12 @@ class Engine:
         encoder (FLUX.1 only — ignored for FLUX.2). The detector picks which path
         applies from the transformer."""
         label = f"FLUX({dit_name})"
-        if self._loaded and self._loaded.name == label:
-            return f"Model already loaded: {label}"
-
         if compile and offload is True:
             offload = "encoders"
+        if (self._loaded and self._loaded.name == label
+                and self._settings_match(offload, vae_tile, compile,
+                                         cuda_graphs, False, False)):
+            return f"Model already loaded: {label}"
 
         self._unload()
         self._offload = offload
