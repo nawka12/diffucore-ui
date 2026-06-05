@@ -46,9 +46,9 @@ Uvicorn; the frontend is plain HTML/CSS/JS with Alpine.js (no build step).
 - **11 samplers, multiple schedulers** — Euler, Heun, DPM++ family, ER-SDE,
   SECANT; Karras, exponential, sgm_uniform, flow, and more.
 - **Gallery with metadata round-trip** — every generated image saves its full
-  generation parameters as PNG metadata. Browse past outputs in a swipeable
-  fullscreen carousel and load any generation's settings back into the Generate
-  view.
+  generation parameters as PNG metadata. Browse past outputs grouped by date
+  (phone-gallery style) in a swipeable fullscreen carousel and load any
+  generation's settings back into the Generate view.
 - **Metadata reader** — drop in any PNG to inspect its AUTO1111 / Forge or
   ComfyUI parameters and send them straight to txt2img.
 - **Anima auto-defaults** — switching to Anima mode sets sampler / steps / CFG
@@ -62,6 +62,12 @@ Uvicorn; the frontend is plain HTML/CSS/JS with Alpine.js (no build step).
   Tiled VAE decode keeps large images within VRAM.
 - **Live progress** — sampling step/total streams to a real progress bar as the
   image is generated.
+- **Multi-device & job queue** — drive it from several devices at once. Jobs
+  (generate, sweeps, calibrations, and model loads) run one at a time through a
+  shared FIFO queue, and one live event stream keeps every device in sync —
+  queue contents, progress, previews, and which model is loaded. A second device
+  (or a refresh) picks up the already-loaded model without reloading weights, and
+  any job can be cancelled from any device.
 - **Custom darkroom theme** — warm amber safelight aesthetics on a hand-rolled
   dark UI, Fraunces serif + Inter + JetBrains Mono fonts.
 
@@ -122,6 +128,12 @@ By default the UI binds to `127.0.0.1` (localhost only). Flags passed to
 ./launch.sh --listen --port 8000
 ```
 
+With `--listen`, several devices can use the UI at once. They share one job
+queue and one live event stream, so any device sees the running queue and
+progress, and a device that opens the page after a model is loaded starts
+already loaded — no reload. Generations from different devices simply queue up
+and run one at a time.
+
 ### Load a model
 
 1. Select **SD/SDXL**, **Anima**, or **FLUX** from the top-bar radio.
@@ -172,7 +184,8 @@ assembled grid and every individual cell are saved to `outputs/`.
 
 ### Browse past outputs
 
-The **Gallery** shows every image you've generated. Click or tap a thumbnail to
+The **Gallery** shows every image you've generated, grouped by date (newest
+first) like a phone gallery. Click or tap a thumbnail to
 open it in a fullscreen carousel — step through your outputs with the on-screen
 arrows, the ←/→ keys, or a swipe on touch; toggle **Info** to read the image's
 metadata, and hit **Load to Generate** to pull that generation's settings into
@@ -184,7 +197,7 @@ as the input. The **Metadata** view reads parameters out of any PNG you drop in
 
 ```
 ├── app.py              Entry point — launches the FastAPI server (uvicorn)
-├── server.py           FastAPI app — REST + streaming endpoints over the engine
+├── server.py           FastAPI app — REST, a job queue, and a shared SSE event stream over the engine
 ├── metadata.py         PNG metadata — write params, read/parse AUTO1111 & ComfyUI
 ├── static/             Frontend — index.html, app.js (Alpine), style.css
 ├── engine.py           Engine singleton — model lifecycle, generation, LoRA, detailer
@@ -212,8 +225,10 @@ The project has two layers:
 The [`Engine`](engine.py) class is the bridge: it holds the loaded model,
 exposes `generate_t2i`, `generate_i2i`, and `generate_inpaint` methods, and
 handles LoRA lifecycle. [`server.py`](server.py) wraps it in a FastAPI app —
-blocking generation runs in a threadpool while sampling progress streams to the
-browser as newline-delimited JSON. The frontend in [`static/`](static/) is plain
+jobs (generate, sweeps, calibrations, model loads) run one at a time on a single
+background worker thread, and every connected device subscribes to one shared
+Server-Sent-Events stream that broadcasts the queue, sampling progress, live
+previews, and model-load status. The frontend in [`static/`](static/) is plain
 HTML/CSS/JS with Alpine.js and no build step. No ML logic lives in the web layer.
 
 ## Status
