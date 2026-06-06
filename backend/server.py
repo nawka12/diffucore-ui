@@ -519,7 +519,9 @@ def _do_load(p: LoadPayload) -> str:
                 return "Select all three Anima files"
         return ENGINE.load_anima(
             p.dit, p.vae, p.te,
-            offload=offload, vae_tile=True,
+            # vae_tile=False → let the pipeline auto-decide per decode via
+            # can_decode_untiled (forcing True always-tiles, even at 1024²).
+            offload=offload, vae_tile=False,
             compile=p.compile, cuda_graphs=p.cuda_graphs,
         )
     if p.model_type == "FLUX":
@@ -541,7 +543,8 @@ def _do_load(p: LoadPayload) -> str:
         return "Select a model"
     return ENGINE.load_model(
         p.checkpoint,
-        offload=offload, vae_tile=True,
+        # vae_tile=False → SD/SDXL auto-decide per decode via can_decode_untiled.
+        offload=offload, vae_tile=False,
         compile=p.compile, cuda_graphs=p.cuda_graphs,
         channels_last=p.channels_last,
     )

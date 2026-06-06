@@ -59,7 +59,8 @@ Uvicorn; the frontend is plain HTML/CSS/JS with Alpine.js (no build step).
   from your GPU's VRAM on startup (24 GB → keep everything resident, 16 GB → park
   encoders, ≤12 GB → full offload), and you can override it per load
   (full / encoders / none, plus `stream` for FLUX) to fit the model on your GPU.
-  Tiled VAE decode keeps large images within VRAM.
+  Tiled VAE decode triggers automatically when a full-resolution decode
+  wouldn't fit free VRAM, keeping large images within budget.
 - **Live progress** — sampling step/total streams to a real progress bar as the
   image is generated.
 - **Multi-device & job queue** — drive it from several devices at once. Jobs
@@ -174,6 +175,11 @@ browse); in **inpaint**, paint over the region to repaint — tune the brush siz
 or clear the mask to start over.
 
 LoRAs can be activated inline: `a castle in autumn, <lora:autumn_style:0.8>`.
+
+> **The first image is slower** — and so is the first image at each new
+> resolution. The first generation pays a one-time GPU warmup (CUDA kernel
+> loading + cuDNN autotune) that later images reuse, so subsequent images at the
+> same size are noticeably faster. This is expected, not a stall.
 
 ### Working with Anima
 
