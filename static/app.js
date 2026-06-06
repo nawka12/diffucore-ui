@@ -336,19 +336,21 @@ document.addEventListener('alpine:init', () => {
       const r = new FileReader();
       r.onload = () => {
         this[key] = r.result;
-        // Match the output size to the source for img2img/inpaint (rounded to
-        // ×8, the VAE's latent grid) so the input isn't stretched by default.
-        if (key === 'inputImage') {
-          const img = new Image();
-          img.onload = () => {
-            const r8 = n => Math.max(8, Math.round(n / 8) * 8);
-            this.form.width = r8(img.naturalWidth);
-            this.form.height = r8(img.naturalHeight);
-          };
-          img.src = r.result;
-        }
+        if (key === 'inputImage') this.syncOutputSize(r.result);
       };
       r.readAsDataURL(f);
+    },
+
+    // Match the output size to the source image (rounded to ×8, the VAE's latent
+    // grid) so an img2img/inpaint input isn't stretched by default.
+    syncOutputSize(dataUrl) {
+      const img = new Image();
+      img.onload = () => {
+        const r8 = n => Math.max(8, Math.round(n / 8) * 8);
+        this.form.width = r8(img.naturalWidth);
+        this.form.height = r8(img.naturalHeight);
+      };
+      img.src = dataUrl;
     },
 
     // ── inpaint mask painting ───────────────────────────────────
@@ -875,6 +877,7 @@ document.addEventListener('alpine:init', () => {
       this.maskImage = null;
       this.maskPainted = false;
       this.applyFields(this.selectedFields);
+      this.syncOutputSize(this.inputImage);
       this.mode = mode;
       this.closeLightbox();
       this.tab = 'generate';

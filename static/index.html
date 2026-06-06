@@ -173,7 +173,7 @@
           </template>
           <template x-if="inputImage">
             <div class="mask-editor">
-              <canvas x-ref="maskCanvas" class="mask-canvas" x-init="initMask($el)"
+              <canvas x-ref="maskCanvas" class="mask-canvas" x-effect="initMask($el)"
                       @pointerdown="maskDown($event)" @pointermove="maskMove($event)"
                       @pointerup="maskUp($event)"></canvas>
               <div class="mask-tools">
