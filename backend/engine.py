@@ -191,9 +191,12 @@ class Engine:
         vram_gb = torch.cuda.get_device_properties(self.device).total_memory / 1024**3
         if vram_gb >= 23:      # 24 GB-class (3090/4090): hold everything resident
             return "none"
-        if vram_gb >= 15:      # 16 GB-class: backbone resident, park encoders + VAE
-            return "encoders"
-        return "full"          # ≤12 GB: shuttle everything (safest against OOM)
+        if vram_gb >= 11:      # 12/16 GB-class: keep the (small) backbone resident,
+            return "encoders"  # only park encoders + VAE. SD/SDXL UNet (~5 GB) and the
+                               # Anima DiT (~4 GB) fit alongside activations; the heavy
+                               # VAE decode auto-tiles. Avoids shuffling the backbone
+                               # on/off the GPU every image.
+        return "full"          # ≤10 GB: shuttle everything (safest against OOM)
 
     @property
     def available_schedulers(self) -> List[str]:

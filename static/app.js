@@ -6,7 +6,7 @@ document.addEventListener('alpine:init', () => {
     modelType: 'SD/SDXL',
     checkpoints: [], dits: [], vaes: [], tes: [], loras: [], detailers: [],
     checkpoint: '', dit: '', vae: '', te: '', clip: '', fluxCheckpoint: '',
-    perf: { compile: false, cudaGraphs: false, channelsLast: false, offload: 'full' },
+    perf: { compile: false, cudaGraphs: false, channelsLast: true, offload: 'full' },
     recommendedOffload: 'full',   // GPU-VRAM-based default from the backend (set on init)
     status: 'No model loaded',
     modelLoaded: false,
@@ -266,6 +266,9 @@ document.addEventListener('alpine:init', () => {
       // FLUX must stream its DiT to fit a 24 GB card; the rest use the
       // GPU-VRAM-based default the backend recommended at startup.
       this.perf.offload = (type === 'FLUX') ? 'stream' : this.recommendedOffload;
+      // channels_last only helps the conv backbones (SD/SDXL UNet + VAE); it's a
+      // no-op for the DiT families, so default it on only for SD/SDXL.
+      this.perf.channelsLast = (type === 'SD/SDXL');
       if (type === 'Anima' && !this.animaApplied) {
         // sensible Anima defaults, applied once
         this.animaApplied = true;
