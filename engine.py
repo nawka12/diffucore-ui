@@ -594,10 +594,14 @@ class Engine:
     # grid, then map the result back to the requested size. No-op for any size
     # that's already ÷64 (all SDXL buckets, 1024×1536, …) and for non-Anima.
     def _anima_gen_size(self, width, height) -> Tuple[int | None, int | None, bool]:
-        """Generation size to actually run at, plus whether it was snapped."""
+        """Generation size to actually run at, plus whether it was snapped.
+
+        Snaps **up** to the next ÷64 grid so the map-back to the requested size
+        is a downscale (sharper) rather than an upscale.
+        """
         if (self._loaded and self._loaded.family == MODEL_FAMILY_ANIMA
                 and width is not None and height is not None):
-            snap = lambda n: max(512, min(1536, round(n / 64) * 64))
+            snap = lambda n: max(512, min(1536, ((n + 63) // 64) * 64))
             gen_w, gen_h = snap(width), snap(height)
             return gen_w, gen_h, (gen_w, gen_h) != (width, height)
         return width, height, False
