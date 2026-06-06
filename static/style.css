@@ -507,7 +507,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .mask-zoom .btn { margin-top: 0; min-width: 34px; }
 .mask-zoom span { font-size: 12px; color: var(--txt-2); min-width: 46px; text-align: center; }
 
-/* maximized: fill the viewport so the mask can be painted at full size.
+/* maximized: fill the viewport with the tools in a right sidebar.
    The stage scrolls when the canvas is zoomed past the viewport. */
 .mask-editor.maximized {
   position: fixed;
@@ -516,21 +516,36 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   background: var(--bg);
   padding: 16px;
   display: flex;
-  flex-direction: column;
-  align-items: center;
+  flex-direction: row;
+  align-items: stretch;
   gap: 12px;
 }
 .mask-editor.maximized .mask-stage {
   flex: 1 1 auto;
   min-height: 0;
-  width: 100%;
+  min-width: 0;
   overflow: auto;
   display: flex;
   align-items: safe center;
   justify-content: safe center;
 }
 .mask-editor.maximized .mask-canvas { display: block; flex: none; max-width: none; }
-.mask-editor.maximized .mask-tools { flex: 0 0 auto; margin-top: 0; width: min(560px, 96vw); }
+.mask-editor.maximized .mask-tools {
+  flex: 0 0 248px;
+  width: 248px;
+  margin-top: 0;
+  padding: 14px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+.mask-editor.maximized .mask-tools > .seg {
+  display: grid;
+  grid-auto-flow: row;
+  width: 100%;
+}
+.mask-editor.maximized .mask-tool-btns .btn:not(.ico) { flex: 1 1 auto; }
 
 /* ── gallery ──────────────────────────────────────────────────── */
 .page-bar { display: flex; gap: 10px; margin-bottom: 16px; }
@@ -776,4 +791,18 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   .rack-row:not(.perf) { flex-direction: column; align-items: stretch; }
   .type-seg { align-self: flex-start; }
   .rack-actions .btn { flex: 1; }
+
+  .mask-editor.maximized {
+    flex-direction: column;
+    padding: 10px;
+  }
+  .mask-editor.maximized .mask-tools {
+    flex: 0 0 auto;
+    width: 100%;
+    max-height: 42vh;
+    padding: 10px;
+  }
+  .mask-editor.maximized .mask-tools > .seg {
+    grid-auto-flow: column;
+  }
 }
