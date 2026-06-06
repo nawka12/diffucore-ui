@@ -586,6 +586,34 @@ class Engine:
 
         return cb
 
+    # ── Anima resolution snapping ───────────────────────────────────
+    # Anima was trained on the SDXL ÷64 resolution grid; sizes that are ÷16
+    # (the architectural minimum) but not ÷64 land on an odd latent-token grid
+    # (e.g. 848×1200 → 53×75) that's out of distribution, and img2img/inpaint
+    # expose it as misregistered content. Generate on the nearest in-range ÷64
+    # grid, then map the result back to the requested size. No-op for any size
+    # that's already ÷64 (all SDXL buckets, 1024×1536, …) and for non-Anima.
+    def _anima_gen_size(self, width, height) -> Tuple[int | None, int | None, bool]:
+        """Generation size to actually run at, plus whether it was snapped."""
+        if (self._loaded and self._loaded.family == MODEL_FAMILY_ANIMA
+                and width is not None and height is not None):
+            snap = lambda n: max(512, min(1536, round(n / 64) * 64))
+            gen_w, gen_h = snap(width), snap(height)
+            return gen_w, gen_h, (gen_w, gen_h) != (width, height)
+        return width, height, False
+
+    @staticmethod
+    def _fit_inpaint(generated, init_image, mask_image, width, height) -> Image.Image:
+        """Resize an inpaint result generated on the snapped grid back to the
+        requested size, then re-paste the original pixels into the keep region
+        (hard mask edge) so untouched areas stay exact — same as the pipeline's
+        own composite, just at the requested resolution."""
+        resized = generated.convert("RGB").resize((width, height), Image.LANCZOS)
+        original = init_image.convert("RGB").resize((width, height), Image.LANCZOS)
+        mask = (mask_image.convert("L").resize((width, height), Image.NEAREST)
+                .point(lambda v: 255 if v >= 128 else 0))
+        return Image.composite(resized, original, mask)
+
     def generate_t2i(
         self,
         prompt: str,
@@ -651,6 +679,7 @@ class Engine:
         if self._loaded.family in _FLUX_FAMILIES:
             raise RuntimeError("FLUX supports text-to-image only in this build")
         seed = self._resolve_seed(seed)
+        gen_w, gen_h, snapped = self._anima_gen_size(width, height)
         gen = ImageToImage(self._loaded.model)
         gen_kwargs = dict(
             prompt=prompt,
@@ -662,8 +691,8 @@ class Engine:
             sampler=sampler,
             scheduler=scheduler,
             seed=seed,
-            width=width,
-            height=height,
+            width=gen_w,
+            height=gen_h,
             progress_callback=progress_callback,
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
@@ -672,7 +701,10 @@ class Engine:
             image, pipeline_info = gen(**gen_kwargs)
         finally:
             self._reclaim_memory()
-        info = f"Seed: {seed} | strength={strength} | {steps} steps | VAE: {pipeline_info.vae_decode_mode}"
+        if snapped:
+            image = image.resize((width, height), Image.LANCZOS)
+        grid = f" | grid {gen_w}×{gen_h}" if snapped else ""
+        info = f"Seed: {seed} | strength={strength} | {steps} steps{grid} | VAE: {pipeline_info.vae_decode_mode}"
         return image, info
 
     def generate_inpaint(
@@ -697,6 +729,7 @@ class Engine:
         if self._loaded.family in _FLUX_FAMILIES:
             raise RuntimeError("FLUX supports text-to-image only in this build")
         seed = self._resolve_seed(seed)
+        gen_w, gen_h, snapped = self._anima_gen_size(width, height)
         gen = Inpaint(self._loaded.model)
         gen_kwargs = dict(
             prompt=prompt,
@@ -709,8 +742,8 @@ class Engine:
             sampler=sampler,
             scheduler=scheduler,
             seed=seed,
-            width=width,
-            height=height,
+            width=gen_w,
+            height=gen_h,
             progress_callback=progress_callback,
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
@@ -719,7 +752,10 @@ class Engine:
             image, pipeline_info = gen(**gen_kwargs)
         finally:
             self._reclaim_memory()
-        info = f"Seed: {seed} | inpainted | {steps} steps | VAE: {pipeline_info.vae_decode_mode}"
+        if snapped:
+            image = self._fit_inpaint(image, input_image, mask_image, width, height)
+        grid = f" | grid {gen_w}×{gen_h}" if snapped else ""
+        info = f"Seed: {seed} | inpainted | {steps} steps{grid} | VAE: {pipeline_info.vae_decode_mode}"
         return image, info
 
     # ── detailer (ADetailer-style region refinement) ───────────────
