@@ -38,7 +38,7 @@ from utils import (
 from xyz_grid import generate_xyz_grid, PARAM_TYPES as XYZ_PARAM_TYPES
 import metadata as md
 
-_ROOT = Path(__file__).resolve().parent
+_ROOT = Path(__file__).resolve().parent.parent
 _STATIC = _ROOT / "static"
 
 class _Cancelled(BaseException):

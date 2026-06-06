@@ -15,7 +15,7 @@ from PIL import Image
 
 from diffucore import __version__ as _DIFFUCORE_VERSION
 
-_ROOT = Path(__file__).resolve().parent
+_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _git_short(cwd: Path) -> str:

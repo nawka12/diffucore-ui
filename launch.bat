@@ -15,6 +15,6 @@ if not exist "%VPY%" (
 )
 
 echo === Launching Diffucore UI ===
-"%VPY%" app.py %*
+"%VPY%" backend\app.py %*
 
 popd

@@ -17,7 +17,7 @@ back into the workspace.
 > stability yet.
 
 ```bash
-python app.py            # serve on http://127.0.0.1:7860
+python backend/app.py    # serve on http://127.0.0.1:7860
 ```
 
 Then open `http://localhost:7860` in your browser. The backend is FastAPI +
@@ -136,11 +136,11 @@ Or, manually:
 
 ```bash
 source .venv/bin/activate
-python app.py
+python backend/app.py
 ```
 
 By default the UI binds to `127.0.0.1` (localhost only). Flags passed to
-`launch.sh` are forwarded to `app.py`:
+`launch.sh` are forwarded to `backend/app.py`:
 
 ```bash
 ./launch.sh --listen        # bind 0.0.0.0 — reachable from other machines on the network
@@ -241,18 +241,19 @@ as the input. The **Metadata** view reads parameters out of any PNG you drop in
 ## Project structure
 
 ```
-├── app.py              Entry point — launches the FastAPI server (uvicorn)
-├── server.py           FastAPI app — REST, a job queue, and a shared SSE event stream over the engine
-├── metadata.py         PNG metadata — write params, read/parse AUTO1111 & ComfyUI
+├── backend/            Python backend (FastAPI server + engine glue)
+│   ├── app.py          Entry point — launches the FastAPI server (uvicorn)
+│   ├── server.py       FastAPI app — REST, a job queue, and a shared SSE event stream over the engine
+│   ├── engine.py       Engine singleton — model lifecycle, generation, LoRA, detailer
+│   ├── detailer.py     YOLO detection + crop/expand geometry for the detailer
+│   ├── metadata.py     PNG metadata — write params, read/parse AUTO1111 & ComfyUI
+│   ├── utils.py        Directory scanning helpers (checkpoints, LoRAs, outputs)
+│   ├── xyz_grid.py     X/Y/Z plot grid assembly
+│   └── calibrate_oss.py  Headless CLI to calibrate an Anima OSS schedule
 ├── static/             Frontend — index.html, app.js (Alpine), style.css
-├── engine.py           Engine singleton — model lifecycle, generation, LoRA, detailer
-├── detailer.py         YOLO detection + crop/expand geometry for the detailer
-├── utils.py            Directory scanning helpers (checkpoints, LoRAs, outputs)
-├── xyz_grid.py         X/Y/Z plot grid assembly
-├── calibrate_oss.py    Headless CLI to calibrate an Anima OSS schedule
 ├── requirements.txt    Python dependencies
 ├── setup.sh / setup.bat    One-shot setup (submodule init, venv, pip install) — Linux / Windows
-├── launch.sh / launch.bat  Activate venv and run `python app.py` — Linux / Windows
+├── launch.sh / launch.bat  Activate venv and run `python backend/app.py` — Linux / Windows
 ├── update.sh / update.bat  Pull latest, sync submodule, refresh deps — Linux / Windows
 ├── diffucore/          Git submodule — the Diffucore inference engine
 ├── models/             Model weight directories (user-provided)
@@ -268,9 +269,9 @@ The project has two layers:
 | **Engine** | `diffucore/` (submodule) | Checkpoint loading, text conditioning, sampling loop, VAE decode, LoRA fusion |
 | **UI** | Root project | FastAPI server, browser frontend, model management, prompt parsing, PNG metadata, gallery |
 
-The [`Engine`](engine.py) class is the bridge: it holds the loaded model,
+The [`Engine`](backend/engine.py) class is the bridge: it holds the loaded model,
 exposes `generate_t2i`, `generate_i2i`, and `generate_inpaint` methods, and
-handles LoRA lifecycle. [`server.py`](server.py) wraps it in a FastAPI app —
+handles LoRA lifecycle. [`server.py`](backend/server.py) wraps it in a FastAPI app —
 jobs (generate, sweeps, calibrations, model loads) run one at a time on a single
 background worker thread, and every connected device subscribes to one shared
 Server-Sent-Events stream that broadcasts the queue, sampling progress, live

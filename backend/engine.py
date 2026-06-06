@@ -34,7 +34,7 @@ def _resolve_malloc_trim():
 
 _MALLOC_TRIM = _resolve_malloc_trim()
 
-_ROOT = Path(__file__).resolve().parent
+_ROOT = Path(__file__).resolve().parent.parent
 _LOCAL_DIFFUCORE_SRC = _ROOT / "diffucore" / "src"
 if _LOCAL_DIFFUCORE_SRC.exists():
     sys.path.insert(0, str(_LOCAL_DIFFUCORE_SRC))

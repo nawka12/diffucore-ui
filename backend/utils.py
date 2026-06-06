@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 from typing import List, Set
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = ROOT / "models"
 CHECKPOINTS_DIR = MODELS_DIR / "checkpoints"
 DIFFUSION_DIR = MODELS_DIR / "diffusion-models"

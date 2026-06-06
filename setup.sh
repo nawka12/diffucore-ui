@@ -38,4 +38,4 @@ python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null && \
 echo ""
 echo "=== Setup complete ==="
 echo "Activate the venv:  source $VENV_DIR/bin/activate"
-echo "Run the UI:         python app.py"
+echo "Run the UI:         python backend/app.py"
