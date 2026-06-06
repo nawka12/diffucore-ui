@@ -60,33 +60,50 @@ from utils import checkpoint_path, lora_path, diffusion_model_path, vae_path, te
 
 LORA_PROMPT_RE = re.compile(r"<lora:([^:]+):([^>]+)>")
 
-# The flow families (Anima, FLUX) only drive the flow-friendly subset; their
-# pipelines reject "heun" and "euler_ancestral" (see _ANIMA_SAMPLERS /
-# _FLUX_SAMPLERS), so the UI must not offer those when a flow model is selected.
+# The flow families (Anima, FLUX) drive everything except "ddpm" (a VP/VE-only
+# ancestral sampler); the rest are flow-aware or model-agnostic. These lists must
+# stay in sync with the pipelines' _ANIMA_SAMPLERS / _FLUX_SAMPLERS.
 SAMPLERS_SD = [
     "euler",
-    "heun",
     "euler_ancestral",
+    "heun",
+    "heunpp2",
     "dpm_2",
     "dpm_2_ancestral",
+    "dpmpp_2s_ancestral",
     "dpmpp_2m",
-    "dpmpp_sde",
     "dpmpp_2m_sde",
+    "dpmpp_2m_sde_heun",
+    "dpmpp_sde",
     "dpmpp_3m_sde",
+    "ipndm",
+    "ipndm_v",
+    "res_multistep",
+    "res_multistep_ancestral",
+    "gradient_estimation",
+    "lms",
     "er_sde",
+    "ddpm",
+    "lcm",
     "secant",
 ]
-SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s not in ("heun", "euler_ancestral")]
+SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm"]
 SAMPLERS_ANIMA = SAMPLERS_FLOW
 SAMPLERS_FLUX = SAMPLERS_FLOW
 
-SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "sgm_uniform", "simple"]
+SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
+                 "sgm_uniform", "simple", "normal", "ddim_uniform", "linear_quadratic"]
 # "oss" is a calibrated optimal-stepsize schedule: it needs a one-time
 # calibration for the exact (model, steps, resolution, shift) before it works.
 # The UI's OSS panel runs that calibration (Engine.calibrate_oss) and writes the
 # cache; selecting "oss" before calibrating errors with a clear message.
-SCHEDULERS_ANIMA = ["flow", "flow_dyn", "oss", "sgm_uniform", "simple"]
-SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple"]
+# Flow families omit "ddim_uniform": its DDIM-style table walk starts below
+# σ_max (≈0.98, not 1.0), which mismatches the flow pipelines' pure-noise init
+# (they assume σ_max == 1). normal/kl_optimal/linear_quadratic all start at σ≈1.
+SCHEDULERS_ANIMA = ["flow", "flow_dyn", "oss", "sgm_uniform", "simple",
+                    "normal", "kl_optimal", "linear_quadratic"]
+SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple",
+                   "normal", "kl_optimal", "linear_quadratic"]
 
 # Calibrated OSS schedules are cached one JSON (list of descending sigmas) per
 # (model, steps, resolution, shift); calibrate_oss.py writes them here.
