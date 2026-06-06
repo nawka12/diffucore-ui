@@ -498,6 +498,40 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .mask-tool-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .mask-tool-btns .btn { margin-top: 0; }
 
+/* icon-only buttons (maximize/minimize, undo, change image) */
+.btn.ico { display: inline-flex; align-items: center; justify-content: center; }
+.btn.ico svg { width: 15px; height: 15px; display: block; }
+
+/* zoom controls, shown only while maximized */
+.mask-zoom { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.mask-zoom .btn { margin-top: 0; min-width: 34px; }
+.mask-zoom span { font-size: 12px; color: var(--txt-2); min-width: 46px; text-align: center; }
+
+/* maximized: fill the viewport so the mask can be painted at full size.
+   The stage scrolls when the canvas is zoomed past the viewport. */
+.mask-editor.maximized {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  background: var(--bg);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.mask-editor.maximized .mask-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  overflow: auto;
+  display: flex;
+  align-items: safe center;
+  justify-content: safe center;
+}
+.mask-editor.maximized .mask-canvas { display: block; flex: none; max-width: none; }
+.mask-editor.maximized .mask-tools { flex: 0 0 auto; margin-top: 0; width: min(560px, 96vw); }
+
 /* ── gallery ──────────────────────────────────────────────────── */
 .page-bar { display: flex; gap: 10px; margin-bottom: 16px; }
 .gallery-day { margin-bottom: 24px; }

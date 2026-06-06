@@ -172,10 +172,13 @@
             </div>
           </template>
           <template x-if="inputImage">
-            <div class="mask-editor">
-              <canvas x-ref="maskCanvas" class="mask-canvas" x-effect="initMask($el)"
-                      @pointerdown="maskDown($event)" @pointermove="maskMove($event)"
-                      @pointerup="maskUp($event)"></canvas>
+            <div class="mask-editor" :class="{maximized: maskMax}"
+                 @keydown.escape.window="maskMax && toggleMaskMax()" @resize.window="applyMaskZoom()">
+              <div class="mask-stage">
+                <canvas x-ref="maskCanvas" class="mask-canvas" x-effect="initMask($el)"
+                        @pointerdown="maskDown($event)" @pointermove="maskMove($event)"
+                        @pointerup="maskUp($event)"></canvas>
+              </div>
               <div class="mask-tools">
                 <div class="seg" role="radiogroup" aria-label="Mask tool">
                   <button :class="{active: maskTool==='brush'}" @click="maskTool='brush'">Brush</button>
@@ -187,11 +190,30 @@
                     <input type="number" x-model.number="maskBrush" min="5" max="200" step="5"></div>
                   <input type="range" x-model.number="maskBrush" min="5" max="200" step="5">
                 </div>
+                <div class="mask-zoom" x-show="maskMax">
+                  <button class="btn small" @click="zoomMask(-0.25)" title="Zoom out" aria-label="Zoom out">&minus;</button>
+                  <span x-text="Math.round(maskZoom*100)+'%'"></span>
+                  <button class="btn small" @click="zoomMask(0.25)" title="Zoom in" aria-label="Zoom in">+</button>
+                  <button class="btn small" @click="maskZoom=1; applyMaskZoom()">Reset</button>
+                </div>
                 <div class="mask-tool-btns">
-                  <button class="btn small" @click="undoMask()">Undo</button>
+                  <button class="btn small ico" @click="toggleMaskMax()"
+                          :title="maskMax ? 'Minimize' : 'Maximize'" :aria-label="maskMax ? 'Minimize' : 'Maximize'">
+                    <svg x-show="!maskMax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
+                    <svg x-show="maskMax" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path d="M3 21l7-7"/></svg>
+                  </button>
+                  <button class="btn small ico" @click="undoMask()" title="Undo" aria-label="Undo">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>
+                  </button>
                   <button class="btn small" @click="invertMask()">Invert</button>
                   <button class="btn small" @click="clearMask()">Clear mask</button>
-                  <button class="btn small" @click="inputImage=null; maskImage=null; maskPainted=false">Change image</button>
+                  <button class="btn small ico" @click="inputImage=null; maskImage=null; maskPainted=false" title="Change image" aria-label="Change image">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                  </button>
                 </div>
               </div>
             </div>

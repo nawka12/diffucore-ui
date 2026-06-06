@@ -46,6 +46,8 @@ document.addEventListener('alpine:init', () => {
     maskBrush: 40,
     maskTool: 'brush',   // brush | eraser | rect
     maskPainted: false,
+    maskMax: false,      // fullscreen the input & mask editor
+    maskZoom: 1,         // display zoom while maximized (1 = fit)
 
     // ── detailer (ADetailer-style passes after generate) ────────
     // `models` is a stack of {model, prompt} run in sequence; rest is shared.
@@ -380,8 +382,34 @@ document.addEventListener('alpine:init', () => {
         c._undo = [];
         this.maskPainted = false;
         this.redrawMask(c);
+        this.applyMaskZoom();
       };
       img.src = this.inputImage;
+    },
+
+    toggleMaskMax() {
+      this.maskMax = !this.maskMax;
+      this.maskZoom = 1;
+      this.$nextTick(() => this.applyMaskZoom());
+    },
+    zoomMask(d) {
+      this.maskZoom = Math.min(4, Math.max(1, Math.round((this.maskZoom + d) * 100) / 100));
+      this.applyMaskZoom();
+    },
+    // Size the maximized canvas to a fit-to-viewport base × zoom and let the
+    // stage scroll to pan. maskPos() reads getBoundingClientRect, so painting
+    // stays pixel-accurate at any display size.
+    applyMaskZoom() {
+      const c = this.$refs.maskCanvas;
+      if (!c || !c._base) return;
+      if (!this.maskMax) { c.style.width = ''; c.style.height = ''; return; }
+      const stage = c.parentElement;
+      if (!stage) return;
+      const aspect = c.width / c.height;
+      const fit = Math.min(stage.clientWidth, stage.clientHeight * aspect);
+      const w = fit * this.maskZoom;
+      c.style.width = w + 'px';
+      c.style.height = (w / aspect) + 'px';
     },
 
     // Repaint the visible canvas: base image, then the mask tinted orange.
