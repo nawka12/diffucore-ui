@@ -29,9 +29,11 @@ pip install -q -r "$SCRIPT_DIR/requirements.txt"
 pip install -q -e "$SCRIPT_DIR/diffucore"
 
 # --- ensure CUDA torch is still present ---
+# On failure, uninstall first: a bare `pip install torch` is a no-op when a
+# mismatched wheel is already installed, so it could never repair a CPU build.
 python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null && \
     echo "[4/4] CUDA torch OK." || \
-    { echo "[4/4] Installing CUDA torch..."; pip install -q torch --index-url https://download.pytorch.org/whl/cu124; }
+    { echo "[4/4] Reinstalling CUDA torch..."; pip uninstall -y -q torch; pip install -q torch --index-url https://download.pytorch.org/whl/cu124; }
 
 echo ""
 echo "=== Update complete ==="

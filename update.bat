@@ -35,9 +35,12 @@ if errorlevel 1 goto :error
 if errorlevel 1 goto :error
 
 REM --- ensure CUDA torch is still present ---
+REM On failure, uninstall first: a bare `pip install torch` is a no-op when a
+REM mismatched wheel is already installed, so it could never repair a CPU build.
 "%VPY%" -c "import torch; assert torch.cuda.is_available()" 2>nul
 if errorlevel 1 (
-    echo [4/4] Installing CUDA torch...
+    echo [4/4] Reinstalling CUDA torch...
+    "%VPY%" -m pip uninstall -y -q torch
     "%VPY%" -m pip install -q torch --index-url https://download.pytorch.org/whl/cu124
     if errorlevel 1 goto :error
 ) else (

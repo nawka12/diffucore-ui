@@ -27,13 +27,16 @@ source "$VENV_DIR/bin/activate"
 # --- pip deps ---
 echo "[3/4] Installing Python dependencies..."
 pip install --upgrade pip -q
+# Install the cu124 torch build first so requirements.txt / ultralytics don't
+# pull the default PyPI wheel (built for a newer CUDA than many drivers run).
+pip install -q torch --index-url https://download.pytorch.org/whl/cu124
 pip install -q -r "$SCRIPT_DIR/requirements.txt"
 pip install -q -e "$SCRIPT_DIR/diffucore"
 
-# --- CUDA torch (skip if already satisfied) ---
+# --- CUDA torch sanity check ---
 python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null && \
-    echo "[4/4] CUDA torch already installed." || \
-    { echo "[4/4] Installing CUDA torch..."; pip install -q torch --index-url https://download.pytorch.org/whl/cu124; }
+    echo "[4/4] CUDA torch OK." || \
+    echo "[4/4] WARNING: torch present but CUDA unavailable (check NVIDIA driver vs cu124)."
 
 echo ""
 echo "=== Setup complete ==="
