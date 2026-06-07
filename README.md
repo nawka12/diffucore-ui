@@ -147,6 +147,7 @@ By default the UI binds to `127.0.0.1` (localhost only). Flags passed to
 ./launch.sh --listen        # bind 0.0.0.0 — reachable from other machines on the network
 ./launch.sh --port 8000     # serve on a different port (default: 7860)
 ./launch.sh --listen --port 8000
+./launch.sh --share         # public link via a Cloudflare quick tunnel
 ```
 
 With `--listen`, several devices can use the UI at once. They share one job
@@ -154,6 +155,13 @@ queue and one live event stream, so any device sees the running queue and
 progress, and a device that opens the page after a model is loaded starts
 already loaded — no reload. Generations from different devices simply queue up
 and run one at a time.
+
+With `--share`, the UI is exposed over a public `trycloudflare.com` URL (printed
+to the console) so you can reach it from anywhere — no Cloudflare account or
+login needed. The `cloudflared` binary is used from your `PATH` if present,
+otherwise downloaded once and cached in `.cloudflared/`. The tunnel closes when
+you stop the server. Anyone with the link can reach your UI, so treat it as
+public.
 
 ### Load a model
 

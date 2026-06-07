@@ -19,7 +19,17 @@ parser.add_argument(
     default=7860,
     help="Port to serve the UI on (default: 7860).",
 )
+parser.add_argument(
+    "--share",
+    action="store_true",
+    help="Expose the UI over a public Cloudflare quick tunnel and print a "
+         "trycloudflare.com URL (downloads cloudflared on first use).",
+)
 args = parser.parse_args()
+
+if args.share:
+    import share
+    share.start(args.port)
 
 uvicorn.run(
     app,
