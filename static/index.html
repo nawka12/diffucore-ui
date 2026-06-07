@@ -259,6 +259,12 @@
               <input type="number" x-model.number="form.cfg" min="1" max="30" step="0.5"></div>
             <input type="range" x-model.number="form.cfg" min="1" max="30" step="0.5">
           </div>
+          <div class="slider" x-show="isFlowModel">
+            <div class="slider-head"><span>Shift</span>
+              <input type="number" x-model.number="form.shift" min="1" max="9" step="0.1" :disabled="!shiftHonored"></div>
+            <input type="range" x-model.number="form.shift" min="1" max="9" step="0.1" :disabled="!shiftHonored">
+            <p class="sub" style="margin:4px 0 0" x-show="!shiftHonored">Ignored by the <span x-text="form.scheduler"></span> scheduler — it derives its own shift.</p>
+          </div>
         </fieldset>
 
         <fieldset x-show="!sweeping">

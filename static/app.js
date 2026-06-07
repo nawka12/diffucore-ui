@@ -116,6 +116,18 @@ document.addEventListener('alpine:init', () => {
       if (this.modelType === 'FLUX') return this.schedulersFlux;
       return this.schedulersSd;
     },
+    // Shift is a flow-only knob, and even then only some schedulers honour the
+    // passed value: Anima uses it everywhere except flow_dyn (resolution-aware),
+    // FLUX only on the plain flow scheduler (flux/sgm_uniform/simple derive
+    // their own). SD/SDXL ignore it entirely.
+    get isFlowModel() {
+      return this.modelType === 'Anima' || this.modelType === 'FLUX';
+    },
+    get shiftHonored() {
+      if (this.modelType === 'Anima') return this.form.scheduler !== 'flow_dyn';
+      if (this.modelType === 'FLUX') return this.form.scheduler === 'flow';
+      return false;
+    },
     get offloadOptions() {
       // "stream" streams the FLUX DiT blocks — FLUX-only; the rest stage the
       // whole backbone (or keep it resident) and work for every family.
