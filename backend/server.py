@@ -727,5 +727,6 @@ def api_metadata_parse_text(p: ParseTextPayload):
 
 
 # Static mounts (declared last so /api routes win).
+OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)  # StaticFiles errors if missing (fresh install)
 app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")
