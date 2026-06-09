@@ -61,6 +61,11 @@ def resolve_values(param_type: str, values_str: str, base_value: Any) -> list:
     """
     if param_type == "None" or not values_str.strip():
         return [base_value]
+    # Prompt S/R keeps empties: a trailing comma (``promptA,``) asks for a cell
+    # with the search term replaced by nothing — i.e. an image *without* it — so
+    # an empty replacement is meaningful and must survive the filter below.
+    if param_type == "Prompt S/R":
+        return [v.strip() for v in values_str.split(",")]
     raw = [v.strip() for v in values_str.split(",") if v.strip()]
     if not raw:
         return [base_value]
