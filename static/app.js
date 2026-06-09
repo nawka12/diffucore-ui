@@ -726,6 +726,18 @@ document.addEventListener('alpine:init', () => {
     // ── x/y/z sweep ─────────────────────────────────────────────
     async generateXyz() {
       if (!this.modelLoaded) { this.flash('Load a model first'); return; }
+      // A Prompt S/R axis's search term (its first value) must appear in the
+      // prompt or negative prompt, or every cell is identical. Refuse early —
+      // same case-sensitive match the backend's replace uses.
+      const haystack = this.form.prompt + '\n' + this.form.neg;
+      for (const axis of [this.axes.x, this.axes.y, this.axes.z]) {
+        if (axis.type !== 'Prompt S/R') continue;
+        const search = (axis.text.split(',')[0] || '').trim();
+        if (search && !haystack.includes(search)) {
+          this.flash(`Prompt S/R: "${search}" is not in the prompt or negative prompt`);
+          return;
+        }
+      }
       this.busy = true;
       this.progress = { step: 0, total: 0 };
       this.xyzInfo = '';
