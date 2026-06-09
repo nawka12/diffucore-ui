@@ -27,7 +27,9 @@ Uvicorn; the frontend is plain HTML/CSS/JS with Alpine.js (no build step).
 
 - **Four model families, one interface** — Stable Diffusion 1.5, SDXL,
   **Anima** (a 2 B DiT built on Cosmos-Predict2), and **FLUX** (FLUX.1 and
-  FLUX.2 Klein, text-to-image only). Switch between them from the model bar.
+  FLUX.2 Klein). All four do txt2img, img2img, and inpaint — Anima and FLUX use
+  soft, latent-mask inpaint (no dedicated inpaint model). Switch between them
+  from the model bar.
 - **Unified Generate workspace** — one shared control panel with a
   txt2img / img2img / inpaint mode toggle; switching modes keeps your prompt and
   settings. Full sampler / scheduler / steps / CFG / seed controls.
@@ -39,7 +41,7 @@ Uvicorn; the frontend is plain HTML/CSS/JS with Alpine.js (no build step).
   prompt to load adapters on the fly.
 - **Detailer** — an ADetailer-style toggle that detects faces/hands with a YOLO
   model and inpaints each region at native resolution after generation. Works on
-  both UNet (SD/SDXL) and DiT (Anima) backbones.
+  UNet (SD/SDXL) and DiT (Anima, FLUX) backbones.
 - **Live preview** — watch the image form during sampling. A fast latent→RGB
   approximation (no VAE decode) streams a rough preview each step; toggle it off
   in the Generate view. SD/SDXL and Anima.
@@ -220,19 +222,19 @@ Enable **Detailer** in the Generate view to run an ADetailer-style refinement
 pass on each result. A YOLO model detects regions (faces, hands, …); each is
 cropped, inpainted at the model's native resolution, and composited back — the
 fix for soft, low-detail small faces. Unlike ADetailer it drives Diffucore's
-own inpaint, so it works for **UNet (SD/SDXL)** and **DiT (Anima)** alike.
+own inpaint, so it works for **UNet (SD/SDXL)** and **DiT (Anima, FLUX)** alike.
 
 **Stack multiple detection models** — add a pass per model (e.g. a face model
 then a hand model); each runs in sequence, refining the previous result, and
 carries its own optional prompt (blank reuses the main prompt). Confidence,
 denoise strength, and the mask padding / blur / dilation are shared across passes.
-FLUX is text-to-image only in this build, so the pass is skipped there.
 
-**Denoise strength is model-aware** — Anima's `shift = 3` flow schedule turns a
-given strength into far more effective noise than SD/SDXL's EDM, so the same
-number regenerates much more of the face. Loading an Anima model therefore
-defaults the detailer strength to **0.25** (a true refine); SD/SDXL keeps **0.4**.
-Lower it to preserve more of the original, raise it to regenerate more.
+**Denoise strength is model-aware** — the flow-matching DiTs (Anima, FLUX)
+front-load high σ, so a given strength turns into far more effective noise than
+SD/SDXL's EDM and regenerates much more of the face. Loading an Anima model
+therefore defaults the detailer strength to **0.25** (a true refine); SD/SDXL and
+FLUX keep **0.4**, so on FLUX you'll usually want to lower it by hand. Lower it to
+preserve more of the original, raise it to regenerate more.
 
 ### Sweep parameters (X/Y/Z)
 

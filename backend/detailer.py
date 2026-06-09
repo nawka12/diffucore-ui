@@ -3,8 +3,8 @@
 ADetailer hooks deep into A1111's UNet processing, so it can't drive a DiT. This
 module keeps only the model-agnostic half — YOLO detection and the crop/expand
 math — as pure functions. ``Engine.detail`` pairs them with diffucore's ``Inpaint``
-pipeline, which already runs on UNet (SD/SDXL) *and* DiT (Anima) backbones, so the
-same detail pass works for both.
+pipeline, which runs on UNet (SD/SDXL) *and* DiT (Anima, FLUX) backbones, so the
+same detail pass works across all of them.
 
 The crop math (``get_crop_region`` / ``expand_crop_region``) is ported from
 AUTO1111's ``modules/masking.py``.

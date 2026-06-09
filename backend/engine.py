@@ -194,9 +194,10 @@ class Engine:
 
     @property
     def can_inpaint(self) -> bool:
-        """Whether the loaded family supports inpainting (the detailer's backbone).
-        FLUX is text-to-image only in this build."""
-        return bool(self._loaded) and self._loaded.family not in _FLUX_FAMILIES
+        """Whether the detailer can run on the loaded family (it drives the
+        ``Inpaint`` pipeline per region). True for every supported family now that
+        FLUX has an inpaint path."""
+        return bool(self._loaded)
 
     def recommended_offload(self) -> str:
         """A sensible default offload mode for the UI, picked from the GPU's VRAM.
@@ -700,8 +701,6 @@ class Engine:
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
-        if self._loaded.family in _FLUX_FAMILIES:
-            raise RuntimeError("FLUX supports text-to-image only in this build")
         seed = self._resolve_seed(seed)
         gen_w, gen_h, snapped = self._anima_gen_size(width, height)
         gen = ImageToImage(self._loaded.model)
@@ -750,8 +749,6 @@ class Engine:
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
-        if self._loaded.family in _FLUX_FAMILIES:
-            raise RuntimeError("FLUX supports text-to-image only in this build")
         seed = self._resolve_seed(seed)
         gen_w, gen_h, snapped = self._anima_gen_size(width, height)
         gen = Inpaint(self._loaded.model)
