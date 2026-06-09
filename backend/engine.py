@@ -88,7 +88,9 @@ SAMPLERS_SD = [
     "secant",
 ]
 SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm"]
-SAMPLERS_ANIMA = SAMPLERS_FLOW
+# euler_ancestral_anneal anneals eta with σ (full ancestral burn-in at high σ,
+# deterministic at low σ); Anima-only, aimed at rectified-flow merges.
+SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal"]
 SAMPLERS_FLUX = SAMPLERS_FLOW
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
