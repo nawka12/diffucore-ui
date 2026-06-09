@@ -880,9 +880,26 @@ document.addEventListener('alpine:init', () => {
 
     async selectImage(img) {
       this.selected = img;
-      const r = await (await fetch('/api/metadata?path=' + encodeURIComponent(img.path))).json();
-      this.selectedMeta = r.raw;
-      this.selectedFields = r.fields;
+      // Drop the previous image's metadata up front so the panel and the
+      // send-to-generator buttons never act on stale data while this loads.
+      this.selectedMeta = '';
+      this.selectedFields = null;
+      // Token guards against out-of-order responses: paging fast on a slow
+      // link, an earlier image's fetch can resolve last — ignore it so the
+      // image on screen always wins. Consumers await _metaLoad (below).
+      const token = img.url;
+      this._metaToken = token;
+      this._metaLoad = (async () => {
+        try {
+          const r = await (await fetch('/api/metadata?path=' + encodeURIComponent(img.path))).json();
+          if (this._metaToken !== token) return;   // a newer selection won
+          this.selectedMeta = r.raw;
+          this.selectedFields = r.fields;
+        } catch (e) {
+          if (this._metaToken === token) this.selectedMeta = '';
+        }
+      })();
+      return this._metaLoad;
     },
 
     // ── lightbox carousel ───────────────────────────────────────
@@ -912,7 +929,8 @@ document.addEventListener('alpine:init', () => {
       if (Math.abs(dx) > 40) (dx < 0 ? this.lbNext() : this.lbPrev());
     },
 
-    loadToWorkspace() {
+    async loadToWorkspace() {
+      await this._metaLoad;   // wait for this image's metadata on slow links
       this.applyFields(this.selectedFields);
       this.closeLightbox();
       this.tab = 'generate';
@@ -937,6 +955,7 @@ document.addEventListener('alpine:init', () => {
       }
       this.maskImage = null;
       this.maskPainted = false;
+      await this._metaLoad;   // wait for this image's metadata on slow links
       this.applyFields(this.selectedFields);
       this.syncOutputSize(this.inputImage);
       this.mode = mode;
