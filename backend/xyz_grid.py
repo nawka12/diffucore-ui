@@ -12,7 +12,7 @@ from engine import ENGINE
 
 # ── public constants ──────────────────────────────────────────────
 
-PARAM_TYPES = ["None", "Seed", "Sampler", "Scheduler", "Steps", "CFG Scale"]
+PARAM_TYPES = ["None", "Seed", "Sampler", "Scheduler", "Steps", "CFG Scale", "Prompt S/R"]
 
 _PARAM_MAP: dict[str, str] = {
     "Seed": "seed",
@@ -204,20 +204,27 @@ def generate_xyz_grid(
     total_cells = len(z_vals) * len(y_vals) * len(x_vals)
     done = 0
 
-    # LoRA setup (once for the entire grid)
-    prompt = base_kwargs["prompt"]
-    neg = base_kwargs.get("negative_prompt", "")
-    clean_prompt, prompt_loras = ENGINE.parse_lora_prompt(prompt)
-    clean_neg, neg_loras = ENGINE.parse_lora_prompt(neg)
-    all_loras = prompt_loras + neg_loras
+    # A "Prompt S/R" axis and the prompt's own <lora:…> tags both vary the prompt
+    # per cell, so the prompt is re-derived (and its LoRAs re-fused) inside the
+    # loop. The raw prompt — tags intact — is the search/replace target; the
+    # base-parsed clean strings are only the grid's representative metadata.
+    raw_prompt = base_kwargs["prompt"]
+    raw_neg = base_kwargs.get("negative_prompt", "")
+    clean_prompt, base_p = ENGINE.parse_lora_prompt(raw_prompt)
+    clean_neg, base_n = ENGINE.parse_lora_prompt(raw_neg)
+
+    # Search tokens for any Prompt S/R axis = that axis's first value.
+    x_search = str(x_vals[0]) if x_type == "Prompt S/R" else ""
+    y_search = str(y_vals[0]) if y_type == "Prompt S/R" else ""
+    z_search = str(z_vals[0]) if z_type == "Prompt S/R" else ""
 
     info_parts = []
     t_start = time.perf_counter()
+    last_loras: list | None = None   # LoRA set currently fused (None = untouched)
 
     try:
-        if all_loras:
-            ENGINE.apply_temp_loras(all_loras)
-            info_parts.append(f"LoRAs: {len(all_loras)}")
+        if base_p or base_n:
+            info_parts.append(f"LoRAs: {len(base_p) + len(base_n)}")
 
         base_kwargs["prompt"] = clean_prompt
         base_kwargs["negative_prompt"] = clean_neg
@@ -243,12 +250,29 @@ def generate_xyz_grid(
                         progress_callback(done, total_cells)
 
                     kwargs = dict(base_kwargs)
-                    if x_type != "None":
-                        kwargs[_PARAM_MAP[x_type]] = x_val
-                    if y_type != "None":
-                        kwargs[_PARAM_MAP[y_type]] = y_val
-                    if z_type != "None":
-                        kwargs[_PARAM_MAP[z_type]] = z_val
+                    cell_prompt, cell_neg = raw_prompt, raw_neg
+                    for a_type, a_val, a_search in (
+                        (x_type, x_val, x_search),
+                        (y_type, y_val, y_search),
+                        (z_type, z_val, z_search),
+                    ):
+                        if a_type == "None":
+                            continue
+                        if a_type == "Prompt S/R":
+                            cell_prompt = cell_prompt.replace(a_search, str(a_val))
+                            cell_neg = cell_neg.replace(a_search, str(a_val))
+                        else:
+                            kwargs[_PARAM_MAP[a_type]] = a_val
+
+                    # Re-derive this cell's prompt LoRAs; only re-fuse when the
+                    # set actually changed (a cheap no-op for non-S/R sweeps).
+                    cp, cp_loras = ENGINE.parse_lora_prompt(cell_prompt)
+                    cn, cn_loras = ENGINE.parse_lora_prompt(cell_neg)
+                    kwargs["prompt"], kwargs["negative_prompt"] = cp, cn
+                    cell_loras = cp_loras + cn_loras
+                    if cell_loras != last_loras:
+                        ENGINE.apply_temp_loras(cell_loras)
+                        last_loras = cell_loras
 
                     try:
                         img, _ = ENGINE.generate_t2i(**kwargs)
@@ -310,5 +334,5 @@ def generate_xyz_grid(
         return grid_images, " | ".join(info_parts)
 
     finally:
-        if all_loras:
+        if last_loras is not None:
             ENGINE.clear_temp_loras()

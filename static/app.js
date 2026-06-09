@@ -38,7 +38,7 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── <lora:…> autocomplete in the prompt ─────────────────────
-    loraAC: { open: false, items: [], index: 0, start: -1 },
+    loraAC: { open: false, items: [], index: 0, start: -1, key: 'prompt', el: null, set: null, wrap: null },
 
     inputImage: null,
     maskImage: null,
@@ -592,15 +592,32 @@ document.addEventListener('alpine:init', () => {
     loraLabel(name) {
       return name.replace(/\.safetensors$/i, '');
     },
-    loraAutocomplete(el) {
+    // opts defaults to the prompt: trigger on `<`, insert <lora:name:1.0>.
+    // The X/Y/Z "Prompt S/R" fields pass {key, mode:'bare', set} to instead
+    // complete the current comma-separated segment with a bare lora filename —
+    // the exact substring S/R searches for inside the prompt's <lora:…> tag.
+    loraAutocomplete(el, opts) {
+      const o = opts || { key: 'prompt', mode: 'tag', set: (v) => { this.form.prompt = v; } };
       const before = el.value.slice(0, el.selectionStart);
-      const lt = before.lastIndexOf('<');
-      const m = lt === -1 ? null : before.slice(lt + 1).match(/^(?:lora:)?([^:>]*)$/i);
-      if (!m) { this.loraAC.open = false; return; }
-      const q = m[1].toLowerCase();
-      const items = this.loras.filter((n) => n.toLowerCase().includes(q));
+      let start, frag;
+      if (o.mode === 'bare') {
+        start = before.lastIndexOf(',') + 1;
+        while (el.value[start] === ' ') start++;          // skip the leading space
+        frag = before.slice(start);
+        if (!frag.trim()) { this.loraAC.open = false; return; }
+      } else {
+        const lt = before.lastIndexOf('<');
+        const m = lt === -1 ? null : before.slice(lt + 1).match(/^(?:lora:)?([^:>]*)$/i);
+        if (!m) { this.loraAC.open = false; return; }
+        start = lt;
+        frag = m[1];
+      }
+      const items = this.loras.filter((n) => n.toLowerCase().includes(frag.toLowerCase()));
       if (!items.length) { this.loraAC.open = false; return; }
-      Object.assign(this.loraAC, { open: true, items, index: 0, start: lt });
+      Object.assign(this.loraAC, {
+        open: true, items, index: 0, start, key: o.key, el,
+        set: o.set, wrap: o.mode === 'bare' ? ((n) => n) : ((n) => `<lora:${n}:1.0>`),
+      });
     },
     loraKeydown(e) {
       const ac = this.loraAC;
@@ -612,17 +629,18 @@ document.addEventListener('alpine:init', () => {
       else if (e.key === 'Escape') { e.preventDefault(); ac.open = false; }
     },
     applyLora(name) {
-      const el = this.$refs.promptEl;
-      const before = el.value.slice(0, this.loraAC.start);
+      const ac = this.loraAC;
+      const el = ac.el;
+      const before = el.value.slice(0, ac.start);
       const after = el.value.slice(el.selectionStart);
-      const insert = `<lora:${name}:1.0>`;
-      this.form.prompt = before + insert + after;
-      this.loraAC.open = false;
+      const insert = ac.wrap(name);
+      ac.set(before + insert + after);
+      ac.open = false;
       this.$nextTick(() => {
         const caret = before.length + insert.length;
         el.focus();
         el.setSelectionRange(caret, caret);
-        this.autogrow(el);
+        if (el.tagName === 'TEXTAREA') this.autogrow(el);
       });
     },
 
