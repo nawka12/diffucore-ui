@@ -592,31 +592,22 @@ document.addEventListener('alpine:init', () => {
     loraLabel(name) {
       return name.replace(/\.safetensors$/i, '');
     },
-    // opts defaults to the prompt: trigger on `<`, insert <lora:name:1.0>.
-    // The X/Y/Z "Prompt S/R" fields pass {key, mode:'bare', set} to instead
-    // complete the current comma-separated segment with a bare lora filename —
-    // the exact substring S/R searches for inside the prompt's <lora:…> tag.
+    // Trigger on `<`, insert <lora:name:1.0>. Used by the prompt (default) and
+    // the X/Y/Z "Prompt S/R" fields, which pass {key, set} to write back to the
+    // axis text — S/R then operates on the whole literal tag, so name swaps,
+    // weight sweeps, and removal all stay valid <lora:…> strings.
     loraAutocomplete(el, opts) {
-      const o = opts || { key: 'prompt', mode: 'tag', set: (v) => { this.form.prompt = v; } };
+      const o = opts || { key: 'prompt', set: (v) => { this.form.prompt = v; } };
       const before = el.value.slice(0, el.selectionStart);
-      let start, frag;
-      if (o.mode === 'bare') {
-        start = before.lastIndexOf(',') + 1;
-        while (el.value[start] === ' ') start++;          // skip the leading space
-        frag = before.slice(start);
-        if (!frag.trim()) { this.loraAC.open = false; return; }
-      } else {
-        const lt = before.lastIndexOf('<');
-        const m = lt === -1 ? null : before.slice(lt + 1).match(/^(?:lora:)?([^:>]*)$/i);
-        if (!m) { this.loraAC.open = false; return; }
-        start = lt;
-        frag = m[1];
-      }
+      const lt = before.lastIndexOf('<');
+      const m = lt === -1 ? null : before.slice(lt + 1).match(/^(?:lora:)?([^:>]*)$/i);
+      if (!m) { this.loraAC.open = false; return; }
+      const frag = m[1];
       const items = this.loras.filter((n) => n.toLowerCase().includes(frag.toLowerCase()));
       if (!items.length) { this.loraAC.open = false; return; }
       Object.assign(this.loraAC, {
-        open: true, items, index: 0, start, key: o.key, el,
-        set: o.set, wrap: o.mode === 'bare' ? ((n) => n) : ((n) => `<lora:${n}:1.0>`),
+        open: true, items, index: 0, start: lt, key: o.key, el,
+        set: o.set, wrap: (n) => `<lora:${n}:1.0>`,
       });
     },
     loraKeydown(e) {

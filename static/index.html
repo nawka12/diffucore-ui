@@ -379,7 +379,7 @@
               <div class="lora-ac-wrap" x-show="axes.x.type !== 'None' && !axisIsList(axes.x)"
                    @click.outside="loraAC.open=false">
                 <input type="text" x-model="axes.x.text" placeholder="comma separated"
-                       @input="axes.x.type==='Prompt S/R' && loraAutocomplete($el,{key:'x',mode:'bare',set:(v)=>axes.x.text=v})"
+                       @input="axes.x.type==='Prompt S/R' && loraAutocomplete($el,{key:'x',set:(v)=>axes.x.text=v})"
                        @keydown="loraKeydown($event)">
                 <ul class="lora-ac" x-show="loraAC.open && loraAC.key==='x'" @mousedown.prevent>
                   <template x-for="(name, i) in loraAC.items" :key="name">
@@ -406,7 +406,7 @@
               <div class="lora-ac-wrap" x-show="axes.y.type !== 'None' && !axisIsList(axes.y)"
                    @click.outside="loraAC.open=false">
                 <input type="text" x-model="axes.y.text" placeholder="comma separated"
-                       @input="axes.y.type==='Prompt S/R' && loraAutocomplete($el,{key:'y',mode:'bare',set:(v)=>axes.y.text=v})"
+                       @input="axes.y.type==='Prompt S/R' && loraAutocomplete($el,{key:'y',set:(v)=>axes.y.text=v})"
                        @keydown="loraKeydown($event)">
                 <ul class="lora-ac" x-show="loraAC.open && loraAC.key==='y'" @mousedown.prevent>
                   <template x-for="(name, i) in loraAC.items" :key="name">
@@ -433,7 +433,7 @@
               <div class="lora-ac-wrap" x-show="axes.z.type !== 'None' && !axisIsList(axes.z)"
                    @click.outside="loraAC.open=false">
                 <input type="text" x-model="axes.z.text" placeholder="comma separated"
-                       @input="axes.z.type==='Prompt S/R' && loraAutocomplete($el,{key:'z',mode:'bare',set:(v)=>axes.z.text=v})"
+                       @input="axes.z.type==='Prompt S/R' && loraAutocomplete($el,{key:'z',set:(v)=>axes.z.text=v})"
                        @keydown="loraKeydown($event)">
                 <ul class="lora-ac" x-show="loraAC.open && loraAC.key==='z'" @mousedown.prevent>
                   <template x-for="(name, i) in loraAC.items" :key="name">
