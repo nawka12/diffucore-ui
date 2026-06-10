@@ -12,7 +12,7 @@ from engine import ENGINE
 
 # ── public constants ──────────────────────────────────────────────
 
-PARAM_TYPES = ["None", "Seed", "Sampler", "Scheduler", "Steps", "CFG Scale", "Prompt S/R"]
+PARAM_TYPES = ["None", "Seed", "Sampler", "Scheduler", "Steps", "CFG Scale", "Prompt S/R", "Checkpoint"]
 
 _PARAM_MAP: dict[str, str] = {
     "Seed": "seed",
@@ -266,6 +266,17 @@ def generate_xyz_grid(
                         if a_type == "Prompt S/R":
                             cell_prompt = cell_prompt.replace(a_search, str(a_val))
                             cell_neg = cell_neg.replace(a_search, str(a_val))
+                        elif a_type == "Checkpoint":
+                            # Swap the whole model for this cell — a single-file
+                            # checkpoint, or Anima's DiT (VAE + TE held fixed).
+                            # reload_model no-ops when the name is already current,
+                            # so this only reloads on a change (cheapest with
+                            # Checkpoint on the outermost axis). On a real reload the
+                            # prompt's LoRAs vanish with the old model, so drop the
+                            # cache to re-fuse.
+                            msg = ENGINE.reload_model(str(a_val))
+                            if not msg.startswith("Model already loaded"):
+                                last_loras = None
                         else:
                             kwargs[_PARAM_MAP[a_type]] = a_val
 

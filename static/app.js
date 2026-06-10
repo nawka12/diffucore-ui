@@ -95,9 +95,11 @@ document.addEventListener('alpine:init', () => {
 
     // ── x/y/z sweep (txt2img only — reuses the shared form for base params) ──
     xyzSweep: false,
+    // Start every axis empty — preset values would be sent as-is and, after a
+    // type switch (e.g. to Checkpoint), become bogus values that error the grid.
     axes: {
-      x: { type: 'Sampler', text: '', list: ['euler', 'dpmpp_2m', 'dpmpp_2m_sde'] },
-      y: { type: 'Steps', text: '15, 25, 35', list: [] },
+      x: { type: 'Sampler', text: '', list: [] },
+      y: { type: 'Steps', text: '', list: [] },
       z: { type: 'None', text: '', list: [] },
     },
     xyzGrids: [],
@@ -141,9 +143,21 @@ document.addEventListener('alpine:init', () => {
 
     // X/Y/Z axes whose values come from a known set get a multi-select; numeric
     // axes (Steps / CFG / Seed) keep a free-text comma list.
-    axisIsList(axis) { return axis.type === 'Sampler' || axis.type === 'Scheduler'; },
-    axisOptions(axis) { return axis.type === 'Scheduler' ? this.schedulers : this.samplers; },
-    axisValues(axis) { return this.axisIsList(axis) ? axis.list.join(', ') : axis.text; },
+    axisIsList(axis) { return axis.type === 'Sampler' || axis.type === 'Scheduler' || axis.type === 'Checkpoint'; },
+    axisOptions(axis) {
+      if (axis.type === 'Scheduler') return this.schedulers;
+      // Anima is split-file: its "checkpoint" is the DiT (VAE + TE stay fixed).
+      if (axis.type === 'Checkpoint') return this.modelType === 'Anima' ? this.dits : this.checkpoints;
+      return this.samplers;
+    },
+    axisValues(axis) {
+      if (axis.type === 'None') return '';   // a disabled axis carries no values
+      return this.axisIsList(axis) ? axis.list.join(', ') : axis.text;
+    },
+    // Switching an axis's type makes its old values meaningless — and, for a
+    // Checkpoint switch, harmful (stale sampler names load as bogus checkpoints
+    // and abort the grid). Clear both stores so each type starts fresh.
+    clearAxisValues(axis) { axis.list = []; axis.text = ''; },
     get progressPct() {
       const t = this.progress.total;
       return t > 0 ? Math.round((this.progress.step / t) * 100) : 0;
@@ -203,6 +217,11 @@ document.addEventListener('alpine:init', () => {
         case 'cancelled': {
           const w = this._jobWaiters[ev.job];
           if (w) { delete this._jobWaiters[ev.job]; w(ev); }
+          // Clear myJobId only when THIS job ends. A job queued behind it has
+          // already moved myJobId on at submit time, so an earlier job's
+          // completion must not null it out — otherwise the queued job's
+          // progress/preview events stop routing and the bar sticks on "Starting…".
+          if (ev.job === this.myJobId) this.myJobId = null;
           break;
         }
       }
@@ -341,7 +360,6 @@ document.addEventListener('alpine:init', () => {
         this.flash('' + e);
       } finally {
         this.loadingModel = false;
-        this.myJobId = null;
       }
     },
 
@@ -641,7 +659,9 @@ document.addEventListener('alpine:init', () => {
     },
 
     async generate() {
-      if (!this.modelLoaded) { this.flash('Load a model first'); return; }
+      // A load in flight is fine: the job queues behind it and the model is
+      // loaded by the time it runs. Only refuse when nothing's loaded or loading.
+      if (!this.modelLoaded && !this.loadingModel) { this.flash('Load a model first'); return; }
       if (this.mode === 'i2i' && !this.inputImage) { this.flash('Provide an input image'); return; }
       if (this.mode === 'inpaint') {
         if (!this.inputImage) { this.flash('Provide an input image'); return; }
@@ -703,7 +723,6 @@ document.addEventListener('alpine:init', () => {
         this.busy = false;
         this.cancelling = false;
         this.previewUrl = null;
-        this.myJobId = null;
       }
     },
 
@@ -725,7 +744,8 @@ document.addEventListener('alpine:init', () => {
 
     // ── x/y/z sweep ─────────────────────────────────────────────
     async generateXyz() {
-      if (!this.modelLoaded) { this.flash('Load a model first'); return; }
+      // Queue behind an in-flight load (see generate()); only refuse when idle.
+      if (!this.modelLoaded && !this.loadingModel) { this.flash('Load a model first'); return; }
       // A Prompt S/R axis's search term (its first value) must appear in the
       // prompt or negative prompt, or every cell is identical. Refuse early —
       // same case-sensitive match the backend's replace uses.
@@ -767,7 +787,6 @@ document.addEventListener('alpine:init', () => {
       } finally {
         this.busy = false;
         this.cancelling = false;
-        this.myJobId = null;
       }
     },
 

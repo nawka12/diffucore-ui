@@ -364,7 +364,7 @@
           <div class="axes-body" x-show="xyzSweep">
             <div class="axis">
               <span class="axis-label">X &middot; columns</span>
-              <select x-model="axes.x.type">
+              <select x-model="axes.x.type" @change="clearAxisValues(axes.x)">
                 <template x-for="t in paramTypes" :key="t"><option :value="t" x-text="t"></option></template>
               </select>
               <div class="ms" x-data="{open:false}" @click.outside="open=false" x-show="axisIsList(axes.x)">
@@ -391,7 +391,7 @@
             </div>
             <div class="axis">
               <span class="axis-label">Y &middot; rows</span>
-              <select x-model="axes.y.type">
+              <select x-model="axes.y.type" @change="clearAxisValues(axes.y)">
                 <template x-for="t in paramTypes" :key="t"><option :value="t" x-text="t"></option></template>
               </select>
               <div class="ms" x-data="{open:false}" @click.outside="open=false" x-show="axisIsList(axes.y)">
@@ -418,7 +418,7 @@
             </div>
             <div class="axis">
               <span class="axis-label">Z &middot; pages</span>
-              <select x-model="axes.z.type">
+              <select x-model="axes.z.type" @change="clearAxisValues(axes.z)">
                 <template x-for="t in paramTypes" :key="t"><option :value="t" x-text="t"></option></template>
               </select>
               <div class="ms" x-data="{open:false}" @click.outside="open=false" x-show="axisIsList(axes.z)">

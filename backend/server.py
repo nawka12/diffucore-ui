@@ -270,19 +270,32 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[[int, int], None]) -> dict:
         sampler=p.sampler, scheduler=p.scheduler,
         seed=int(p.seed), shift=float(p.shift),
     )
-    grids, info = generate_xyz_grid(
-        base_kwargs,
-        p.x_type, p.x_vals, p.y_type, p.y_vals, p.z_type, p.z_vals,
-        progress_callback=on_progress,
-        save_callback=_save_output,
-    )
-    # base_kwargs was mutated in-place by generate_xyz_grid (prompt cleaned,
-    # base seed resolved), so it carries the right params for the grid metadata.
-    urls = []
-    for grid in grids:
-        out = _save_output(grid, base_kwargs)
-        urls.append(_output_url(out))
-    return {"grids": urls, "info": info}
+    # A "Checkpoint" axis swaps the in-memory model per cell, leaving the last
+    # swept checkpoint loaded. Restore the model the user actually had loaded so
+    # the app returns to its prior state (and the next plain generation isn't run
+    # on a surprise checkpoint).
+    swaps_model = "Checkpoint" in (p.x_type, p.y_type, p.z_type)
+    try:
+        grids, info = generate_xyz_grid(
+            base_kwargs,
+            p.x_type, p.x_vals, p.y_type, p.y_vals, p.z_type, p.z_vals,
+            progress_callback=on_progress,
+            save_callback=_save_output,
+        )
+        # base_kwargs was mutated in-place by generate_xyz_grid (prompt cleaned,
+        # base seed resolved), so it carries the right params for the grid metadata.
+        urls = []
+        for grid in grids:
+            out = _save_output(grid, base_kwargs)
+            urls.append(_output_url(out))
+        return {"grids": urls, "info": info}
+    finally:
+        if swaps_model and LAST_LOAD_FORM:
+            try:
+                _do_load(LoadPayload(**LAST_LOAD_FORM))
+            except Exception:  # noqa: BLE001 — keep the grid result; report real state
+                pass
+            _push({"type": "status", **_state_payload()})
 
 
 def _run_calibrate(p: CalibratePayload, on_progress: Callable[[int, int], None]) -> dict:

@@ -373,6 +373,10 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   gap: 22px;
   align-items: start;
 }
+/* Grid item defaults to min-width:auto, so a long, un-wrapping value (e.g. the
+   X/Y/Z multi-select showing full checkpoint/DiT names) would set a min-content
+   wider than the 380px track and stretch the page. min-width:0 lets it clip. */
+.controls { min-width: 0; }
 .controls .seg.modes { margin-bottom: 16px; }
 
 .seed-row { display: flex; gap: 8px; align-items: center; }
@@ -724,6 +728,8 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 }
 .ms-opt:hover { background: var(--surface-2); color: var(--txt); }
 .ms-opt input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
+/* Clip long checkpoint/DiT names instead of widening the dropdown panel. */
+.ms-opt span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* <lora:…> autocomplete dropdown under the prompt */
 .lora-ac-wrap { position: relative; }

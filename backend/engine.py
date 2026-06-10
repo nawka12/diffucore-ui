@@ -167,6 +167,10 @@ class LoadedModel:
     model: object
     native_res: int
     applied_loras: List[str] = field(default_factory=list)
+    # Anima's companion files, kept so an X/Y/Z "Checkpoint" sweep can reload a
+    # new DiT while holding the VAE + text encoder fixed.
+    vae_name: Optional[str] = None
+    te_name: Optional[str] = None
 
 
 class Engine:
@@ -346,6 +350,27 @@ class Engine:
         flags = self._perf_flag_summary()
         return f"Loaded {model_name} ({family}) in {elapsed:.1f}s{flags}"
 
+    def reload_model(self, name: str) -> str:
+        """Swap the model file for an X/Y/Z "Checkpoint" sweep, reusing the rest
+        of the current model — its staging settings (offload / perf flags) and,
+        for Anima, its companion VAE + text encoder — so cells differ only by the
+        model. Anima sweeps the DiT; every other family sweeps a single-file
+        checkpoint. The underlying loaders no-op when ``name`` is already current,
+        so calling this per cell only reloads on an actual change."""
+        lm = self._loaded
+        if lm and lm.family == MODEL_FAMILY_ANIMA:
+            return self.load_anima(
+                name, lm.vae_name, lm.te_name,
+                offload=self._offload, vae_tile=self._vae_tile,
+                compile=self._compile, cuda_graphs=self._cuda_graphs,
+            )
+        return self.load_model(
+            name,
+            offload=self._offload, vae_tile=self._vae_tile,
+            compile=self._compile, cuda_graphs=self._cuda_graphs,
+            channels_last=self._channels_last, tf32=self._tf32,
+        )
+
     def load_anima(
         self, dit_name: str, vae_name: str, te_name: str,
         offload: bool = True, vae_tile: bool = True,
@@ -391,6 +416,8 @@ class Engine:
             family=MODEL_FAMILY_ANIMA,
             model=model,
             native_res=1024,
+            vae_name=vae_name,
+            te_name=te_name,
         )
         flags = self._perf_flag_summary()
         return f"Loaded Anima in {elapsed:.1f}s{flags}  (DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})"
