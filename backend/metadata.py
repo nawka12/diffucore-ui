@@ -144,6 +144,24 @@ def parse_comfyui_metadata(prompt_json: str) -> dict:
     return result
 
 
+def format_detailer(detail: dict) -> str:
+    """Serialise detailer settings to a compact JSON string for the ``detailer``
+    PNG text chunk. Kept out of the AUTO1111 ``parameters`` line because per-model
+    prompts are free text (commas/colons) the flat parser can't round-trip."""
+    return json.dumps(detail, separators=(",", ":"))
+
+
+def parse_detailer(chunk: str) -> dict:
+    """Inverse of :func:`format_detailer`; ``{}`` when the chunk is absent or bad."""
+    if not chunk:
+        return {}
+    try:
+        data = json.loads(chunk)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def workspace_fields(meta: dict) -> dict:
     """Normalise a parsed metadata dict into typed workspace form values.
 

@@ -152,15 +152,20 @@ def _output_url(path: Path) -> str:
     return f"/outputs/{path.relative_to(OUTPUTS_DIR).as_posix()}"
 
 
-def _save_output(image: Image.Image, gen_kwargs: dict) -> Path:
+def _save_output(image: Image.Image, gen_kwargs: dict,
+                 detailer: Optional[dict] = None) -> Path:
     """Save an image to outputs/ with AUTO1111 metadata; return its path.
 
-    Used for single generations and for each individual X/Y/Z cell.
+    Used for single generations and for each individual X/Y/Z cell. ``detailer``,
+    when given, is stored as a JSON ``detailer`` chunk so the post-gen detailer
+    settings can be restored later.
     """
     out = next_output_path(ENGINE.last_seed)
     meta = PngInfo()
     meta_kwargs = {k: v for k, v in gen_kwargs.items() if k != "progress_callback"}
     meta.add_text("parameters", md.format_metadata(meta_kwargs, ENGINE))
+    if detailer:
+        meta.add_text("detailer", md.format_detailer(detailer))
     image.save(out, pnginfo=meta)
     return out
 
@@ -248,7 +253,21 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                     notes.append(f"{dm.model} error: {e}")
             detail_info = "  |  detailer [" + "; ".join(notes) + "]"
 
-        out = _save_output(image, gen_kwargs)
+        # Save the *raw* prompt/neg (the <lora:…> tags survive parse_lora_prompt
+        # stripping) so the LoRA selection round-trips through metadata restore.
+        gen_kwargs["prompt"], gen_kwargs["negative_prompt"] = p.prompt, p.neg
+        detailer_meta = {
+            "enabled": True,
+            "models": [{"model": dm.model, "prompt": dm.prompt} for dm in active],
+            "neg": p.detail_neg,
+            "confidence": p.detail_confidence,
+            "strength": p.detail_strength,
+            "dilation": p.detail_dilation,
+            "padding": p.detail_padding,
+            "blur": p.detail_blur,
+            "maxDet": p.detail_max,
+        } if active else None
+        out = _save_output(image, gen_kwargs, detailer=detailer_meta)
         rel = out.relative_to(OUTPUTS_DIR)
         return {
             "image_url": _output_url(out),
@@ -709,8 +728,13 @@ def api_metadata(path: str):
     target = (OUTPUTS_DIR / path).resolve()
     if OUTPUTS_DIR.resolve() not in target.parents or not target.is_file():
         return {"raw": "", "fields": {}}
-    raw = md.read_png_metadata(str(target))
-    return {"raw": raw, "fields": md.workspace_fields(md.parse_metadata(raw))}
+    info = md.read_png_info(str(target))
+    raw = info.get("parameters", "")
+    fields = md.workspace_fields(md.parse_metadata(raw))
+    detailer = md.parse_detailer(info.get("detailer", ""))
+    if detailer:
+        fields["detailer"] = detailer
+    return {"raw": raw, "fields": fields}
 
 
 @app.post("/api/metadata/parse")
@@ -747,6 +771,10 @@ async def api_metadata_parse(file: UploadFile = File(...)):
         fields = md.workspace_fields(md.parse_metadata(auto1111))
     else:
         fields = md.workspace_fields(md.parse_comfyui_metadata(comfyui))
+
+    detailer = md.parse_detailer(info.get("detailer", ""))
+    if detailer:
+        fields["detailer"] = detailer
 
     return {"text": "\n".join(lines), "fields": fields}
 

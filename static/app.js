@@ -1016,6 +1016,20 @@ document.addEventListener('alpine:init', () => {
       const keys = ['prompt', 'neg', 'steps', 'cfg', 'sampler', 'scheduler',
                     'seed', 'shift', 'strength', 'width', 'height'];
       for (const k of keys) if (f[k] !== undefined) this.form[k] = f[k];
+      if (f.detailer) this.applyDetailer(f.detailer);
+    },
+
+    // Restore the detailer panel from a saved `detailer` metadata chunk. Additive,
+    // like applyFields — an image without the chunk leaves the panel untouched.
+    applyDetailer(d) {
+      this.detail.enabled = d.enabled !== false;
+      if (Array.isArray(d.models) && d.models.length) {
+        this.detail.models = d.models.map(m => ({ model: m.model || '', prompt: m.prompt || '' }));
+      }
+      if (d.neg !== undefined) this.detail.neg = d.neg;
+      for (const k of ['confidence', 'strength', 'dilation', 'padding', 'blur', 'maxDet']) {
+        if (d[k] !== undefined) this.detail[k] = d[k];
+      }
     },
 
     // Parse AUTO1111-style parameters pasted into the prompt box and apply them
