@@ -90,7 +90,10 @@ SAMPLERS_SD = [
 SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm"]
 # euler_ancestral_anneal anneals eta with σ (full ancestral burn-in at high σ,
 # deterministic at low σ); Anima-only, aimed at rectified-flow merges.
-SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal"]
+# secant_anneal is that annealed ancestral burn-in handing off to secant's
+# 2nd-order x0 refinement as σ→0 (curvature=0 ⇒ euler_ancestral_anneal,
+# eta_max=0 ⇒ deterministic secant); Anima-only.
+SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal"]
 SAMPLERS_FLUX = SAMPLERS_FLOW
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
@@ -104,8 +107,10 @@ SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
 # (they assume σ_max == 1). normal/kl_optimal/linear_quadratic all start at σ≈1.
 # smoothstep is Anima-only for now: a U-shaped (endpoint-dense) flow schedule
 # designed to pair with euler_ancestral_anneal on rectified-flow merges.
+# beta is the Beta(0.6, 0.6)-quantile schedule (ComfyUI's "beta", pure-torch):
+# a tunable U-shape in t mapped through the flow shift; Anima-only for now.
 SCHEDULERS_ANIMA = ["flow", "flow_dyn", "oss", "sgm_uniform", "simple",
-                    "normal", "kl_optimal", "linear_quadratic", "smoothstep"]
+                    "normal", "kl_optimal", "linear_quadratic", "smoothstep", "beta"]
 SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple",
                    "normal", "kl_optimal", "linear_quadratic"]
 
