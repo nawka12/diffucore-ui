@@ -102,8 +102,10 @@ SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
 # Flow families omit "ddim_uniform": its DDIM-style table walk starts below
 # σ_max (≈0.98, not 1.0), which mismatches the flow pipelines' pure-noise init
 # (they assume σ_max == 1). normal/kl_optimal/linear_quadratic all start at σ≈1.
+# smoothstep is Anima-only for now: a U-shaped (endpoint-dense) flow schedule
+# designed to pair with euler_ancestral_anneal on rectified-flow merges.
 SCHEDULERS_ANIMA = ["flow", "flow_dyn", "oss", "sgm_uniform", "simple",
-                    "normal", "kl_optimal", "linear_quadratic"]
+                    "normal", "kl_optimal", "linear_quadratic", "smoothstep"]
 SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple",
                    "normal", "kl_optimal", "linear_quadratic"]
 
