@@ -92,15 +92,27 @@ def _parse_date_dir(name: str) -> date:
         return date.min
 
 
+def _output_sort_key(f: Path) -> tuple:
+    """Newest-first ordering within a day folder. The leading index in
+    ``{i:02d}-{seed}.png`` climbs with save time, so sort on it numerically — a
+    string sort misorders once a day passes 99 images (``"100"`` < ``"99"``).
+    Names without a parseable index fall back to mtime, ranked below indexed files.
+    """
+    try:
+        return (1, int(f.stem.split("-")[0]), 0.0)
+    except (ValueError, IndexError):
+        return (0, 0, f.stat().st_mtime)
+
+
 def scan_outputs() -> List[Path]:
     _ensure_dirs()
     files = []
     dirs = [d for d in OUTPUTS_DIR.iterdir() if d.is_dir()]
     dirs.sort(key=lambda d: _parse_date_dir(d.name), reverse=True)
     for d in dirs:
-        for f in sorted(d.iterdir(), reverse=True):
-            if f.suffix.lower() == ".png":
-                files.append(f)
+        pngs = [f for f in d.iterdir() if f.suffix.lower() == ".png"]
+        pngs.sort(key=_output_sort_key, reverse=True)
+        files.extend(pngs)
     return files
 
 
