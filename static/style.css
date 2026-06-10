@@ -697,9 +697,11 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   font-size: 13px;
   padding: 9px 11px;
   cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Wrap selected values (long checkpoint filenames break anywhere) instead of
+     clipping to one ellipsised line, so every pick stays readable. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 .ms-btn:hover { border-color: var(--line-hi); }
 .ms-panel {

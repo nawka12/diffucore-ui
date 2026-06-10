@@ -52,6 +52,56 @@ def _get_font(size: int = 14):
     return _FONT_CACHE[size]
 
 
+def _wrap_lines(text: str, font, max_w: int) -> list[str]:
+    """Break *text* into lines no wider than *max_w* pixels.
+
+    Prefers breaking after separators common in filenames (space - _ + .) so a
+    long checkpoint name folds at natural boundaries; hard-breaks by character
+    only when a single run is itself wider than the available width.
+    """
+    text = str(text)
+
+    def w(s: str) -> int:
+        b = font.getbbox(s)
+        return b[2] - b[0]
+
+    if max_w <= 0 or w(text) <= max_w:
+        return [text]
+
+    # Split into tokens, each keeping its trailing separator so breaks land at
+    # natural spots.
+    tokens, buf = [], ""
+    for ch in text:
+        buf += ch
+        if ch in " -_+.":
+            tokens.append(buf)
+            buf = ""
+    if buf:
+        tokens.append(buf)
+
+    lines, cur = [], ""
+    for tok in tokens:
+        # A single token wider than the line (e.g. a long unbroken name) → cut
+        # off as many leading chars as fit, repeat on the remainder.
+        while w(tok) > max_w and len(tok) > 1:
+            cut = len(tok)
+            while cut > 1 and w(tok[:cut]) > max_w:
+                cut -= 1
+            if cur:
+                lines.append(cur.rstrip())
+                cur = ""
+            lines.append(tok[:cut])
+            tok = tok[cut:]
+        if cur and w(cur + tok) > max_w:
+            lines.append(cur.rstrip())
+            cur = tok
+        else:
+            cur += tok
+    if cur:
+        lines.append(cur.rstrip())
+    return lines or [text]
+
+
 # ── value parsing ─────────────────────────────────────────────────
 
 def resolve_values(param_type: str, values_str: str, base_value: Any) -> list:
@@ -101,13 +151,20 @@ def _make_grid(
     font_size = max(20, min(cell_w, cell_h) // 22)
     font = _get_font(font_size)
     pad = max(10, font_size // 2)
+    line_h = font_size + max(2, pad // 4)
 
     def _text_w(s: str) -> int:
         box = font.getbbox(str(s))
         return box[2] - box[0]
 
-    header_h = font_size + 2 * pad
-    max_label = max((_text_w(s) for s in y_labels), default=0)
+    # Wrap long labels to their available width so nothing overflows or collides
+    # (e.g. full checkpoint filenames on a Checkpoint axis).
+    x_wrapped = [_wrap_lines(s, font, cell_w - 2 * pad) for s in x_labels]
+    y_wrapped = [_wrap_lines(s, font, cell_w - 2 * pad) for s in y_labels]
+
+    x_lines = max((len(w) for w in x_wrapped), default=1)
+    header_h = x_lines * line_h + 2 * pad
+    max_label = max((_text_w(ln) for w in y_wrapped for ln in w), default=0)
     label_w = max_label + 2 * pad if max_label else CELL_BORDER
 
     grid_w = label_w + n_cols * cell_w + (n_cols + 1) * CELL_BORDER
@@ -116,27 +173,21 @@ def _make_grid(
     canvas = Image.new("RGB", (grid_w, grid_h), (17, 17, 19))
     draw = ImageDraw.Draw(canvas)
 
+    def _draw_stack(cx: int, cy: int, lines: list[str], fill) -> None:
+        """Draw a vertically-centered stack of centered lines around (cx, cy)."""
+        top = cy - (len(lines) * line_h) // 2 + line_h // 2
+        for i, ln in enumerate(lines):
+            draw.text((cx, top + i * line_h), ln, font=font, fill=fill, anchor="mm")
+
     # Column headers (X labels) — teal
     for xi in range(n_cols):
         cx = label_w + CELL_BORDER + xi * (cell_w + CELL_BORDER) + cell_w // 2
-        draw.text(
-            (cx, header_h // 2),
-            str(x_labels[xi]),
-            font=font,
-            fill=(93, 214, 192),
-            anchor="mm",
-        )
+        _draw_stack(cx, header_h // 2, x_wrapped[xi], (93, 214, 192))
 
     # Row labels (Y labels) — accent orange
     for yi in range(n_rows):
         cy = header_h + CELL_BORDER + yi * (cell_h + CELL_BORDER) + cell_h // 2
-        draw.text(
-            (label_w // 2, cy),
-            str(y_labels[yi]),
-            font=font,
-            fill=(232, 162, 101),
-            anchor="mm",
-        )
+        _draw_stack(label_w // 2, cy, y_wrapped[yi], (232, 162, 101))
 
     # Cells
     for yi in range(n_rows):
@@ -322,18 +373,23 @@ def generate_xyz_grid(
             # If Z is active, prepend a Z header strip
             if z_type != "None":
                 zf_size = max(22, grid.width // 45)
-                strip_h = zf_size + 20
+                zf = _get_font(zf_size)
+                z_line_h = zf_size + 8
+                z_lines = _wrap_lines(
+                    f"{z_type}: {z_val}", zf, grid.width - 2 * zf_size,
+                )
+                strip_h = len(z_lines) * z_line_h + 12
                 final = Image.new(
                     "RGB", (grid.width, grid.height + strip_h), (17, 17, 19),
                 )
                 final.paste(grid, (0, strip_h))
                 zd = ImageDraw.Draw(final)
-                zf = _get_font(zf_size)
-                zd.text(
-                    (final.width // 2, strip_h // 2),
-                    f"{z_type}: {z_val}",
-                    font=zf, fill=(232, 230, 227), anchor="mm",
-                )
+                top = strip_h // 2 - (len(z_lines) * z_line_h) // 2 + z_line_h // 2
+                for i, ln in enumerate(z_lines):
+                    zd.text(
+                        (final.width // 2, top + i * z_line_h),
+                        ln, font=zf, fill=(232, 230, 227), anchor="mm",
+                    )
                 grid = final
 
             grid_images.append(grid)
