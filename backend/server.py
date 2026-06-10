@@ -351,9 +351,28 @@ def _handle_exit(self, sig, frame):
 
 uvicorn.Server.handle_exit = _handle_exit
 
-# The last successful /api/load payload, so a fresh device can restore the exact
-# checkpoint/DiT/VAE/offload selections (not just "a model is loaded").
-LAST_LOAD_FORM: Optional[dict] = None
+# The last successful /api/load payload, so a fresh device — or a server restart
+# — can restore the exact checkpoint/DiT/VAE/offload selections (not just "a model
+# is loaded"). Persisted to disk so it survives a restart; the form is repopulated
+# but the model itself is not reloaded (status stays "no model loaded").
+_LAST_LOAD_PATH = _ROOT / "last_load.json"
+
+
+def _read_last_load() -> Optional[dict]:
+    try:
+        return json.loads(_LAST_LOAD_PATH.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _write_last_load(form: dict) -> None:
+    try:
+        _LAST_LOAD_PATH.write_text(json.dumps(form))
+    except OSError:
+        pass
+
+
+LAST_LOAD_FORM: Optional[dict] = _read_last_load()
 
 
 def _push(ev: dict) -> None:
@@ -560,6 +579,7 @@ async def api_load(p: LoadPayload):
         status = _do_load(p)
         if status.startswith(("Loaded", "Model already loaded")):
             LAST_LOAD_FORM = p.dict()
+            _write_last_load(LAST_LOAD_FORM)
         _push({"type": "status", **_state_payload()})
         return {"status": status, "loaded": bool(ENGINE.loaded_name)}
 
