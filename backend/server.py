@@ -130,6 +130,7 @@ class XYZPayload(BaseModel):
     y_vals: str = ""
     z_type: str = "None"
     z_vals: str = ""
+    preview: bool = True                 # stream live latent previews per cell
 
 
 class CancelPayload(BaseModel):
@@ -276,7 +277,8 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             ENGINE.clear_temp_loras()
 
 
-def _run_xyz(p: XYZPayload, on_progress: Callable[[int, int], None]) -> dict:
+def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
+             on_preview: Optional[Callable] = None) -> dict:
     if not ENGINE.loaded_name:
         raise RuntimeError("Load a model first")
     base_kwargs = dict(
@@ -296,6 +298,7 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[[int, int], None]) -> dict:
             base_kwargs,
             p.x_type, p.x_vals, p.y_type, p.y_vals, p.z_type, p.z_vals,
             progress_callback=on_progress,
+            preview_callback=on_preview if p.preview else None,
             save_callback=_save_output,
         )
         # base_kwargs was mutated in-place by generate_xyz_grid (prompt cleaned,
@@ -439,11 +442,14 @@ def _broadcast_queue() -> None:
 
 
 def _make_callbacks(job: Job):
-    def on_progress(step, total):
+    def on_progress(step, total, cell=None, cells=None):
         if job.cancel.is_set():
             raise _Cancelled  # unwinds the sampler; caught in the worker
         job.step, job.total = int(step), int(total)
-        _push({"type": "progress", "job": job.id, "step": int(step), "total": int(total)})
+        ev = {"type": "progress", "job": job.id, "step": int(step), "total": int(total)}
+        if cells is not None:  # X/Y/Z: carry the 1-based current cell ("image N/total")
+            ev["cell"], ev["cells"] = int(cell), int(cells)
+        _push(ev)
 
     def on_preview(image):
         # Encode the approx preview to a PNG data-URL on the worker thread, then
@@ -630,8 +636,8 @@ async def api_generate(p: GeneratePayload):
 @app.post("/api/xyz")
 async def api_xyz(p: XYZPayload):
     def run(job: Job) -> dict:
-        on_progress, _ = _make_callbacks(job)
-        return _run_xyz(p, on_progress)
+        on_progress, on_preview = _make_callbacks(job)
+        return _run_xyz(p, on_progress, on_preview)
     job = Job("xyz", "x/y/z grid", run)
     _enqueue(job)
     return {"job": job.id}

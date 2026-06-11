@@ -164,7 +164,10 @@ document.addEventListener('alpine:init', () => {
     },
     get progressLabel() {
       const t = this.progress.total;
-      return t > 0 ? `${this.progress.step} / ${t}  (${this.progressPct}%)` : 'Starting…';
+      if (t <= 0) return 'Starting…';
+      const steps = `${this.progress.step} / ${t}  (${this.progressPct}%)`;
+      // X/Y/Z carries a cell index so the bar reads "image N/total" too.
+      return this.progress.cells ? `Image ${this.progress.cell}/${this.progress.cells} · ${steps}` : steps;
     },
     get checkpointChoices() { return this.choices(this.checkpoints, 'models/checkpoints/'); },
     get ditChoices()        { return this.choices(this.dits, 'models/diffusion-models/'); },
@@ -207,7 +210,7 @@ document.addEventListener('alpine:init', () => {
           // tracks THIS device's own job, so a queued device isn't shown
           // another device's progress.
           this.runProg = { step: ev.step, total: ev.total };
-          if (ev.job === this.myJobId) this.progress = { step: ev.step, total: ev.total };
+          if (ev.job === this.myJobId) this.progress = { step: ev.step, total: ev.total, cell: ev.cell, cells: ev.cells };
           break;
         case 'preview':
           if (ev.job === this.myJobId) this.previewUrl = ev.image;
@@ -760,6 +763,7 @@ document.addEventListener('alpine:init', () => {
       }
       this.busy = true;
       this.progress = { step: 0, total: 0 };
+      this.previewUrl = null;
       this.xyzInfo = '';
       const payload = {
         prompt: this.form.prompt, neg: this.form.neg,
@@ -770,6 +774,7 @@ document.addEventListener('alpine:init', () => {
         x_type: this.axes.x.type, x_vals: this.axisValues(this.axes.x),
         y_type: this.axes.y.type, y_vals: this.axisValues(this.axes.y),
         z_type: this.axes.z.type, z_vals: this.axisValues(this.axes.z),
+        preview: this.preview,
       };
       try {
         const ev = await this.submitJob('/api/xyz', payload);
@@ -787,6 +792,7 @@ document.addEventListener('alpine:init', () => {
       } finally {
         this.busy = false;
         this.cancelling = false;
+        this.previewUrl = null;
       }
     },
 

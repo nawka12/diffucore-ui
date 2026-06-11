@@ -217,7 +217,8 @@ def generate_xyz_grid(
     y_values_str: str,
     z_type: str,
     z_values_str: str,
-    progress_callback: Callable[[int, int], None] | None = None,
+    progress_callback: Callable[..., None] | None = None,
+    preview_callback: Callable[[Image.Image], None] | None = None,
     save_callback: Callable[[Image.Image, dict], None] | None = None,
 ) -> tuple[list[Image.Image], str]:
     """Generate XYZ plot grid(s).
@@ -233,7 +234,10 @@ def generate_xyz_grid(
     x_values_str, y_values_str, z_values_str : str
         Comma-separated raw values for each axis.
     progress_callback : callable or None
-        Called with ``(current, total)`` for progress reporting.
+        Called with ``(step, total_steps, cell, total_cells)`` — cumulative
+        sampling step across the whole grid, plus the 1-based current cell.
+    preview_callback : callable or None
+        Forwarded into each cell's generation to stream live latent previews.
     save_callback : callable or None
         Called as ``(image, kwargs)`` for each successfully generated cell so
         the caller can persist individual images.
@@ -259,6 +263,25 @@ def generate_xyz_grid(
 
     total_cells = len(z_vals) * len(y_vals) * len(x_vals)
     done = 0
+
+    # Cumulative sampling steps across every cell — drives a single progress bar
+    # for the whole grid (e.g. 32/96 for three 32-step cells). Steps can itself be
+    # an axis, so a cell's count is the base unless a Steps axis overrides it
+    # (x→y→z, last wins — same precedence as the generation loop below).
+    base_steps = int(base_kwargs.get("steps", 0))
+
+    def _cell_steps(xv, yv, zv) -> int:
+        s = base_steps
+        for a_type, a_val in ((x_type, xv), (y_type, yv), (z_type, zv)):
+            if a_type == "Steps":
+                s = int(a_val)
+        return s
+
+    total_steps = sum(
+        _cell_steps(xv, yv, zv)
+        for zv in z_vals for yv in y_vals for xv in x_vals
+    )
+    steps_done = 0   # cumulative steps from completed cells
 
     # A "Prompt S/R" axis and the prompt's own <lora:…> tags both vary the prompt
     # per cell, so the prompt is re-derived (and its LoRAs re-fused) inside the
@@ -302,9 +325,6 @@ def generate_xyz_grid(
                 cols: list[Image.Image] = []
 
                 for xi, x_val in enumerate(x_vals):
-                    if progress_callback is not None:
-                        progress_callback(done, total_cells)
-
                     kwargs = dict(base_kwargs)
                     cell_prompt, cell_neg = raw_prompt, raw_neg
                     for a_type, a_val, a_search in (
@@ -341,6 +361,19 @@ def generate_xyz_grid(
                         ENGINE.apply_temp_loras(cell_loras)
                         last_loras = cell_loras
 
+                    # Live per-cell progress (cumulative step + 1-based cell index)
+                    # and preview, forwarded into this cell's generation.
+                    cur_steps = int(kwargs.get("steps", base_steps))
+                    if progress_callback is not None:
+                        progress_callback(steps_done, total_steps, done + 1, total_cells)
+                        kwargs["progress_callback"] = (
+                            lambda step, _t, base=steps_done, cell=done:
+                                progress_callback(base + step, total_steps,
+                                                  cell + 1, total_cells)
+                        )
+                    if preview_callback is not None:
+                        kwargs["preview_callback"] = preview_callback
+
                     try:
                         img, _ = ENGINE.generate_t2i(**kwargs)
                         if save_callback is not None:
@@ -357,6 +390,7 @@ def generate_xyz_grid(
                         )
 
                     cols.append(img)
+                    steps_done += cur_steps
                     done += 1
 
                 rows.append(cols)
