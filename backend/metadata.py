@@ -8,6 +8,7 @@ JSON found in the ``prompt`` chunk.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -35,7 +36,58 @@ UI_ID = f"diffucore-ui+{_UI_COMMIT}" if _UI_COMMIT else "diffucore-ui"
 DIFF_ID = f"diffucore+{_DIFF_COMMIT}" if _DIFF_COMMIT else f"diffucore+{_DIFFUCORE_VERSION}"
 
 
-def format_metadata(gen_kwargs: dict, engine) -> str:
+def _quote(text) -> str:
+    """Wrap a value in JSON double-quotes only when it would otherwise break the
+    flat comma/colon parser (free-text prompts). Mirrors AUTO1111's ``quote()``."""
+    text = str(text)
+    if any(c in text for c in (",", "\n", '"')):
+        return json.dumps(text, ensure_ascii=False)
+    return text
+
+
+def _unquote(text: str):
+    """Inverse of :func:`_quote`: decode a JSON-quoted value, else return as-is."""
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
+    return text
+
+
+def _ordinal(n: int) -> str:
+    """``2`` -> ``"2nd"``. Matches the per-unit suffix ADetailer writes."""
+    suffix = "th" if 11 <= n % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def _detailer_fields(detail: dict) -> list[str]:
+    """ADetailer-compatible ``Key: value`` pairs for the ``parameters`` line.
+
+    This app shares one set of knobs across the stack, while ADetailer stores
+    them per detection unit — so each model repeats the shared knobs under its
+    own ``2nd``/``3rd`` suffix, which is what AUTO1111 + ADetailer expects.
+    """
+    neg = detail.get("neg", "")
+    fields: list[str] = []
+    for i, m in enumerate(detail.get("models") or []):
+        s = "" if i == 0 else f" {_ordinal(i + 1)}"
+        fields.append(f"ADetailer model{s}: {_quote(m.get('model', ''))}")
+        if m.get("prompt"):
+            fields.append(f"ADetailer prompt{s}: {_quote(m['prompt'])}")
+        if neg:
+            fields.append(f"ADetailer negative prompt{s}: {_quote(neg)}")
+        fields.append(f"ADetailer confidence{s}: {detail.get('confidence')}")
+        fields.append(f"ADetailer dilate erode{s}: {detail.get('dilation')}")
+        fields.append(f"ADetailer mask blur{s}: {detail.get('blur')}")
+        fields.append(f"ADetailer denoising strength{s}: {detail.get('strength')}")
+        fields.append(f"ADetailer inpaint only masked{s}: True")
+        fields.append(f"ADetailer inpaint padding{s}: {detail.get('padding')}")
+        fields.append(f"ADetailer mask only top k largest{s}: {detail.get('maxDet')}")
+    return fields
+
+
+def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None) -> str:
     """Build the AUTO1111-style ``parameters`` string for a finished generation.
 
     Reads loaded-model name, resolved seed, and perf flags off ``engine``.
@@ -57,6 +109,8 @@ def format_metadata(gen_kwargs: dict, engine) -> str:
         fields.append(f"Denoising strength: {gen_kwargs['strength']}")
     if "shift" in gen_kwargs:
         fields.append(f"Shift: {gen_kwargs['shift']}")
+    if detailer:
+        fields.extend(_detailer_fields(detailer))
     fields.append(f"diffucore-ui: {UI_ID}")
     fields.append(DIFF_ID)
     flags = engine.perf_flags_str
@@ -71,10 +125,9 @@ def read_png_metadata(path: str) -> str:
     return img.info.get("parameters", "")
 
 
-def read_png_info(path: str) -> dict:
-    """Return all PNG text chunks as a dict."""
-    with Image.open(path) as raw:
-        return dict(raw.info)
+# key: value, where value is a JSON-quoted string (so commas/colons inside a
+# free-text prompt survive) or a bare run up to the next comma. Mirrors AUTO1111.
+_PARAM_RE = re.compile(r'\s*([\w \-/]+?):\s*("(?:\\.|[^"\\])*"|[^,]*)\s*(?:,|$)')
 
 
 def parse_metadata(params_str: str) -> dict:
@@ -101,11 +154,9 @@ def parse_metadata(params_str: str) -> dict:
         result["prompt"] = lines[0].strip()
         fields_str = lines[1] if len(lines) > 1 else ""
         result["negative_prompt"] = ""
-    for pair in fields_str.split(","):
-        pair = pair.strip()
-        if ":" in pair:
-            key, val = pair.split(":", 1)
-            result[key.strip().lower().replace(" ", "_")] = val.strip()
+    for m in _PARAM_RE.finditer(fields_str):
+        key = m.group(1).strip().lower().replace(" ", "_")
+        result[key] = _unquote(m.group(2).strip())
     return result
 
 
@@ -144,22 +195,44 @@ def parse_comfyui_metadata(prompt_json: str) -> dict:
     return result
 
 
-def format_detailer(detail: dict) -> str:
-    """Serialise detailer settings to a compact JSON string for the ``detailer``
-    PNG text chunk. Kept out of the AUTO1111 ``parameters`` line because per-model
-    prompts are free text (commas/colons) the flat parser can't round-trip."""
-    return json.dumps(detail, separators=(",", ":"))
+def extract_detailer(meta: dict) -> dict:
+    """Reconstruct this app's detailer settings from the ADetailer-compatible
+    keys on a parsed ``parameters`` line. ``{}`` when no detailer ran.
 
-
-def parse_detailer(chunk: str) -> dict:
-    """Inverse of :func:`format_detailer`; ``{}`` when the chunk is absent or bad."""
-    if not chunk:
+    Models come from the ``ADetailer model``/``... 2nd``/... stack; the shared
+    knobs and negative are read from the first unit (this app shares them).
+    """
+    if "adetailer_model" not in meta:
         return {}
-    try:
-        data = json.loads(chunk)
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    models = []
+    i = 0
+    while True:
+        suf = "" if i == 0 else f"_{_ordinal(i + 1)}"
+        if f"adetailer_model{suf}" not in meta:
+            break
+        models.append({
+            "model": meta[f"adetailer_model{suf}"],
+            "prompt": meta.get(f"adetailer_prompt{suf}", ""),
+        })
+        i += 1
+    det = {
+        "enabled": True,
+        "models": models,
+        "neg": meta.get("adetailer_negative_prompt", ""),
+    }
+    for key, src, cast in (
+        ("confidence", "adetailer_confidence", float),
+        ("strength", "adetailer_denoising_strength", float),
+        ("dilation", "adetailer_dilate_erode", int),
+        ("padding", "adetailer_inpaint_padding", int),
+        ("blur", "adetailer_mask_blur", int),
+        ("maxDet", "adetailer_mask_only_top_k_largest", int),
+    ):
+        try:
+            det[key] = cast(meta[src])
+        except (KeyError, TypeError, ValueError):
+            pass
+    return det
 
 
 def workspace_fields(meta: dict) -> dict:
@@ -210,4 +283,7 @@ def workspace_fields(meta: dict) -> dict:
                 out["width"], out["height"] = w, h
         except ValueError:
             pass
+    detailer = extract_detailer(meta)
+    if detailer:
+        out["detailer"] = detailer
     return out

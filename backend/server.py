@@ -157,15 +157,13 @@ def _save_output(image: Image.Image, gen_kwargs: dict,
     """Save an image to outputs/ with AUTO1111 metadata; return its path.
 
     Used for single generations and for each individual X/Y/Z cell. ``detailer``,
-    when given, is stored as a JSON ``detailer`` chunk so the post-gen detailer
-    settings can be restored later.
+    when given, is appended to the ``parameters`` line as ADetailer-compatible
+    keys so the post-gen detailer settings can be restored later.
     """
     out = next_output_path(ENGINE.last_seed)
     meta = PngInfo()
     meta_kwargs = {k: v for k, v in gen_kwargs.items() if k != "progress_callback"}
-    meta.add_text("parameters", md.format_metadata(meta_kwargs, ENGINE))
-    if detailer:
-        meta.add_text("detailer", md.format_detailer(detailer))
+    meta.add_text("parameters", md.format_metadata(meta_kwargs, ENGINE, detailer=detailer))
     image.save(out, pnginfo=meta)
     return out
 
@@ -257,7 +255,6 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
         # stripping) so the LoRA selection round-trips through metadata restore.
         gen_kwargs["prompt"], gen_kwargs["negative_prompt"] = p.prompt, p.neg
         detailer_meta = {
-            "enabled": True,
             "models": [{"model": dm.model, "prompt": dm.prompt} for dm in active],
             "neg": p.detail_neg,
             "confidence": p.detail_confidence,
@@ -728,12 +725,8 @@ def api_metadata(path: str):
     target = (OUTPUTS_DIR / path).resolve()
     if OUTPUTS_DIR.resolve() not in target.parents or not target.is_file():
         return {"raw": "", "fields": {}}
-    info = md.read_png_info(str(target))
-    raw = info.get("parameters", "")
+    raw = md.read_png_metadata(str(target))
     fields = md.workspace_fields(md.parse_metadata(raw))
-    detailer = md.parse_detailer(info.get("detailer", ""))
-    if detailer:
-        fields["detailer"] = detailer
     return {"raw": raw, "fields": fields}
 
 
@@ -771,10 +764,6 @@ async def api_metadata_parse(file: UploadFile = File(...)):
         fields = md.workspace_fields(md.parse_metadata(auto1111))
     else:
         fields = md.workspace_fields(md.parse_comfyui_metadata(comfyui))
-
-    detailer = md.parse_detailer(info.get("detailer", ""))
-    if detailer:
-        fields["detailer"] = detailer
 
     return {"text": "\n".join(lines), "fields": fields}
 
