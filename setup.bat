@@ -17,8 +17,22 @@ if not defined PY (
     goto :error
 )
 
+REM --- Python version guard: the cu124 torch wheels exist for Python 3.10-3.13 only ---
+%PY% -c "import sys; v=sys.version_info[:2]; ok=(3,10)<=v<=(3,13); print(f'Unsupported Python {v[0]}.{v[1]} - the CUDA 12.4 torch build needs Python 3.10-3.13.') if not ok else None; sys.exit(0 if ok else 1)"
+if errorlevel 1 (
+    echo Install a supported Python from https://www.python.org/downloads/ then re-run setup.bat.
+    goto :error
+)
+
 REM --- submodule ---
 if not exist "diffucore\src\diffucore\__init__.py" (
+    if not exist ".git" (
+        echo ERROR: the diffucore engine submodule is missing and this is not a git clone.
+        echo GitHub's "Download ZIP" does not include submodules. Install Git from
+        echo https://git-scm.com/ and clone instead:
+        echo   git clone --recurse-submodules https://github.com/nawka12/diffucore-ui.git
+        goto :error
+    )
     echo [1/4] Initializing submodules...
     git submodule update --init --recursive
     if errorlevel 1 goto :error
@@ -43,9 +57,10 @@ echo [3/4] Installing Python dependencies...
 if errorlevel 1 goto :error
 REM Install the cu124 torch build first so requirements.txt / ultralytics don't
 REM pull the default PyPI wheel (built for a newer CUDA than many drivers run).
-"%VPY%" -m pip install -q torch --index-url https://download.pytorch.org/whl/cu124
+echo Downloading the CUDA torch build, ~2.5 GB - this is the slow part...
+"%VPY%" -m pip install torch --index-url https://download.pytorch.org/whl/cu124
 if errorlevel 1 goto :error
-"%VPY%" -m pip install -q -r requirements.txt
+"%VPY%" -m pip install -r requirements.txt
 if errorlevel 1 goto :error
 "%VPY%" -m pip install -q -e diffucore
 if errorlevel 1 goto :error

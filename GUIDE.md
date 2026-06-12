@@ -133,6 +133,9 @@ By default the UI binds to `127.0.0.1` (localhost only). Flags passed to
 ./launch.sh --share         # public link via a Cloudflare quick tunnel
 ```
 
+The launch scripts also pass `--autolaunch`, which opens the UI in your default
+browser once the server is up; running `python backend/app.py` directly skips it.
+
 With `--listen`, several devices can use the UI at once. They share one job
 queue and one live event stream, so any device sees the running queue and
 progress, and a device that opens the page after a model is loaded starts

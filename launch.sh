@@ -15,4 +15,4 @@ fi
 source "$VENV_DIR/bin/activate"
 
 echo "=== Launching Diffucore UI ==="
-exec python "$SCRIPT_DIR/backend/app.py" "$@"
+exec python "$SCRIPT_DIR/backend/app.py" --autolaunch "$@"

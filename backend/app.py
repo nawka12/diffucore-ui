@@ -25,11 +25,25 @@ parser.add_argument(
     help="Expose the UI over a public Cloudflare quick tunnel and print a "
          "trycloudflare.com URL (downloads cloudflared on first use).",
 )
+parser.add_argument(
+    "--autolaunch",
+    action="store_true",
+    help="Open the UI in the default web browser once the server starts "
+         "(launch.sh / launch.bat pass this by default).",
+)
 args = parser.parse_args()
 
 if args.share:
     import share
     share.start(args.port)
+
+if args.autolaunch:
+    import threading
+    import webbrowser
+
+    threading.Timer(
+        1.5, webbrowser.open, args=(f"http://127.0.0.1:{args.port}",)
+    ).start()
 
 uvicorn.run(
     app,
