@@ -81,6 +81,12 @@ document.addEventListener('alpine:init', () => {
     ossCalibrated: null,          // null = unknown, true/false = checked
     ossInfo: '',
 
+    // ── settings panel (global, non-per-image knobs) ────────────
+    settingsOpen: false,
+    settings: { curvature: 0.25, eta_max: 1.0, beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, gen_defaults: null },
+    teacacheStatus: { loaded: false, calibratable: false, family: null, coefficients: null },
+    calibratingTea: false,
+
     // ── gallery ─────────────────────────────────────────────────
     gallery: [],
     galleryGroups: [],
@@ -184,6 +190,8 @@ document.addEventListener('alpine:init', () => {
     // ── init ────────────────────────────────────────────────────
     async init() {
       await this.refreshModels();
+      await this.loadSettings();
+      this.applyGenDefaults();
       this.connectEvents();
     },
 
@@ -876,6 +884,83 @@ document.addEventListener('alpine:init', () => {
         if (await this._streamCalibrate()) this.flash('OSS calibrated');
       } finally {
         this.busy = false;
+        this.cancelling = false;
+      }
+    },
+
+    // ── settings panel ──────────────────────────────────────────
+    async loadSettings() {
+      try { this.settings = await (await fetch('/api/settings')).json(); }
+      catch (e) { /* keep defaults */ }
+    },
+
+    async saveSettings() {
+      try {
+        this.settings = await (await fetch('/api/settings', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.settings),
+        })).json();
+        this.flash('Settings saved');
+      } catch (e) { this.flash('Could not save settings'); }
+    },
+
+    async refreshTeacacheStatus() {
+      try { this.teacacheStatus = await (await fetch('/api/teacache_status')).json(); }
+      catch (e) { this.teacacheStatus = { loaded: false, calibratable: false, family: null, coefficients: null }; }
+    },
+
+    // Seed the Generate form from saved defaults, then re-validate the sampler/
+    // scheduler against the current model type (so a default that doesn't apply
+    // to the loaded family falls back instead of sticking an invalid value).
+    applyGenDefaults() {
+      const d = this.settings.gen_defaults;
+      if (!d) return;
+      for (const k of ['sampler', 'scheduler', 'steps', 'cfg', 'width', 'height', 'shift']) {
+        if (d[k] !== undefined && d[k] !== null) this.form[k] = d[k];
+      }
+      this.syncSampler();
+      this.syncScheduler();
+    },
+
+    async saveGenDefaults() {
+      const f = this.form;
+      this.settings.gen_defaults = {
+        sampler: f.sampler, scheduler: f.scheduler, steps: f.steps,
+        cfg: f.cfg, width: f.width, height: f.height, shift: f.shift,
+      };
+      await this.saveSettings();
+    },
+
+    clearGenDefaults() {
+      this.settings.gen_defaults = null;
+      this.saveSettings();
+    },
+
+    openSettings() {
+      this.settingsOpen = true;
+      this.refreshTeacacheStatus();
+    },
+
+    // Fit the TeaCache rescaling polynomial for the loaded Anima family. Long,
+    // GPU-heavy job routed through the shared queue (progress shows on the bar),
+    // exactly like OSS calibrate.
+    async calibrateTeacache() {
+      if (!this.teacacheStatus.calibratable) { this.flash('Load an Anima model first'); return; }
+      this.busy = true;
+      this.calibratingTea = true;
+      this.progress = { step: 0, total: 0 };
+      try {
+        const ev = await this.submitJob('/api/calibrate_teacache', {
+          prompt: 'a detailed photograph of a fox in a forest',
+          neg: 'blurry, low quality',
+          steps: 50, cfg: 4.0, seed: 0, width: 1024, height: 1024, shift: 3.0,
+        });
+        if (ev.type === 'done') { await this.refreshTeacacheStatus(); this.flash('TeaCache calibrated'); }
+        else if (ev.type === 'error') { this.flash('Error: ' + ev.message); }
+        else if (ev.type === 'cancelled') { this.flash('Calibration cancelled'); }
+      } finally {
+        this.busy = false;
+        this.calibratingTea = false;
         this.cancelling = false;
       }
     },

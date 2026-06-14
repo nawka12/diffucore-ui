@@ -632,6 +632,18 @@ class Engine:
                     return json.load(f)
         return None
 
+    def teacache_status(self) -> dict:
+        """Whether the loaded family has a TeaCache calibration on disk, for the
+        settings panel. ``coefficients`` is the fitted polynomial (or None →
+        identity rescale); calibration only applies to Anima."""
+        family = self.loaded_family
+        return {
+            "loaded": bool(family),
+            "family": family,
+            "calibratable": family == MODEL_FAMILY_ANIMA,
+            "coefficients": self._load_teacache_coeffs(),
+        }
+
     def calibrate_teacache(
         self, *, prompt: str, negative_prompt: str = "",
         steps: int = 50, width: int = 1024, height: int = 1024, shift: float = 3.0,
@@ -742,6 +754,11 @@ class Engine:
         scheduler: str = "karras",
         seed: int = -1,
         shift: float = 1.0,
+        curvature: float = 0.25,
+        eta_max: float = 1.0,
+        beta_alpha: float = 0.6,
+        beta_beta: float = 0.6,
+        lq_threshold: float = 0.025,
         teacache_thresh: float = 0.0,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
@@ -761,6 +778,9 @@ class Engine:
             scheduler=scheduler,
             seed=seed,
             teacache_thresh=teacache_thresh,
+            teacache_coefficients=self._load_teacache_coeffs(),
+            curvature=curvature, eta_max=eta_max, beta_alpha=beta_alpha,
+            beta_beta=beta_beta, lq_threshold=lq_threshold,
             progress_callback=progress_callback,
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
@@ -789,6 +809,11 @@ class Engine:
         seed: int = -1,
         width: int | None = None,
         height: int | None = None,
+        curvature: float = 0.25,
+        eta_max: float = 1.0,
+        beta_alpha: float = 0.6,
+        beta_beta: float = 0.6,
+        lq_threshold: float = 0.025,
         teacache_thresh: float = 0.0,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
@@ -811,6 +836,9 @@ class Engine:
             width=gen_w,
             height=gen_h,
             teacache_thresh=teacache_thresh,
+            teacache_coefficients=self._load_teacache_coeffs(),
+            curvature=curvature, eta_max=eta_max, beta_alpha=beta_alpha,
+            beta_beta=beta_beta, lq_threshold=lq_threshold,
             progress_callback=progress_callback,
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
@@ -839,6 +867,11 @@ class Engine:
         seed: int = -1,
         width: int | None = None,
         height: int | None = None,
+        curvature: float = 0.25,
+        eta_max: float = 1.0,
+        beta_alpha: float = 0.6,
+        beta_beta: float = 0.6,
+        lq_threshold: float = 0.025,
         teacache_thresh: float = 0.0,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
@@ -862,6 +895,9 @@ class Engine:
             width=gen_w,
             height=gen_h,
             teacache_thresh=teacache_thresh,
+            teacache_coefficients=self._load_teacache_coeffs(),
+            curvature=curvature, eta_max=eta_max, beta_alpha=beta_alpha,
+            beta_beta=beta_beta, lq_threshold=lq_threshold,
             progress_callback=progress_callback,
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,

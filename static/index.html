@@ -19,6 +19,7 @@
     <header class="topbar">
       <span class="brand">Diffu<em>core</em></span>
       <span class="version" x-text="uiId + ' · ' + diffId"></span>
+      <button class="gear" @click="openSettings()" title="Settings" aria-label="Settings">⚙</button>
     </header>
 
     <!-- ── model rack ─────────────────────────────────────────── -->
@@ -562,6 +563,86 @@
           </div>
         </div>
         <pre class="meta" x-show="lightbox.info" x-text="selectedMeta || 'No metadata.'"></pre>
+      </div>
+    </div>
+
+    <!-- ── settings modal ─────────────────────────────────────── -->
+    <div class="settings" x-show="settingsOpen" x-transition.opacity
+         @keydown.escape.window="settingsOpen=false">
+      <div class="settings-backdrop" @click="settingsOpen=false"></div>
+      <div class="settings-card">
+        <div class="settings-head">
+          <h2>Settings</h2>
+          <button class="gear" @click="settingsOpen=false" title="Close" aria-label="Close">✕</button>
+        </div>
+
+        <!-- TeaCache calibration -->
+        <section class="settings-sec">
+          <h3>TeaCache calibration</h3>
+          <p class="sub">A one-time, per-architecture fit of the rescaling polynomial that
+            maps input drift to output drift — it makes the TeaCache threshold behave
+            consistently across step counts, resolutions and schedulers. Without it,
+            generations fall back to an identity rescale.</p>
+
+          <div class="oss-panel">
+            <p class="sub" x-show="!teacacheStatus.loaded">Load a model to manage TeaCache calibration.</p>
+
+            <p class="sub" x-show="teacacheStatus.loaded && !teacacheStatus.calibratable">
+              Applies to Anima models only (current family:
+              <code x-text="teacacheStatus.family"></code>).</p>
+
+            <template x-if="teacacheStatus.calibratable">
+              <div>
+                <p class="sub" x-show="teacacheStatus.coefficients">
+                  <strong style="color:var(--teal)">Calibrated</strong> — fitted polynomial active:
+                  <code x-text="'[' + (teacacheStatus.coefficients||[]).map(c=>(+c).toFixed(3)).join(', ') + ']'"></code>
+                </p>
+                <p class="sub" x-show="!teacacheStatus.coefficients">
+                  <strong style="color:var(--accent)">Not calibrated</strong> — generations use the identity rescale.
+                </p>
+                <button class="btn small" @click="calibrateTeacache()" :disabled="busy"
+                        x-text="calibratingTea ? 'Calibrating…' : (teacacheStatus.coefficients ? 'Re-calibrate' : 'Calibrate')"></button>
+                <p class="sub">Runs a full 50-step trajectory on the GPU (~1–2 min) and writes
+                  <code>models/teacache_cache/&lt;family&gt;.json</code>, then frees the model.</p>
+              </div>
+            </template>
+          </div>
+        </section>
+
+        <!-- Sampler & scheduler knobs -->
+        <section class="settings-sec">
+          <h3>Sampler &amp; scheduler defaults</h3>
+          <p class="sub">Anima only. Each applies when its sampler/scheduler is active, and is
+            written into the image's metadata so the generation stays reproducible.</p>
+          <div class="detail-grid">
+            <label class="field"><span>curvature</span>
+              <input type="number" step="0.05" min="0" x-model.number="settings.curvature"></label>
+            <label class="field"><span>eta_max</span>
+              <input type="number" step="0.05" min="0" max="1" x-model.number="settings.eta_max"></label>
+            <label class="field"><span>beta α</span>
+              <input type="number" step="0.1" min="0.05" x-model.number="settings.beta_alpha"></label>
+            <label class="field"><span>beta β</span>
+              <input type="number" step="0.1" min="0.05" x-model.number="settings.beta_beta"></label>
+            <label class="field"><span>lq threshold</span>
+              <input type="number" step="0.005" min="0" max="1" x-model.number="settings.lq_threshold"></label>
+          </div>
+          <p class="sub">curvature → secant / secant_anneal · eta_max → secant_anneal /
+            euler_ancestral_anneal · beta α/β → beta scheduler · lq threshold → linear_quadratic</p>
+          <button class="btn small primary" @click="saveSettings()">Save settings</button>
+        </section>
+
+        <!-- Generate form defaults -->
+        <section class="settings-sec">
+          <h3>Generate form defaults</h3>
+          <p class="sub">Save the current Generate tab's sampler, scheduler, steps, CFG, size and
+            shift as the values the form starts with each session. A sampler that doesn't apply to
+            the loaded family falls back automatically.</p>
+          <p class="sub" x-show="settings.gen_defaults">Saved:
+            <code x-text="settings.gen_defaults ? (settings.gen_defaults.sampler + ' · ' + settings.gen_defaults.scheduler + ' · ' + settings.gen_defaults.steps + ' steps · cfg ' + settings.gen_defaults.cfg + ' · ' + settings.gen_defaults.width + '×' + settings.gen_defaults.height) : ''"></code></p>
+          <p class="sub" x-show="!settings.gen_defaults">No saved defaults — using the app's built-in values.</p>
+          <button class="btn small primary" @click="saveGenDefaults()">Save current as defaults</button>
+          <button class="btn small" x-show="settings.gen_defaults" @click="clearGenDefaults()">Clear</button>
+        </section>
       </div>
     </div>
 

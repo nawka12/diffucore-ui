@@ -6,6 +6,7 @@ __pycache__/
 *.pyo
 outputs/
 last_load.json
+settings.json
 models/**/*.safetensors
 models/**/*.ckpt
 models/**/*.pt

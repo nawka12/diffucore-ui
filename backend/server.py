@@ -118,6 +118,34 @@ class CalibratePayload(BaseModel):
     grid: int = 80                    # dense teacher-trajectory candidate count (K)
 
 
+class GenDefaults(BaseModel):
+    """A snapshot of the Generate form's reusable params, saved as the per-session
+    defaults the UI seeds on load (the model-type-specific samplers still fall back
+    if invalid for the loaded family)."""
+    sampler: str = "dpmpp_2m"
+    scheduler: str = "karras"
+    steps: int = 25
+    cfg: float = 6.0
+    width: int = 1024
+    height: int = 1024
+    shift: float = 3.0
+
+
+class Settings(BaseModel):
+    """Persisted global settings exposed through the settings panel — the knobs
+    that aren't per-image. Defaults mirror the submodule's, so an unset settings
+    file leaves generation behaviour unchanged. Applied at generation time when
+    the active sampler/scheduler uses them (see ``_run_generation``)."""
+    # Anima sampler/scheduler knobs.
+    curvature: float = 0.25       # secant / secant_anneal x0 extrapolation strength
+    eta_max: float = 1.0          # secant_anneal / euler_ancestral_anneal ancestral noise
+    beta_alpha: float = 0.6       # beta scheduler Beta(α, β) — low-t (σ→0) density
+    beta_beta: float = 0.6        # beta scheduler — high-t (σ→1) density
+    lq_threshold: float = 0.025   # linear_quadratic threshold_noise (linear/quad knee)
+    # Generate-form defaults seeded on load (None = use the app's built-in defaults).
+    gen_defaults: Optional[GenDefaults] = None
+
+
 class XYZPayload(BaseModel):
     prompt: str = ""
     neg: str = ""
@@ -197,6 +225,20 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             progress_callback=on_progress,
             preview_callback=on_preview if p.preview else None,
         )
+
+        # Global sampler/scheduler knobs from the settings panel (Anima only).
+        # Inject only the ones the active sampler/scheduler actually consumes, so
+        # they round-trip into PNG metadata without polluting it with unused keys.
+        if ENGINE.loaded_family == "anima":
+            if p.sampler in ("secant", "secant_anneal"):
+                common["curvature"] = float(SETTINGS["curvature"])
+            if p.sampler in ("secant_anneal", "euler_ancestral_anneal"):
+                common["eta_max"] = float(SETTINGS["eta_max"])
+            if p.scheduler == "beta":
+                common["beta_alpha"] = float(SETTINGS["beta_alpha"])
+                common["beta_beta"] = float(SETTINGS["beta_beta"])
+            if p.scheduler == "linear_quadratic":
+                common["lq_threshold"] = float(SETTINGS["lq_threshold"])
 
         if p.mode == "i2i":
             if not p.input_image:
@@ -335,6 +377,18 @@ def _run_calibrate(p: CalibratePayload, on_progress: Callable[[int, int], None])
     return {"info": info}
 
 
+def _run_calibrate_teacache(p: CalibratePayload, on_progress: Callable[[int, int], None]) -> dict:
+    if not ENGINE.loaded_name:
+        raise RuntimeError("Load a model first")
+    info = ENGINE.calibrate_teacache(
+        prompt=p.prompt, negative_prompt=p.neg, steps=int(p.steps),
+        width=int(p.width), height=int(p.height), shift=float(p.shift),
+        cfg_scale=float(p.cfg), seed=int(p.seed),
+        progress_callback=on_progress,
+    )
+    return {"info": info}
+
+
 # ── job queue + SSE broadcast ───────────────────────────────────────
 # A single background worker runs jobs one at a time (the GPU can only do one),
 # so the worker thread itself is the serialization — no lock needed. Every
@@ -411,6 +465,28 @@ def _write_last_load(form: dict) -> None:
 
 
 LAST_LOAD_FORM: Optional[dict] = _read_last_load()
+
+# Persisted global settings (the settings panel). Round-tripped through the
+# Settings model so an old file missing newer keys gets their defaults and
+# unknown keys are dropped — forward/backward compatible across versions.
+_SETTINGS_PATH = _ROOT / "settings.json"
+
+
+def _read_settings() -> dict:
+    try:
+        return Settings(**json.loads(_SETTINGS_PATH.read_text())).model_dump()
+    except (OSError, ValueError, TypeError):
+        return Settings().model_dump()
+
+
+def _write_settings(s: Settings) -> None:
+    try:
+        _SETTINGS_PATH.write_text(json.dumps(s.model_dump()))
+    except OSError:
+        pass
+
+
+SETTINGS: dict = _read_settings()
 
 
 def _push(ev: dict) -> None:
@@ -657,6 +733,34 @@ async def api_calibrate_oss(p: CalibratePayload):
     job = Job("calibrate", "OSS calibrate", run)
     _enqueue(job)
     return {"job": job.id}
+
+
+@app.post("/api/calibrate_teacache")
+async def api_calibrate_teacache(p: CalibratePayload):
+    def run(job: Job) -> dict:
+        on_progress, _ = _make_callbacks(job)
+        return _run_calibrate_teacache(p, on_progress)
+    job = Job("calibrate", "TeaCache calibrate", run)
+    _enqueue(job)
+    return {"job": job.id}
+
+
+@app.get("/api/teacache_status")
+def api_teacache_status():
+    return ENGINE.teacache_status()
+
+
+@app.get("/api/settings")
+def api_settings():
+    return SETTINGS
+
+
+@app.post("/api/settings")
+def api_save_settings(s: Settings):
+    global SETTINGS
+    _write_settings(s)
+    SETTINGS = s.model_dump()
+    return SETTINGS
 
 
 @app.post("/api/cancel")

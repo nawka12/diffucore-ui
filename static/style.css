@@ -657,6 +657,63 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .lb-count { font-family: var(--mono); font-size: 12px; color: var(--txt-3); }
 .lb-panel .meta { margin-top: 12px; max-height: 30vh; }
 
+/* ── settings modal ───────────────────────────────────────────── */
+.gear {
+  align-self: center;
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--txt-2);
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  transition: all 120ms ease;
+}
+.gear:hover { border-color: var(--accent); color: var(--accent); }
+.settings {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.settings-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.72); }
+.settings-card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 560px;
+  max-height: 86vh;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--line-hi);
+  border-radius: 10px;
+  padding: 20px 22px;
+}
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.settings-head h2 { font-family: var(--serif); font-size: 22px; font-weight: 600; margin: 0; }
+.settings-sec { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 14px; }
+.settings-sec:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+.settings-sec h3 { font-size: 14px; font-weight: 600; margin: 0 0 6px; color: var(--txt); }
+.settings code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--surface-3);
+  border-radius: 3px;
+  padding: 1px 5px;
+  word-break: break-all;
+}
+
 /* ── metadata page ────────────────────────────────────────────── */
 .meta-layout { display: grid; grid-template-columns: 360px 1fr; gap: 20px; align-items: start; }
 .meta-out { display: flex; flex-direction: column; gap: 12px; }
