@@ -20,6 +20,10 @@ from PIL import Image, ImageDraw
 
 BBox = List[float]
 
+# Cache YOLO models by path — reloading the .pt from disk on every detailer pass
+# (and per stacked pass) is wasteful.
+_YOLO_CACHE: dict = {}
+
 
 def detect_regions(
     detector_path: str, image: Image.Image, confidence: float = 0.3,
@@ -33,7 +37,10 @@ def detect_regions(
             "Detailer needs ultralytics — `pip install ultralytics`"
         ) from e
 
-    model = YOLO(detector_path)
+    model = _YOLO_CACHE.get(detector_path)
+    if model is None:
+        model = YOLO(detector_path)
+        _YOLO_CACHE[detector_path] = model
     pred = model(image, conf=confidence, verbose=False)
     boxes = pred[0].boxes
     if boxes is None or boxes.xyxy.shape[0] == 0:

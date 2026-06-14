@@ -198,6 +198,21 @@ document.addEventListener('alpine:init', () => {
           this.applyState(ev);
           this.queue = ev.jobs; this.runningJob = ev.running;
           if (ev.progress) this.runProg = { step: ev.progress.step, total: ev.progress.total };
+          // A terminal event (done/error/cancelled) is lost if the SSE drops while
+          // the job finishes. The reconnect snapshot lists every live job, so any
+          // waiter whose job is absent already ended off-stream — resolve it instead
+          // of leaving busy stuck forever.
+          {
+            const live = new Set((ev.jobs || []).map((j) => String(j.id)));
+            for (const id of Object.keys(this._jobWaiters)) {
+              if (!live.has(id)) {
+                const w = this._jobWaiters[id];
+                delete this._jobWaiters[id];
+                if (String(this.myJobId) === id) this.myJobId = null;
+                w({ type: 'error', message: 'Lost connection during the job — check the gallery for the result.' });
+              }
+            }
+          }
           break;
         case 'queue':
           this.queue = ev.jobs; this.runningJob = ev.running;

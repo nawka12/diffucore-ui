@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, Request
+from fastapi import FastAPI, UploadFile, File, Request, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -37,6 +37,8 @@ from utils import (
 )
 from xyz_grid import generate_xyz_grid, PARAM_TYPES as XYZ_PARAM_TYPES
 import metadata as md
+
+MAX_UPLOAD_BYTES = 64 * 1024 * 1024  # 64 MB cap for metadata-parse uploads
 
 _ROOT = Path(__file__).resolve().parent.parent
 _STATIC = _ROOT / "static"
@@ -739,7 +741,9 @@ def api_metadata(path: str):
 @app.post("/api/metadata/parse")
 async def api_metadata_parse(file: UploadFile = File(...)):
     """Dump every PNG chunk + parsed AUTO1111/ComfyUI views for an uploaded image."""
-    data = await file.read()
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Image too large (max 64 MB)")
     try:
         with Image.open(io.BytesIO(data)) as img:
             info = dict(img.info)
