@@ -110,7 +110,8 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None) -> s
     if "shift" in gen_kwargs:
         fields.append(f"Shift: {gen_kwargs['shift']}")
     if gen_kwargs.get("teacache_thresh", 0):
-        fields.append(f"TeaCache: {gen_kwargs['teacache_thresh']}")
+        calib = "" if gen_kwargs.get("teacache_use_coeffs", True) else " (raw)"
+        fields.append(f"TeaCache: {gen_kwargs['teacache_thresh']}{calib}")
     if detailer:
         fields.extend(_detailer_fields(detailer))
     fields.append(f"diffucore-ui: {UI_ID}")

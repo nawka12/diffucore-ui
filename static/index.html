@@ -274,9 +274,12 @@
               <input type="checkbox" x-model="form.teacacheOn"> TeaCache (faster sampling)</label>
             <div x-show="form.teacacheOn">
               <div class="slider-head"><span>TeaCache threshold</span>
-                <input type="number" x-model.number="form.teacache" min="0.005" max="0.8" step="0.005"></div>
-              <input type="range" x-model.number="form.teacache" min="0.005" max="0.8" step="0.005">
+                <input type="number" x-model.number="form.teacache" min="0.005" max="1.0" step="0.005"></div>
+              <input type="range" x-model.number="form.teacache" min="0.005" max="1.0" step="0.005">
               <p class="sub" style="margin:4px 0 0">Reuses the transformer output on low-change steps; the threshold directly bounds accumulated per-step change. Higher = more skipping = faster but lower fidelity. The safe value depends on sampler &amp; steps: high step counts + single-step/secant samplers stay near-lossless to ~0.3–0.5, while few-step multistep samplers (dpmpp_2m) need ≤0.01.</p>
+              <label class="chip toggle" :class="{on: form.teacacheCalibrated}" style="margin-top:8px">
+                <input type="checkbox" x-model="form.teacacheCalibrated"> Use calibrated coefficients</label>
+              <p class="sub" style="margin:4px 0 0">When on, applies the fitted rescale polynomial (Settings → calibration) so the threshold tracks true per-step change. Turn off to use the raw, uncalibrated estimate — the threshold then maps to change differently, so re-tune it.</p>
             </div>
           </div>
         </fieldset>
@@ -330,6 +333,11 @@
               <label class="field"><span>Max detections <small>(0 = all)</small></span>
                 <input type="number" x-model.number="detail.maxDet" min="0" max="20" step="1"></label>
             </div>
+            <label class="chip toggle" x-show="modelType==='Anima'" :class="{on: detail.teacache}" style="margin-top:8px">
+              <input type="checkbox" x-model="detail.teacache"> TeaCache in detailer passes</label>
+            <p class="hint" x-show="modelType==='Anima' && detail.teacache" style="margin:4px 0 0">
+              Reuses the main TeaCache threshold &amp; calibration for the inpaint passes. These crops
+              are small and detail-forming, so caching is riskier here — keep the threshold low.</p>
           </div>
         </fieldset>
 
@@ -629,6 +637,21 @@
           <p class="sub">curvature → secant / secant_anneal · eta_max → secant_anneal /
             euler_ancestral_anneal · beta α/β → beta scheduler · lq threshold → linear_quadratic</p>
           <button class="btn small primary" @click="saveSettings()">Save settings</button>
+        </section>
+
+        <!-- VAE decode -->
+        <section class="settings-sec">
+          <h3>VAE decode</h3>
+          <p class="sub">How the final latent is turned into pixels.
+            <strong>Automatic</strong> decodes in one pass and only tiles when free VRAM
+            can't fit it. <strong>Always tiled</strong> forces tiled decode every time —
+            slower, but the lowest, most predictable peak memory. Applies to Anima and
+            SD/SDXL (FLUX always tiles). Takes effect immediately on the loaded model.</p>
+          <label class="field"><span>Mode</span>
+            <select x-model="settings.vae_tiling" @change="saveSettings()">
+              <option value="auto">Automatic (tile only when needed)</option>
+              <option value="always">Always tiled</option>
+            </select></label>
         </section>
 
         <!-- Generate form defaults -->

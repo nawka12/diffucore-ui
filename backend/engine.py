@@ -620,6 +620,17 @@ class Engine:
         p.write_text(json.dumps([round(s, 8) for s in sigmas]))
         return f"Calibrated OSS: {steps} steps @ {width}x{height}, shift={shift:g} → {p.name}"
 
+    def apply_vae_tiling(self, always: bool) -> None:
+        """Flip the tiled-VAE preference on the loaded model live — the next decode
+        reads ``policy.vae_tile`` (``True`` = always tiled, ``False`` = auto-decide
+        per free VRAM). FLUX is left untouched: it's force-tiled at load by design.
+        Keeps ``self._vae_tile`` in sync so X/Y/Z checkpoint swaps and the
+        load-reuse cache inherit the same choice."""
+        if not self._loaded or self._loaded.family in _FLUX_FAMILIES:
+            return
+        self._loaded.model.policy.vae_tile = always
+        self._vae_tile = always
+
     def _load_teacache_coeffs(self) -> "list[float] | None":
         """TeaCache rescaling coefficients for the current model: a per-checkpoint
         override if one exists, else the family fit, else None (identity)."""
@@ -760,6 +771,7 @@ class Engine:
         beta_beta: float = 0.6,
         lq_threshold: float = 0.025,
         teacache_thresh: float = 0.0,
+        teacache_use_coeffs: bool = True,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -778,7 +790,7 @@ class Engine:
             scheduler=scheduler,
             seed=seed,
             teacache_thresh=teacache_thresh,
-            teacache_coefficients=self._load_teacache_coeffs(),
+            teacache_coefficients=(self._load_teacache_coeffs() if teacache_use_coeffs else None),
             curvature=curvature, eta_max=eta_max, beta_alpha=beta_alpha,
             beta_beta=beta_beta, lq_threshold=lq_threshold,
             progress_callback=progress_callback,
@@ -815,6 +827,7 @@ class Engine:
         beta_beta: float = 0.6,
         lq_threshold: float = 0.025,
         teacache_thresh: float = 0.0,
+        teacache_use_coeffs: bool = True,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -836,7 +849,7 @@ class Engine:
             width=gen_w,
             height=gen_h,
             teacache_thresh=teacache_thresh,
-            teacache_coefficients=self._load_teacache_coeffs(),
+            teacache_coefficients=(self._load_teacache_coeffs() if teacache_use_coeffs else None),
             curvature=curvature, eta_max=eta_max, beta_alpha=beta_alpha,
             beta_beta=beta_beta, lq_threshold=lq_threshold,
             progress_callback=progress_callback,
@@ -873,6 +886,7 @@ class Engine:
         beta_beta: float = 0.6,
         lq_threshold: float = 0.025,
         teacache_thresh: float = 0.0,
+        teacache_use_coeffs: bool = True,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -895,7 +909,7 @@ class Engine:
             width=gen_w,
             height=gen_h,
             teacache_thresh=teacache_thresh,
-            teacache_coefficients=self._load_teacache_coeffs(),
+            teacache_coefficients=(self._load_teacache_coeffs() if teacache_use_coeffs else None),
             curvature=curvature, eta_max=eta_max, beta_alpha=beta_alpha,
             beta_beta=beta_beta, lq_threshold=lq_threshold,
             progress_callback=progress_callback,
@@ -932,6 +946,8 @@ class Engine:
         blur: int = 4,
         max_det: int = 0,
         seed: int = -1,
+        teacache_thresh: float = 0.0,
+        teacache_use_coeffs: bool = True,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -969,6 +985,9 @@ class Engine:
         result = image.convert("RGB")
         W, H = result.size
         gen = Inpaint(self._loaded.model)
+        # Resolve TeaCache coeffs once (per-region file reads would be wasteful);
+        # thresh 0 = off, the detailer's default. Anima-only at the pipeline level.
+        tc_coeffs = self._load_teacache_coeffs() if teacache_use_coeffs else None
         # Show each region's crop being refined in the live preview (shared
         # throttle across regions). The crop denoises at native res, so the
         # preview shows just the region, not the full image.
@@ -993,6 +1012,7 @@ class Engine:
                     negative_prompt=negative_prompt, strength=strength,
                     steps=steps, cfg_scale=cfg_scale, sampler=sampler,
                     scheduler=scheduler, seed=base_seed + i,
+                    teacache_thresh=teacache_thresh, teacache_coefficients=tc_coeffs,
                     progress_callback=sub_cb, preview_callback=preview_cb,
                     return_info=True,
                 )

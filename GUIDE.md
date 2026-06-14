@@ -26,6 +26,8 @@ network/share flags, architecture, and status.
 - **Live preview** — watch the image form during sampling. A fast latent→RGB
   approximation (no VAE decode) streams a rough preview each step; toggle it off
   in the Generate view. SD/SDXL and Anima.
+- **TeaCache** — opt-in sampling speedup for Anima: reuses the DiT's output on
+  low-change steps, with a fidelity/speed threshold and optional calibration.
 - **11 samplers, multiple schedulers** — Euler, Heun, DPM++ family, ER-SDE,
   SECANT; Karras, exponential, sgm_uniform, flow, and more.
 - **Gallery with metadata round-trip** — every generated image saves its full
@@ -43,7 +45,9 @@ network/share flags, architecture, and status.
   encoders, ≤12 GB → full offload), and you can override it per load
   (full / encoders / none, plus `stream` for FLUX) to fit the model on your GPU.
   Tiled VAE decode triggers automatically when a full-resolution decode
-  wouldn't fit free VRAM, keeping large images within budget.
+  wouldn't fit free VRAM, keeping large images within budget — or set the
+  **VAE decode** mode in Settings to *Always tiled* to force it every time
+  (Anima and SD/SDXL; FLUX always tiles).
 - **Live progress** — sampling step/total streams to a real progress bar as the
   image is generated.
 - **Multi-device & job queue** — drive it from several devices at once. Jobs
@@ -200,13 +204,39 @@ bugs, just how the model responds:
   ghosts through the fill. For a clean repaint use **denoise ~0.9–1.0**; drop to
   ~0.35–0.45 only for subtle, structure-preserving edits.
 
-- **TeaCache speeds up sampling (opt-in).** Enable **TeaCache** in the Generate
-  panel to reuse the DiT's output on low-change steps instead of recomputing it.
-  The threshold is a direct speed/fidelity knob — higher skips more steps (faster,
-  lower fidelity). The safe value depends on your sampler and step count: high step
-  counts with single-step or secant-family samplers stay near-lossless up to
-  ~0.3–0.5, while few-step multistep samplers like `dpmpp_2m` need ≤0.01. Start
-  low and raise it until quality dips.
+### TeaCache — faster Anima sampling
+
+**TeaCache** (opt-in, Anima only) skips recomputing the 28-block DiT on steps
+where its output barely changes, reusing the cached result instead — a large
+speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
+
+- **Threshold is the speed/fidelity knob.** TeaCache accumulates how much the
+  step input drifts and forces a real recompute once that crosses the threshold;
+  higher = more skipping = faster but lower fidelity. There is no universal sweet
+  spot — it depends on your sampler and step count. High step counts with
+  single-step or secant-family samplers stay near-lossless up to ~0.3–0.5;
+  few-step multistep samplers like `dpmpp_2m` need ≤0.01. Start low and raise it
+  until quality dips.
+
+- **Calibration (Settings → TeaCache).** Calibrating fits a per-architecture
+  polynomial that remaps the raw per-step *input* drift into an estimate of the
+  *output* change, so the threshold tracks what actually matters for fidelity. It
+  runs once for the Anima family, is cached to `models/teacache_cache/anima.json`,
+  and is then reused for every Anima checkpoint.
+
+- **Use calibrated coefficients (toggle, on by default).** When on, generation
+  applies that fitted polynomial. Turn it **off** to gate on the raw estimate
+  instead — the threshold then *means* something different, so re-tune it.
+
+- **When to turn calibration off.** Calibration is fit on a single *deterministic
+  Euler* trajectory over the flow schedule, so it matches deterministic samplers
+  best. Stochastic / second-order samplers — e.g. `secant_anneal` on the `beta`
+  schedule — run a trajectory the fit never saw, where it can both recompute
+  *more* (slower) and place those recomputes on the wrong steps (lower fidelity,
+  i.e. "seed-breaking"). If a calibrated run is somehow **slower and worse** than
+  uncalibrated, that's the mismatch: turn calibration off for that sampler and
+  tune the raw threshold directly. Re-calibrating won't fix it — the calibration
+  loop is deterministic and can't reproduce an ancestral sampler's dynamics.
 
 ### Detailer (after generate)
 

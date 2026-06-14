@@ -35,7 +35,7 @@ document.addEventListener('alpine:init', () => {
       steps: 25, cfg: 6.0, seed: -1,
       width: 1024, height: 1024,
       strength: 0.6, shift: 3.0,
-      teacacheOn: false, teacache: 0.15,
+      teacacheOn: false, teacache: 0.15, teacacheCalibrated: true,
     },
 
     // ── <lora:…> autocomplete in the prompt ─────────────────────
@@ -57,6 +57,7 @@ document.addEventListener('alpine:init', () => {
       models: [{ model: '', prompt: '' }],
       confidence: 0.3, strength: 0.4,
       dilation: 4, padding: 32, blur: 4, maxDet: 0,
+      teacache: false,
     },
 
     // ── generation output ───────────────────────────────────────
@@ -83,7 +84,7 @@ document.addEventListener('alpine:init', () => {
 
     // ── settings panel (global, non-per-image knobs) ────────────
     settingsOpen: false,
-    settings: { curvature: 0.25, eta_max: 1.0, beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, gen_defaults: null },
+    settings: { curvature: 0.25, eta_max: 1.0, beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, vae_tiling: 'auto', gen_defaults: null },
     teacacheStatus: { loaded: false, calibratable: false, family: null, coefficients: null },
     calibratingTea: false,
 
@@ -719,6 +720,7 @@ document.addEventListener('alpine:init', () => {
           width: this.form.width, height: this.form.height,
           strength: this.form.strength, shift: this.form.shift,
           teacache: this.form.teacacheOn ? this.form.teacache : 0,
+          teacache_calibrated: this.form.teacacheCalibrated,
           input_image: this.mode !== 't2i' ? this.inputImage : null,
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
           preview: this.preview,
@@ -731,6 +733,7 @@ document.addEventListener('alpine:init', () => {
           detail_padding: this.detail.padding,
           detail_blur: this.detail.blur,
           detail_max: this.detail.maxDet,
+          detail_teacache: this.detail.teacache,
         };
         // Progress + preview arrive on the shared stream; we await the result.
         const ev = await this.submitJob('/api/generate', payload);

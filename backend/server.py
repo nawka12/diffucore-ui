@@ -89,6 +89,7 @@ class GeneratePayload(BaseModel):
     strength: float = 0.6
     shift: float = 3.0
     teacache: float = 0.0                # TeaCache rel-L1 threshold (0 = off; Anima only)
+    teacache_calibrated: bool = True     # use the fitted rescale polynomial vs the raw identity path
     input_image: Optional[str] = None   # base64 / data-URL
     mask_image: Optional[str] = None
     preview: bool = True                 # stream live latent previews while sampling
@@ -104,6 +105,7 @@ class GeneratePayload(BaseModel):
     detail_padding: int = 32
     detail_blur: int = 4
     detail_max: int = 0                  # 0 = all detections
+    detail_teacache: bool = False        # apply the main TeaCache threshold to detailer passes (Anima)
 
 
 class CalibratePayload(BaseModel):
@@ -142,6 +144,9 @@ class Settings(BaseModel):
     beta_alpha: float = 0.6       # beta scheduler Beta(α, β) — low-t (σ→0) density
     beta_beta: float = 0.6        # beta scheduler — high-t (σ→1) density
     lq_threshold: float = 0.025   # linear_quadratic threshold_noise (linear/quad knee)
+    # VAE decode: "auto" tiles only when a full decode won't fit free VRAM;
+    # "always" forces tiled decode. Applies to Anima + SD/SDXL (FLUX always tiles).
+    vae_tiling: str = "auto"      # "auto" | "always"
     # Generate-form defaults seeded on load (None = use the app's built-in defaults).
     gen_defaults: Optional[GenDefaults] = None
 
@@ -222,6 +227,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             negative_prompt=clean_neg, steps=int(p.steps), cfg_scale=float(p.cfg),
             sampler=p.sampler, scheduler=p.scheduler, seed=int(p.seed),
             teacache_thresh=float(p.teacache),
+            teacache_use_coeffs=bool(p.teacache_calibrated),
             progress_callback=on_progress,
             preview_callback=on_preview if p.preview else None,
         )
@@ -292,7 +298,10 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                         sampler=p.sampler, scheduler=p.scheduler,
                         dilation=int(p.detail_dilation), padding=int(p.detail_padding),
                         blur=int(p.detail_blur), max_det=int(p.detail_max),
-                        seed=int(p.seed), progress_callback=on_progress,
+                        seed=int(p.seed),
+                        teacache_thresh=float(p.teacache) if p.detail_teacache else 0.0,
+                        teacache_use_coeffs=bool(p.teacache_calibrated),
+                        progress_callback=on_progress,
                         preview_callback=on_preview if p.preview else None,
                     )
                     notes.append(f"{dm.model}: {dnote.replace('Detailer: ', '')}")
@@ -649,15 +658,20 @@ def _do_load(p: LoadPayload) -> str:
         offload = {"none": False, "full": True,
                    "encoders": "encoders", "stream": "stream"}.get(p.offload, True)
 
+    # VAE tiling preference (settings panel): "always" forces tiled decode; "auto"
+    # lets the pipeline decide per decode from free VRAM. FLUX ignores this — it's
+    # force-tiled below regardless.
+    vae_tile_pref = SETTINGS.get("vae_tiling") == "always"
+
     if p.model_type == "Anima":
         for name in (p.dit, p.vae, p.te):
             if not name or name.startswith("("):
                 return "Select all three Anima files"
         return ENGINE.load_anima(
             p.dit, p.vae, p.te,
-            # vae_tile=False → let the pipeline auto-decide per decode via
-            # can_decode_untiled (forcing True always-tiles, even at 1024²).
-            offload=offload, vae_tile=False,
+            # vae_tile from the settings panel: "auto" lets the pipeline auto-decide
+            # per decode via can_decode_untiled; "always" forces tiled (even at 1024²).
+            offload=offload, vae_tile=vae_tile_pref,
             compile=p.compile, cuda_graphs=p.cuda_graphs,
         )
     if p.model_type == "FLUX":
@@ -679,8 +693,9 @@ def _do_load(p: LoadPayload) -> str:
         return "Select a model"
     return ENGINE.load_model(
         p.checkpoint,
-        # vae_tile=False → SD/SDXL auto-decide per decode via can_decode_untiled.
-        offload=offload, vae_tile=False,
+        # vae_tile from the settings panel; "auto" → SD/SDXL auto-decide per decode
+        # via can_decode_untiled, "always" → force tiled.
+        offload=offload, vae_tile=vae_tile_pref,
         compile=p.compile, cuda_graphs=p.cuda_graphs,
         channels_last=p.channels_last,
     )
@@ -760,6 +775,9 @@ def api_save_settings(s: Settings):
     global SETTINGS
     _write_settings(s)
     SETTINGS = s.model_dump()
+    # Apply the VAE-tiling choice to the already-loaded model so it takes effect
+    # without a reload (future loads pick it up via _do_load).
+    ENGINE.apply_vae_tiling(SETTINGS["vae_tiling"] == "always")
     return SETTINGS
 
 
