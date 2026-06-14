@@ -44,6 +44,7 @@ from PIL import Image, ImageFilter
 
 from diffucore import (
     anima_calibrate_oss,
+    anima_calibrate_teacache,
     apply_lora,
     clear_loras as clear_bundle_loras,
     load_anima_checkpoint,
@@ -122,6 +123,21 @@ _OSS_CACHE_DIR = _ROOT / "models" / "oss_cache"
 def oss_cache_path(name: str, steps: int, width: int, height: int, shift: float) -> Path:
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
     return _OSS_CACHE_DIR / f"{safe}__{steps}s_{width}x{height}_shift{shift:g}.json"
+
+# TeaCache rescaling coefficients are an architecture-level property, not a
+# per-(steps, resolution) one like OSS — one fit transfers across a family's
+# checkpoints and settings. So they cache one JSON per family ("anima.json"),
+# with an optional per-checkpoint override file that takes precedence.
+_TEACACHE_CACHE_DIR = _ROOT / "models" / "teacache_cache"
+
+
+def teacache_cache_path(family: str) -> Path:
+    return _TEACACHE_CACHE_DIR / f"{family}.json"
+
+
+def teacache_override_path(name: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+    return _TEACACHE_CACHE_DIR / f"{safe}.json"
 
 # (family, native_res) tuples — used for defaults
 MODEL_FAMILY_SD15 = "sd15"
@@ -604,6 +620,45 @@ class Engine:
         p.write_text(json.dumps([round(s, 8) for s in sigmas]))
         return f"Calibrated OSS: {steps} steps @ {width}x{height}, shift={shift:g} → {p.name}"
 
+    def _load_teacache_coeffs(self) -> "list[float] | None":
+        """TeaCache rescaling coefficients for the current model: a per-checkpoint
+        override if one exists, else the family fit, else None (identity)."""
+        if not self._loaded:
+            return None
+        for p in (teacache_override_path(self._loaded.name),
+                  teacache_cache_path(self._loaded.family)):
+            if p.exists():
+                with open(p) as f:
+                    return json.load(f)
+        return None
+
+    def calibrate_teacache(
+        self, *, prompt: str, negative_prompt: str = "",
+        steps: int = 50, width: int = 1024, height: int = 1024, shift: float = 3.0,
+        cfg_scale: float = 4.0, seed: int = 0,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> str:
+        """Fit and cache TeaCache coefficients for the loaded Anima family.
+
+        Architecture-level: written to ``teacache_cache/<family>.json`` and reused
+        for every Anima checkpoint. One run is enough; re-run only if a specific
+        checkpoint misbehaves (then it gets its own override file)."""
+        if not self._loaded or self._loaded.family != MODEL_FAMILY_ANIMA:
+            raise RuntimeError("Load an Anima model first")
+        try:
+            coeffs = anima_calibrate_teacache(
+                self._loaded.model, prompt, negative_prompt,
+                steps=steps, width=width, height=height, shift=shift,
+                cfg_scale=cfg_scale, seed=seed,
+                progress_callback=progress_callback,
+            )
+        finally:
+            self._reclaim_memory()
+        p = teacache_cache_path(self._loaded.family)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps([round(c, 10) for c in coeffs]))
+        return f"Calibrated TeaCache for {self._loaded.family}: {steps} steps → {p.name}"
+
     # ── live preview (cheap latent→RGB approximation) ──────────────
 
     def _latent_to_preview(self, latent) -> Optional[Image.Image]:
@@ -687,6 +742,7 @@ class Engine:
         scheduler: str = "karras",
         seed: int = -1,
         shift: float = 1.0,
+        teacache_thresh: float = 0.0,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -704,6 +760,7 @@ class Engine:
             sampler=sampler,
             scheduler=scheduler,
             seed=seed,
+            teacache_thresh=teacache_thresh,
             progress_callback=progress_callback,
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
@@ -732,6 +789,7 @@ class Engine:
         seed: int = -1,
         width: int | None = None,
         height: int | None = None,
+        teacache_thresh: float = 0.0,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -752,6 +810,7 @@ class Engine:
             seed=seed,
             width=gen_w,
             height=gen_h,
+            teacache_thresh=teacache_thresh,
             progress_callback=progress_callback,
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
@@ -780,6 +839,7 @@ class Engine:
         seed: int = -1,
         width: int | None = None,
         height: int | None = None,
+        teacache_thresh: float = 0.0,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -801,6 +861,7 @@ class Engine:
             seed=seed,
             width=gen_w,
             height=gen_h,
+            teacache_thresh=teacache_thresh,
             progress_callback=progress_callback,
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,

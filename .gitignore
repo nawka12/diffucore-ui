@@ -10,6 +10,7 @@ models/**/*.ckpt
 models/**/*.pt
 models/**/*.pth
 models/oss_cache/
+models/teacache_cache/
 *.egg-info/
 dist/
 build/

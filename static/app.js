@@ -35,6 +35,7 @@ document.addEventListener('alpine:init', () => {
       steps: 25, cfg: 6.0, seed: -1,
       width: 1024, height: 1024,
       strength: 0.6, shift: 3.0,
+      teacacheOn: false, teacache: 0.15,
     },
 
     // ── <lora:…> autocomplete in the prompt ─────────────────────
@@ -708,6 +709,7 @@ document.addEventListener('alpine:init', () => {
           steps: this.form.steps, cfg: this.form.cfg, seed: this.form.seed,
           width: this.form.width, height: this.form.height,
           strength: this.form.strength, shift: this.form.shift,
+          teacache: this.form.teacacheOn ? this.form.teacache : 0,
           input_image: this.mode !== 't2i' ? this.inputImage : null,
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
           preview: this.preview,

@@ -86,6 +86,7 @@ class GeneratePayload(BaseModel):
     height: int = 1024
     strength: float = 0.6
     shift: float = 3.0
+    teacache: float = 0.0                # TeaCache rel-L1 threshold (0 = off; Anima only)
     input_image: Optional[str] = None   # base64 / data-URL
     mask_image: Optional[str] = None
     preview: bool = True                 # stream live latent previews while sampling
@@ -190,6 +191,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
         common = dict(
             negative_prompt=clean_neg, steps=int(p.steps), cfg_scale=float(p.cfg),
             sampler=p.sampler, scheduler=p.scheduler, seed=int(p.seed),
+            teacache_thresh=float(p.teacache),
             progress_callback=on_progress,
             preview_callback=on_preview if p.preview else None,
         )

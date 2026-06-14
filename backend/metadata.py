@@ -109,6 +109,8 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None) -> s
         fields.append(f"Denoising strength: {gen_kwargs['strength']}")
     if "shift" in gen_kwargs:
         fields.append(f"Shift: {gen_kwargs['shift']}")
+    if gen_kwargs.get("teacache_thresh", 0):
+        fields.append(f"TeaCache: {gen_kwargs['teacache_thresh']}")
     if detailer:
         fields.extend(_detailer_fields(detailer))
     fields.append(f"diffucore-ui: {UI_ID}")

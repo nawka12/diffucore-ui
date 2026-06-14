@@ -268,6 +268,16 @@
             <input type="range" x-model.number="form.shift" min="1" max="9" step="0.1" :disabled="!shiftHonored">
             <p class="sub" style="margin:4px 0 0" x-show="!shiftHonored">Ignored by the <span x-text="form.scheduler"></span> scheduler — it derives its own shift.</p>
           </div>
+          <div class="slider" x-show="modelType==='Anima'">
+            <label class="chip toggle" :class="{on: form.teacacheOn}" style="margin-bottom:8px">
+              <input type="checkbox" x-model="form.teacacheOn"> TeaCache (faster sampling)</label>
+            <div x-show="form.teacacheOn">
+              <div class="slider-head"><span>TeaCache threshold</span>
+                <input type="number" x-model.number="form.teacache" min="0.005" max="0.8" step="0.005"></div>
+              <input type="range" x-model.number="form.teacache" min="0.005" max="0.8" step="0.005">
+              <p class="sub" style="margin:4px 0 0">Reuses the transformer output on low-change steps; the threshold directly bounds accumulated per-step change. Higher = more skipping = faster but lower fidelity. The safe value depends on sampler &amp; steps: high step counts + single-step/secant samplers stay near-lossless to ~0.3–0.5, while few-step multistep samplers (dpmpp_2m) need ≤0.01.</p>
+            </div>
+          </div>
         </fieldset>
 
         <fieldset x-show="!sweeping">

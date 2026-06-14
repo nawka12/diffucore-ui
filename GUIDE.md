@@ -200,6 +200,14 @@ bugs, just how the model responds:
   ghosts through the fill. For a clean repaint use **denoise ~0.9–1.0**; drop to
   ~0.35–0.45 only for subtle, structure-preserving edits.
 
+- **TeaCache speeds up sampling (opt-in).** Enable **TeaCache** in the Generate
+  panel to reuse the DiT's output on low-change steps instead of recomputing it.
+  The threshold is a direct speed/fidelity knob — higher skips more steps (faster,
+  lower fidelity). The safe value depends on your sampler and step count: high step
+  counts with single-step or secant-family samplers stay near-lossless up to
+  ~0.3–0.5, while few-step multistep samplers like `dpmpp_2m` need ≤0.01. Start
+  low and raise it until quality dips.
+
 ### Detailer (after generate)
 
 Enable **Detailer** in the Generate view to run an ADetailer-style refinement
