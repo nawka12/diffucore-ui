@@ -42,6 +42,8 @@ MAX_UPLOAD_BYTES = 64 * 1024 * 1024  # 64 MB cap for metadata-parse uploads
 
 _ROOT = Path(__file__).resolve().parent.parent
 _STATIC = _ROOT / "static"
+_THUMBS_DIR = _ROOT / ".cache" / "thumbs"  # lazily-built gallery-grid thumbnails
+THUMB_MAX = 384  # long-edge px; the grid uses these instead of the full PNGs
 
 class _Cancelled(BaseException):
     """Raised from the progress callback to unwind a running generation.
@@ -727,6 +729,26 @@ def api_gallery():
         }
         for f in scan_outputs()
     ]}
+
+
+@app.get("/api/thumb")
+def api_thumb(path: str):
+    """Serve a small cached thumbnail for a gallery image (path under outputs/).
+
+    The grid loads hundreds of these instead of the full ~1 MB PNGs. Resized on
+    the first request and cached under .cache/thumbs/ (outside outputs/, so
+    ``scan_outputs`` never lists them); every later request is served from disk."""
+    target = (OUTPUTS_DIR / path).resolve()
+    if OUTPUTS_DIR.resolve() not in target.parents or not target.is_file():
+        raise HTTPException(status_code=404)
+    cache = (_THUMBS_DIR / target.relative_to(OUTPUTS_DIR.resolve())).with_suffix(".webp")
+    if not cache.is_file():
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(target) as im:
+            im = im.convert("RGB")
+            im.thumbnail((THUMB_MAX, THUMB_MAX))
+            im.save(cache, "WEBP", quality=80)
+    return FileResponse(cache, media_type="image/webp")
 
 
 @app.get("/api/metadata")

@@ -84,6 +84,7 @@ document.addEventListener('alpine:init', () => {
     // ── gallery ─────────────────────────────────────────────────
     gallery: [],
     galleryGroups: [],
+    galleryLimit: 60,   // chunked rendering: only this many thumbs live in the DOM
     selected: null,
     selectedMeta: '',
     selectedFields: {},
@@ -893,16 +894,19 @@ document.addEventListener('alpine:init', () => {
       this.tab = 'gallery';
       this.selected = null;
       this.selectedMeta = '';
+      this.galleryLimit = 60;
       this.gallery = (await (await fetch('/api/gallery')).json()).images;
       this.buildGalleryGroups();
     },
 
     // Group the (date-desc) gallery list into day sections, carrying each
     // image's flat index so the lightbox carousel still pages across all of them.
+    // Only the first `galleryLimit` images are grouped (and rendered); the rest
+    // stay in `gallery` for the lightbox and load in as the sentinel scrolls in.
     buildGalleryGroups() {
       const groups = [];
       let cur = null;
-      this.gallery.forEach((img, i) => {
+      this.gallery.slice(0, this.galleryLimit).forEach((img, i) => {
         if (!cur || cur.date !== img.date) {
           cur = { date: img.date, label: this.dateLabel(img.date), images: [] };
           groups.push(cur);
@@ -910,6 +914,19 @@ document.addEventListener('alpine:init', () => {
         cur.images.push({ img, index: i });
       });
       this.galleryGroups = groups;
+    },
+
+    // Watch the bottom sentinel; render the next chunk as it nears the viewport.
+    // rootMargin pre-loads 400px early so the "Loading more…" row rarely shows.
+    observeSentinel(el) {
+      new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting) this.loadMoreGallery();
+      }, { rootMargin: '400px' }).observe(el);
+    },
+    loadMoreGallery() {
+      if (this.galleryLimit >= this.gallery.length) return;
+      this.galleryLimit += 60;
+      this.buildGalleryGroups();
     },
 
     dateLabel(d) {

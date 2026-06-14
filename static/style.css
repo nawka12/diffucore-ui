@@ -579,6 +579,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .thumb:hover { border-color: var(--line-hi); }
 .thumb.sel { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(232,160,101,0.2); }
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.gallery-sentinel { color: var(--txt-3); font-size: 13px; padding: 24px; text-align: center; }
 .meta {
   background: var(--surface-2);
   border: 1px solid var(--line);

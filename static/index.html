@@ -511,12 +511,14 @@
           <div class="gallery-grid">
             <template x-for="item in g.images" :key="item.img.url">
               <div class="thumb" :class="{sel: selected && selected.url===item.img.url}" @click="openLightbox(item.index)">
-                <img :src="item.img.url" :alt="item.img.name" loading="lazy">
+                <img :src="'/api/thumb?path=' + encodeURIComponent(item.img.path)" :alt="item.img.name" loading="lazy">
               </div>
             </template>
           </div>
         </section>
       </template>
+      <div class="gallery-sentinel" x-show="galleryLimit < gallery.length"
+           x-init="observeSentinel($el)">Loading more…</div>
       <p class="placeholder" x-show="gallery.length===0">No outputs yet.</p>
     </section>
 
