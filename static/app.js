@@ -999,46 +999,66 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── standalone upscale ───────────────────────────────────────
-    openUpscale() {
+    async openUpscale() {
+      // Capture the source the moment the popover opens, so the run upscales the
+      // image you launched from. A gallery selection carries its own metadata
+      // (so the refine pass matches how it was made); a fresh result is
+      // described by the live form.
+      let fromGallery = false;
+      if (this.lightbox.open && this.selected) {
+        await this._metaLoad;                    // metadata may still be in flight
+        this._upscaleSrc = { url: this.selected.url, meta: this.selectedFields };
+        fromGallery = true;
+      } else if (this.resultUrl) {
+        this._upscaleSrc = { url: this.resultUrl, meta: null };
+      } else {
+        this._upscaleSrc = null;
+      }
+      const meta = this._upscaleSrc && this._upscaleSrc.meta;
+      this.upscaleForm.prompt = (meta && meta.prompt) || this.upscale.prompt;
       this.upscaleForm.scale = this.upscale.scale;
       this.upscaleForm.denoise = this.upscale.denoise;
       this.upscaleForm.tile = this.upscale.tile;
       this.upscaleForm.overlap = this.upscale.overlap;
-      this.upscaleForm.prompt = this.upscale.prompt;
       this.upscaleForm.teacache = this.upscale.teacache;
       this.upscaleForm.base = this.upscale.base;
+      // The popover and the progress bar both live on the Generate tab, so a
+      // gallery launch moves there (closing the lightbox) — otherwise the
+      // popover stays hidden behind the gallery.
+      if (fromGallery) { this.closeLightbox(); this.tab = 'generate'; }
       this.upscalePopover.open = true;
       this.upscalePopover.busy = false;
     },
     closeUpscale() { this.upscalePopover.open = false; },
     async runUpscale() {
-      if (!this.selected && !this.resultUrl) { this.flash('No image to upscale'); return; }
+      const src = this._upscaleSrc;
+      if (!src) { this.flash('No image to upscale'); return; }
       if (!this.modelLoaded) { this.flash('Load a model first'); return; }
-      this.upscalePopover.busy = true;
+      this.closeUpscale();   // reveal the Generate-tab progress bar + live preview
       this.busy = true;
       this.progress = { step: 0, total: 0 };
       this.previewUrl = null;
-      let source = this.selected;
-      if (!source && this.resultUrl) source = { url: this.resultUrl };
-      if (!source) { this.flash('No image'); this.upscalePopover.busy = false; this.busy = false; return; }
       try {
-        const blob = await (await fetch(source.url)).blob();
+        const blob = await (await fetch(src.url)).blob();
         const inputImage = await new Promise((res, rej) => {
           const r = new FileReader();
           r.onload = () => res(r.result);
           r.onerror = rej;
           r.readAsDataURL(blob);
         });
+        // Refine params describe the source: a gallery image's own metadata
+        // (over the form as a fallback), or the live form for a fresh result.
+        const refine = src.meta ? { ...this.form, ...src.meta } : this.form;
         const payload = {
           input_image: inputImage,
           scale: this.upscaleForm.scale, denoise: this.upscaleForm.denoise,
           tile: this.upscaleForm.tile, overlap: this.upscaleForm.overlap,
           base: this.upscaleForm.base,
           prompt: this.upscaleForm.prompt,
-          neg: this.form.neg,
-          steps: this.form.steps, cfg: this.form.cfg,
-          sampler: this.form.sampler, scheduler: this.form.scheduler,
-          seed: this.form.seed,
+          neg: refine.neg,
+          steps: refine.steps, cfg: refine.cfg,
+          sampler: refine.sampler, scheduler: refine.scheduler,
+          seed: refine.seed,
           teacache: this.upscaleForm.teacache,
           teacache_calibrated: this.form.teacacheCalibrated,
           preview: this.preview,
@@ -1236,9 +1256,20 @@ document.addEventListener('alpine:init', () => {
     applyFields(f) {
       if (!f) return;
       const keys = ['prompt', 'neg', 'steps', 'cfg', 'sampler', 'scheduler',
-                    'seed', 'shift', 'strength', 'width', 'height'];
+                    'seed', 'shift', 'strength', 'width', 'height',
+                    'teacacheOn', 'teacache', 'teacacheCalibrated'];
       for (const k of keys) if (f[k] !== undefined) this.form[k] = f[k];
       if (f.detailer) this.applyDetailer(f.detailer);
+      if (f.upscale) this.applyUpscale(f.upscale);
+    },
+
+    // Restore the upscaler panel from a saved `upscale` metadata chunk. Additive,
+    // like applyDetailer — an image without the chunk leaves the panel untouched.
+    applyUpscale(u) {
+      this.upscale.enabled = u.enabled !== false;
+      for (const k of ['scale', 'denoise', 'tile', 'overlap', 'teacache', 'base', 'prompt']) {
+        if (u[k] !== undefined) this.upscale[k] = u[k];
+      }
     },
 
     // Restore the detailer panel from a saved `detailer` metadata chunk. Additive,

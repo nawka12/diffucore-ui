@@ -256,6 +256,33 @@ def extract_detailer(meta: dict) -> dict:
     return det
 
 
+def extract_upscale(meta: dict) -> dict:
+    """Reconstruct this app's upscaler settings from the ``Upscale …`` keys on a
+    parsed ``parameters`` line. ``{}`` when no upscaler ran.
+
+    Mirrors :func:`extract_detailer`: ``base`` "Lanczos" maps back to the form's
+    empty default (no ESRGAN model); the rest are cast to the form's types.
+    """
+    if "upscale_scale" not in meta:
+        return {}
+    up = {"enabled": True}
+    for key, src, cast in (
+        ("scale", "upscale_scale", float),
+        ("denoise", "upscale_denoise", float),
+        ("tile", "upscale_tile", int),
+        ("overlap", "upscale_overlap", int),
+        ("teacache", "upscale_teacache", float),
+    ):
+        try:
+            up[key] = cast(meta[src])
+        except (KeyError, TypeError, ValueError):
+            pass
+    base = meta.get("upscale_base", "")
+    up["base"] = "" if base == "Lanczos" else base
+    up["prompt"] = meta.get("upscale_prompt", "")
+    return up
+
+
 def workspace_fields(meta: dict) -> dict:
     """Normalise a parsed metadata dict into typed workspace form values.
 
@@ -295,6 +322,20 @@ def workspace_fields(meta: dict) -> dict:
         out["strength"] = float(meta["denoising_strength"])
     except (TypeError, ValueError, KeyError):
         pass
+    # TeaCache is only written when it ran: "TeaCache: <thresh>" (calibrated) or
+    # "TeaCache: <thresh> (raw)". Absent means it was off — additive, like the
+    # detailer/upscale chunks, so we don't toggle it off on older metadata.
+    tc = meta.get("teacache")
+    if tc is not None:
+        raw = str(tc).strip()
+        try:
+            thresh = float(raw.split()[0])
+        except (ValueError, IndexError):
+            thresh = 0.0
+        if thresh > 0:
+            out["teacacheOn"] = True
+            out["teacache"] = thresh
+            out["teacacheCalibrated"] = not raw.endswith("(raw)")
     size_str = meta.get("size", "")
     if "x" in size_str:
         try:
@@ -307,4 +348,7 @@ def workspace_fields(meta: dict) -> dict:
     detailer = extract_detailer(meta)
     if detailer:
         out["detailer"] = detailer
+    upscale = extract_upscale(meta)
+    if upscale:
+        out["upscale"] = upscale
     return out
