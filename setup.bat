@@ -55,10 +55,12 @@ REM --- pip deps ---
 echo [3/4] Installing Python dependencies...
 "%VPY%" -m pip install --upgrade pip -q
 if errorlevel 1 goto :error
-REM Install the cu124 torch build first so requirements.txt / ultralytics don't
-REM pull the default PyPI wheel (built for a newer CUDA than many drivers run).
+REM Install the cu124 torch build first so requirements.txt / ultralytics /
+REM spandrel don't pull the default PyPI wheel (built for a newer CUDA than many
+REM drivers run). torchvision is included because spandrel depends on it -
+REM pulling it from PyPI would drag in a mismatched torch.
 echo Downloading the CUDA torch build, ~2.5 GB - this is the slow part...
-"%VPY%" -m pip install torch --index-url https://download.pytorch.org/whl/cu124
+"%VPY%" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 if errorlevel 1 goto :error
 "%VPY%" -m pip install -r requirements.txt
 if errorlevel 1 goto :error

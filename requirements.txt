@@ -10,3 +10,4 @@ Pillow>=10.0
 einops>=0.7
 tqdm
 ultralytics>=8.1   # YOLO detection for the detailer (lazy-imported)
+spandrel>=0.3      # ESRGAN-family base for the tiled upscaler (optional, guarded import)

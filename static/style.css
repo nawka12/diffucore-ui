@@ -657,6 +657,36 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .lb-count { font-family: var(--mono); font-size: 12px; color: var(--txt-3); }
 .lb-panel .meta { margin-top: 12px; max-height: 30vh; }
 
+/* ── standalone upscale popover ──────────────────────────────── */
+.upscale-pop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.upscale-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.72); }
+.upscale-card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface);
+  border: 1px solid var(--line-hi);
+  border-radius: 10px;
+  padding: 18px 20px;
+}
+.upscale-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
 /* ── settings modal ───────────────────────────────────────────── */
 .gear {
   align-self: center;

@@ -87,7 +87,23 @@ def _detailer_fields(detail: dict) -> list[str]:
     return fields
 
 
-def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None) -> str:
+def _upscale_fields(upscale: dict) -> list[str]:
+    """Upscale-compatible ``Key: value`` pairs for the ``parameters`` line."""
+    fields = [
+        f"Upscale scale: {upscale.get('scale')}",
+        f"Upscale tile: {upscale.get('tile')}",
+        f"Upscale overlap: {upscale.get('overlap')}",
+        f"Upscale denoise: {upscale.get('denoise')}",
+        f"Upscale TeaCache: {upscale.get('teacache')}",
+        f"Upscale base: {upscale.get('base')}",
+    ]
+    if upscale.get("prompt"):
+        fields.append(f"Upscale prompt: {_quote(upscale['prompt'])}")
+    return fields
+
+
+def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
+                    upscale: dict | None = None) -> str:
     """Build the AUTO1111-style ``parameters`` string for a finished generation.
 
     Reads loaded-model name, resolved seed, and perf flags off ``engine``.
@@ -114,6 +130,8 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None) -> s
         fields.append(f"TeaCache: {gen_kwargs['teacache_thresh']}{calib}")
     if detailer:
         fields.extend(_detailer_fields(detailer))
+    if upscale:
+        fields.extend(_upscale_fields(upscale))
     fields.append(f"diffucore-ui: {UI_ID}")
     fields.append(DIFF_ID)
     flags = engine.perf_flags_str

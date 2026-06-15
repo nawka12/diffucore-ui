@@ -39,10 +39,12 @@ source "$VENV_DIR/bin/activate"
 # --- pip deps ---
 echo "[3/4] Installing Python dependencies..."
 pip install --upgrade pip -q
-# Install the cu124 torch build first so requirements.txt / ultralytics don't
-# pull the default PyPI wheel (built for a newer CUDA than many drivers run).
+# Install the cu124 torch build first so requirements.txt / ultralytics /
+# spandrel don't pull the default PyPI wheel (built for a newer CUDA than many
+# drivers run). torchvision is included because spandrel depends on it — pulling
+# it from PyPI would drag in a mismatched torch.
 echo "Downloading the CUDA torch build, ~2.5 GB — this is the slow part..."
-pip install torch --index-url https://download.pytorch.org/whl/cu124
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 pip install -r "$SCRIPT_DIR/requirements.txt"
 pip install -q -e "$SCRIPT_DIR/diffucore"
 

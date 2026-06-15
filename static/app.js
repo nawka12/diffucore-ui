@@ -4,7 +4,7 @@ document.addEventListener('alpine:init', () => {
   Alpine.data('app', () => ({
     // ── model rack ──────────────────────────────────────────────
     modelType: 'SD/SDXL',
-    checkpoints: [], dits: [], vaes: [], tes: [], loras: [], detailers: [],
+    checkpoints: [], dits: [], vaes: [], tes: [], loras: [], detailers: [], upscalers: [],
     checkpoint: '', dit: '', vae: '', te: '', clip: '', fluxCheckpoint: '',
     perf: { compile: false, cudaGraphs: false, channelsLast: true, offload: 'full' },
     recommendedOffload: 'full',   // GPU-VRAM-based default from the backend (set on init)
@@ -59,6 +59,18 @@ document.addEventListener('alpine:init', () => {
       dilation: 4, padding: 32, blur: 4, maxDet: 0,
       teacache: false,
     },
+
+    // ── upscaler (tiled, after generate) ─────────────────────────
+    // teacache is independent of the main slider (0 = off): the refine pass
+    // runs its whole trajectory in the detail regime, so caching softens it.
+    upscale: {
+      enabled: false, scale: 2.0, denoise: 0.35,
+      tile: 1024, overlap: 128, prompt: '', teacache: 0.0, base: '',
+    },
+
+    // ── standalone upscale popover (from result / lightbox) ──────
+    upscalePopover: { open: false, busy: false },
+    upscaleForm: { scale: 2.0, denoise: 0.35, tile: 1024, overlap: 128, prompt: '', teacache: 0.0, base: '' },
 
     // ── generation output ───────────────────────────────────────
     busy: false,
@@ -296,6 +308,7 @@ document.addEventListener('alpine:init', () => {
       this.checkpoints = m.checkpoints; this.dits = m.dits;
       this.vaes = m.vaes; this.tes = m.tes; this.loras = m.loras;
       this.detailers = m.detailers || [];
+      this.upscalers = m.upscalers || [];
       this.samplersSd = m.samplers_sd;
       this.samplersAnima = m.samplers_anima;
       this.samplersFlux = m.samplers_flux;
@@ -734,6 +747,14 @@ document.addEventListener('alpine:init', () => {
           detail_blur: this.detail.blur,
           detail_max: this.detail.maxDet,
           detail_teacache: this.detail.teacache,
+          upscale_enabled: this.upscale.enabled,
+          upscale_scale: this.upscale.scale,
+          upscale_denoise: this.upscale.denoise,
+          upscale_tile: this.upscale.tile,
+          upscale_overlap: this.upscale.overlap,
+          upscale_prompt: this.upscale.prompt,
+          upscale_teacache: this.upscale.teacache,
+          upscale_base: this.upscale.base,
         };
         // Progress + preview arrive on the shared stream; we await the result.
         const ev = await this.submitJob('/api/generate', payload);
@@ -975,6 +996,79 @@ document.addEventListener('alpine:init', () => {
     removeDetailModel(i) {
       this.detail.models.splice(i, 1);
       if (!this.detail.models.length) this.detail.models.push({ model: this.detailerChoices[0], prompt: '' });
+    },
+
+    // ── standalone upscale ───────────────────────────────────────
+    openUpscale() {
+      this.upscaleForm.scale = this.upscale.scale;
+      this.upscaleForm.denoise = this.upscale.denoise;
+      this.upscaleForm.tile = this.upscale.tile;
+      this.upscaleForm.overlap = this.upscale.overlap;
+      this.upscaleForm.prompt = this.upscale.prompt;
+      this.upscaleForm.teacache = this.upscale.teacache;
+      this.upscaleForm.base = this.upscale.base;
+      this.upscalePopover.open = true;
+      this.upscalePopover.busy = false;
+    },
+    closeUpscale() { this.upscalePopover.open = false; },
+    async runUpscale() {
+      if (!this.selected && !this.resultUrl) { this.flash('No image to upscale'); return; }
+      if (!this.modelLoaded) { this.flash('Load a model first'); return; }
+      this.upscalePopover.busy = true;
+      this.busy = true;
+      this.progress = { step: 0, total: 0 };
+      this.previewUrl = null;
+      let source = this.selected;
+      if (!source && this.resultUrl) source = { url: this.resultUrl };
+      if (!source) { this.flash('No image'); this.upscalePopover.busy = false; this.busy = false; return; }
+      try {
+        const blob = await (await fetch(source.url)).blob();
+        const inputImage = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result);
+          r.onerror = rej;
+          r.readAsDataURL(blob);
+        });
+        const payload = {
+          input_image: inputImage,
+          scale: this.upscaleForm.scale, denoise: this.upscaleForm.denoise,
+          tile: this.upscaleForm.tile, overlap: this.upscaleForm.overlap,
+          base: this.upscaleForm.base,
+          prompt: this.upscaleForm.prompt,
+          neg: this.form.neg,
+          steps: this.form.steps, cfg: this.form.cfg,
+          sampler: this.form.sampler, scheduler: this.form.scheduler,
+          seed: this.form.seed,
+          teacache: this.upscaleForm.teacache,
+          teacache_calibrated: this.form.teacacheCalibrated,
+          preview: this.preview,
+        };
+        const ev = await this.submitJob('/api/upscale', payload);
+        if (ev.type === 'done') {
+          this.previewUrl = null;
+          this.resultUrl = ev.image_url + '?t=' + Date.now();
+          this.info = ev.info;
+          this.closeUpscale();
+          // Surface the result on the Generate tab (no-op when already there),
+          // closing the gallery lightbox if the upscale was launched from it.
+          this.closeLightbox();
+          this.tab = 'generate';
+          this.flash('Upscale done');
+        } else if (ev.type === 'cancelled') {
+          this.previewUrl = null;
+          this.info = 'Upscale cancelled';
+        } else if (ev.type === 'error') {
+          this.info = 'Error: ' + ev.message;
+          this.flash(ev.message);
+        }
+      } catch (e) {
+        this.info = 'Error: ' + e;
+      } finally {
+        this.upscalePopover.busy = false;
+        this.busy = false;
+        this.cancelling = false;
+        this.previewUrl = null;
+      }
     },
 
     // ── gallery ─────────────────────────────────────────────────

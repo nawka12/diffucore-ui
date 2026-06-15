@@ -40,8 +40,8 @@ REM mismatched wheel is already installed, so it could never repair a CPU build.
 "%VPY%" -c "import torch; assert torch.cuda.is_available()" 2>nul
 if errorlevel 1 (
     echo [4/4] Reinstalling CUDA torch...
-    "%VPY%" -m pip uninstall -y -q torch
-    "%VPY%" -m pip install -q torch --index-url https://download.pytorch.org/whl/cu124
+    "%VPY%" -m pip uninstall -y -q torch torchvision
+    "%VPY%" -m pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cu124
     if errorlevel 1 goto :error
 ) else (
     echo [4/4] CUDA torch OK.

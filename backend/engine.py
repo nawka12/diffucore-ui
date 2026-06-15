@@ -39,8 +39,16 @@ _LOCAL_DIFFUCORE_SRC = _ROOT / "diffucore" / "src"
 if _LOCAL_DIFFUCORE_SRC.exists():
     sys.path.insert(0, str(_LOCAL_DIFFUCORE_SRC))
 
+import numpy as np
 import torch
 from PIL import Image, ImageFilter
+
+# Optional: ESRGAN-family base upscalers for the tiled upscaler. Guarded so the
+# app boots (Lanczos base only) when spandrel isn't installed.
+try:
+    import spandrel as _spandrel
+except Exception:
+    _spandrel = None
 
 from diffucore import (
     anima_calibrate_oss,
@@ -1023,6 +1031,180 @@ class Engine:
         finally:
             self._reclaim_memory()
         return result, f"Detailer: refined {n} region(s)"
+
+    # ── tiled upscaler (Ultimate SD Upscale style) ────────────────
+
+    def upscale(
+        self,
+        image: Image.Image,
+        *,
+        scale: float = 2.0,
+        tile: int = 1024,
+        overlap: int = 128,
+        denoise: float = 0.35,
+        base_upscaler: str = "",
+        prompt: str = "",
+        negative_prompt: str = "",
+        steps: int = 25,
+        cfg_scale: float = 6.0,
+        sampler: str = "dpmpp_2m",
+        scheduler: str = "karras",
+        seed: int = -1,
+        teacache_thresh: float = 0.0,
+        teacache_use_coeffs: bool = True,
+        progress_callback: Callable[[int, int], None] | None = None,
+        preview_callback: Callable[[Image.Image], None] | None = None,
+    ) -> Tuple[Image.Image, str]:
+        """Lanczos-upscale the image, then refine each overlapping tile with an
+        img2img pass at low denoise and blend them back with feather weights.
+
+        Mirrors ``detail()`` structurally but uses ``ImageToImage`` instead of
+        ``Inpaint`` and a deterministic tile grid instead of YOLO detections.
+        Does **not** touch ``last_seed`` so the caller's generation seed is
+        preserved for output naming/metadata."""
+        if not self._loaded:
+            raise RuntimeError("No model loaded")
+
+        # OSS is a full-trajectory t2i schedule — not usable mid-denoise.
+        if scheduler == "oss":
+            scheduler = "flow" if self._loaded.family == MODEL_FAMILY_ANIMA else "karras"
+
+        from upscale import feather_weights, tile_grid, tile_starts
+
+        W, H = image.size
+        target_w, target_h = round(W * scale), round(H * scale)
+        rgb = image.convert("RGB")
+        # Base upscale: ESRGAN-family model (detail-synthesizing) when one is
+        # selected, else Lanczos. An ESRGAN base lets the refine run at low
+        # denoise — sharp without the per-tile subject duplication that a soft
+        # Lanczos base forces at high denoise.
+        if base_upscaler:
+            base = self._esrgan_upscale(base_upscaler, rgb)
+            if base.size != (target_w, target_h):
+                base = base.resize((target_w, target_h), Image.LANCZOS)
+            base_note = base_upscaler
+        else:
+            base = rgb.resize((target_w, target_h), Image.LANCZOS)
+            base_note = "Lanczos"
+
+        base_seed = seed if seed is not None and seed >= 0 else \
+            int(torch.randint(0, 2**32 - 1, (1,)).item())
+
+        boxes = tile_grid(target_w, target_h, tile, overlap)
+        n = len(boxes)
+        # Feather over the *actual* per-axis overlap (tile - stride), not the
+        # requested one: a 2x of 1024 packs 3 tiles/axis → 512px overlaps, so a
+        # 128px ramp would leave a wide hard-50/50 band that blurs detail.
+        xs = tile_starts(target_w, tile, overlap)
+        ys = tile_starts(target_h, tile, overlap)
+        ov_x = tile - (xs[1] - xs[0]) if len(xs) > 1 else 0
+        ov_y = tile - (ys[1] - ys[0]) if len(ys) > 1 else 0
+
+        acc = np.zeros((target_h, target_w, 3), dtype=np.float64)
+        wsum = np.zeros((target_h, target_w, 1), dtype=np.float64)
+
+        gen = ImageToImage(self._loaded.model)
+        tc_coeffs = self._load_teacache_coeffs() if teacache_use_coeffs else None
+        preview_cb = self._make_preview_cb(preview_callback) if preview_callback else None
+
+        try:
+            for i, (x1, y1, x2, y2) in enumerate(boxes):
+                crop = base.crop((x1, y1, x2, y2))
+                tw, th = x2 - x1, y2 - y1
+                # Snap the gen size up to Anima's ÷64 grid, then map back below
+                # (no-op for ÷64 tiles and non-Anima). Full-size tiles are 1024
+                # (÷64) already; this only bites sub-tile single tiles.
+                gen_w, gen_h, snapped = self._anima_gen_size(tw, th)
+
+                def sub_cb(step, total, _i=i):
+                    if progress_callback:
+                        progress_callback(_i * total + step, n * total)
+
+                out, _ = gen(
+                    prompt=prompt, init_image=crop,
+                    negative_prompt=negative_prompt, strength=denoise,
+                    steps=steps, cfg_scale=cfg_scale, sampler=sampler,
+                    scheduler=scheduler, seed=base_seed + i,
+                    width=gen_w, height=gen_h,
+                    teacache_thresh=teacache_thresh, teacache_coefficients=tc_coeffs,
+                    progress_callback=sub_cb, preview_callback=preview_cb,
+                    return_info=True,
+                )
+                if snapped:
+                    out = out.resize((tw, th), Image.LANCZOS)
+                out_arr = np.array(out.convert("RGB"), dtype=np.float64) / 255.0
+                w = feather_weights(tw, th, ov_x, ov_y)[..., None]
+                acc[y1:y2, x1:x2] += out_arr * w
+                wsum[y1:y2, x1:x2] += w
+                self._reclaim_memory()
+        finally:
+            self._reclaim_memory()
+
+        result = np.clip(acc / np.clip(wsum, 1e-6, None), 0, 1)
+        result = (result * 255).astype(np.uint8)
+        result_img = Image.fromarray(result)
+        info = (
+            f"Upscale: {W}×{H} → {target_w}×{target_h}, "
+            f"{n} tiles @ denoise {denoise} (base {base_note})"
+        )
+        return result_img, info
+
+    def _esrgan_upscale(
+        self, model_name: str, image: Image.Image,
+        in_tile: int = 512, in_overlap: int = 32,
+    ) -> Image.Image:
+        """Run an ESRGAN-family model (via spandrel) over the image in tiles and
+        feather-blend the results. Returns the model-scale upscale (e.g. 4×);
+        the caller resizes to the requested target. Tiled so it fits 12 GB while
+        a diffusion model is also resident; ESRGAN is local so tiles agree in the
+        overlaps and the blend is seamless."""
+        if _spandrel is None:
+            raise RuntimeError(
+                "spandrel not installed — run `pip install spandrel` to use an "
+                "ESRGAN base, or pick Lanczos."
+            )
+        from upscale import feather_weights, tile_grid, tile_starts
+        from utils import upscaler_path
+
+        path = upscaler_path(model_name)
+        if not path.is_file():
+            raise RuntimeError(f"Upscaler model not found: {model_name}")
+
+        desc = _spandrel.ModelLoader().load_from_file(str(path))
+        desc.to(self.device).eval()
+        sf = int(desc.scale)
+        mdtype = next(desc.model.parameters()).dtype
+
+        W, H = image.size
+        out_w, out_h = W * sf, H * sf
+        acc = np.zeros((out_h, out_w, 3), dtype=np.float64)
+        wsum = np.zeros((out_h, out_w, 1), dtype=np.float64)
+
+        xs = tile_starts(W, in_tile, in_overlap)
+        ys = tile_starts(H, in_tile, in_overlap)
+        ov_x = (in_tile - (xs[1] - xs[0])) * sf if len(xs) > 1 else 0
+        ov_y = (in_tile - (ys[1] - ys[0])) * sf if len(ys) > 1 else 0
+
+        try:
+            with torch.inference_mode():
+                for (x1, y1, x2, y2) in tile_grid(W, H, in_tile, in_overlap):
+                    crop = image.crop((x1, y1, x2, y2))
+                    t = torch.from_numpy(np.asarray(crop, dtype=np.float32) / 255.0)
+                    t = t.permute(2, 0, 1).unsqueeze(0).to(self.device, mdtype)
+                    out = desc(t).clamp(0, 1).squeeze(0).permute(1, 2, 0)
+                    out = out.float().cpu().numpy()
+                    oh, ow = out.shape[:2]
+                    ox, oy = x1 * sf, y1 * sf
+                    w = feather_weights(ow, oh, ov_x, ov_y)[..., None]
+                    acc[oy:oy + oh, ox:ox + ow] += out * w
+                    wsum[oy:oy + oh, ox:ox + ow] += w
+                    self._reclaim_memory()
+        finally:
+            del desc
+            self._reclaim_memory()
+
+        result = np.clip(acc / np.clip(wsum, 1e-6, None), 0, 1)
+        return Image.fromarray((result * 255).astype(np.uint8))
 
 
 # ── singleton ──────────────────────────────────────────────────────

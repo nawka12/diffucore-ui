@@ -33,7 +33,7 @@ from engine import ENGINE, SAMPLERS_SD, SAMPLERS_ANIMA, SAMPLERS_FLUX, SCHEDULER
 from utils import (
     OUTPUTS_DIR, detector_path,
     scan_checkpoints, scan_loras, scan_diffusion_models,
-    scan_vae, scan_text_encoders, scan_detectors, scan_outputs, next_output_path,
+    scan_vae, scan_text_encoders, scan_detectors, scan_upscalers, scan_outputs, next_output_path,
 )
 from xyz_grid import generate_xyz_grid, PARAM_TYPES as XYZ_PARAM_TYPES
 import metadata as md
@@ -106,6 +106,36 @@ class GeneratePayload(BaseModel):
     detail_blur: int = 4
     detail_max: int = 0                  # 0 = all detections
     detail_teacache: bool = False        # apply the main TeaCache threshold to detailer passes (Anima)
+
+    # ── upscaler (tiled, post-gen) ─────────────────────────────────
+    upscale_enabled: bool = False
+    upscale_scale: float = 2.0
+    upscale_denoise: float = 0.35
+    upscale_tile: int = 1024
+    upscale_overlap: int = 128
+    upscale_prompt: str = ""
+    upscale_teacache: float = 0.0        # TeaCache for the refine pass (0 = off); independent of main gen
+    upscale_base: str = ""               # ESRGAN model in models/upscalers/ (blank = Lanczos)
+
+
+class UpscalePayload(BaseModel):
+    """Standalone upscale — input image + all params the tiled upscaler needs."""
+    input_image: str = ""
+    scale: float = 2.0
+    tile: int = 1024
+    overlap: int = 128
+    denoise: float = 0.35
+    base: str = ""                       # ESRGAN model in models/upscalers/ (blank = Lanczos)
+    prompt: str = ""
+    neg: str = ""
+    steps: int = 25
+    cfg: float = 6.0
+    sampler: str = "dpmpp_2m"
+    scheduler: str = "karras"
+    seed: int = -1
+    teacache: float = 0.0
+    teacache_calibrated: bool = True
+    preview: bool = True
 
 
 class CalibratePayload(BaseModel):
@@ -192,7 +222,8 @@ def _output_url(path: Path) -> str:
 
 
 def _save_output(image: Image.Image, gen_kwargs: dict,
-                 detailer: Optional[dict] = None) -> Path:
+                 detailer: Optional[dict] = None,
+                 upscale: Optional[dict] = None) -> Path:
     """Save an image to outputs/ with AUTO1111 metadata; return its path.
 
     Used for single generations and for each individual X/Y/Z cell. ``detailer``,
@@ -202,7 +233,7 @@ def _save_output(image: Image.Image, gen_kwargs: dict,
     out = next_output_path(ENGINE.last_seed)
     meta = PngInfo()
     meta_kwargs = {k: v for k, v in gen_kwargs.items() if k != "progress_callback"}
-    meta.add_text("parameters", md.format_metadata(meta_kwargs, ENGINE, detailer=detailer))
+    meta.add_text("parameters", md.format_metadata(meta_kwargs, ENGINE, detailer=detailer, upscale=upscale))
     image.save(out, pnginfo=meta)
     return out
 
@@ -309,6 +340,30 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                     notes.append(f"{dm.model} error: {e}")
             detail_info = "  |  detailer [" + "; ".join(notes) + "]"
 
+        # Upscaler (tiled, post-gen): run after the detailer, on the refined
+        # image, then replace the output image with the upscaled version.
+        upscale_info = ""
+        if p.upscale_enabled and float(p.upscale_scale) > 1.0:
+            try:
+                image, unote = ENGINE.upscale(
+                    image,
+                    scale=float(p.upscale_scale), tile=int(p.upscale_tile),
+                    overlap=int(p.upscale_overlap), denoise=float(p.upscale_denoise),
+                    base_upscaler=p.upscale_base,
+                    prompt=p.upscale_prompt.strip() or clean_prompt,
+                    negative_prompt=clean_neg,
+                    steps=int(p.steps), cfg_scale=float(p.cfg),
+                    sampler=p.sampler, scheduler=p.scheduler,
+                    seed=int(p.seed),
+                    teacache_thresh=float(p.upscale_teacache),
+                    teacache_use_coeffs=bool(p.teacache_calibrated),
+                    progress_callback=on_progress,
+                    preview_callback=on_preview if p.preview else None,
+                )
+                upscale_info = "  |  " + unote
+            except Exception as e:  # noqa: BLE001 — keep current image on a pass failure
+                upscale_info = f"  |  upscale error: {e}"
+
         # Save the *raw* prompt/neg (the <lora:…> tags survive parse_lora_prompt
         # stripping) so the LoRA selection round-trips through metadata restore.
         gen_kwargs["prompt"], gen_kwargs["negative_prompt"] = p.prompt, p.neg
@@ -322,11 +377,20 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             "blur": p.detail_blur,
             "maxDet": p.detail_max,
         } if active else None
-        out = _save_output(image, gen_kwargs, detailer=detailer_meta)
+        upscale_meta = {
+            "scale": float(p.upscale_scale),
+            "tile": int(p.upscale_tile),
+            "overlap": int(p.upscale_overlap),
+            "denoise": float(p.upscale_denoise),
+            "teacache": float(p.upscale_teacache),
+            "base": p.upscale_base or "Lanczos",
+            "prompt": p.upscale_prompt.strip() or "",
+        } if p.upscale_enabled and float(p.upscale_scale) > 1.0 else None
+        out = _save_output(image, gen_kwargs, detailer=detailer_meta, upscale=upscale_meta)
         rel = out.relative_to(OUTPUTS_DIR)
         return {
             "image_url": _output_url(out),
-            "info": f"{lora_info}{info}  |  inference: {elapsed:.2f}s{detail_info}  |  saved to {rel}",
+            "info": f"{lora_info}{info}  |  inference: {elapsed:.2f}s{detail_info}{upscale_info}  |  saved to {rel}",
             "seed": ENGINE.last_seed,
         }
     finally:
@@ -625,6 +689,7 @@ def api_models():
         "tes": scan_text_encoders(),
         "loras": scan_loras(),
         "detailers": scan_detectors(),
+        "upscalers": scan_upscalers(),
         "samplers_sd": SAMPLERS_SD,
         "samplers_anima": SAMPLERS_ANIMA,
         "samplers_flux": SAMPLERS_FLUX,
@@ -726,6 +791,51 @@ async def api_generate(p: GeneratePayload):
         on_progress, on_preview = _make_callbacks(job)
         return _run_generation(p, on_progress, on_preview)
     job = Job("generate", f"{p.mode} {p.width}×{p.height} · {p.steps} steps", run)
+    _enqueue(job)
+    return {"job": job.id}
+
+
+@app.post("/api/upscale")
+async def api_upscale(p: UpscalePayload):
+    def run(job: Job) -> dict:
+        if not ENGINE.loaded_name:
+            raise RuntimeError("Load a model first")
+        on_progress, on_preview = _make_callbacks(job)
+        input_image = _decode_image(p.input_image)
+        image, unote = ENGINE.upscale(
+            input_image,
+            scale=float(p.scale), tile=int(p.tile),
+            overlap=int(p.overlap), denoise=float(p.denoise),
+            base_upscaler=p.base,
+            prompt=p.prompt, negative_prompt=p.neg,
+            steps=int(p.steps), cfg_scale=float(p.cfg),
+            sampler=p.sampler, scheduler=p.scheduler,
+            seed=int(p.seed),
+            teacache_thresh=float(p.teacache),
+            teacache_use_coeffs=bool(p.teacache_calibrated),
+            progress_callback=on_progress,
+            preview_callback=on_preview if p.preview else None,
+        )
+        upscale_meta = {
+            "scale": float(p.scale), "tile": int(p.tile),
+            "overlap": int(p.overlap), "denoise": float(p.denoise),
+            "teacache": float(p.teacache),
+            "base": p.base or "Lanczos",
+            "prompt": p.prompt.strip() or "",
+        }
+        gen_kwargs = dict(
+            prompt=p.prompt, negative_prompt=p.neg,
+            steps=int(p.steps), cfg_scale=float(p.cfg),
+            sampler=p.sampler, scheduler=p.scheduler,
+        )
+        out = _save_output(image, gen_kwargs, upscale=upscale_meta)
+        rel = out.relative_to(OUTPUTS_DIR)
+        return {
+            "image_url": _output_url(out),
+            "info": f"{unote}  |  saved to {rel}",
+            "seed": ENGINE.last_seed,
+        }
+    job = Job("upscale", f"upscale {p.scale}x", run)
     _enqueue(job)
     return {"job": job.id}
 

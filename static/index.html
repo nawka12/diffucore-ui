@@ -341,6 +341,46 @@
           </div>
         </fieldset>
 
+        <fieldset x-show="!sweeping">
+          <legend>Upscaler <small>(after generate)</small></legend>
+          <label class="chip toggle" :class="{on: upscale.enabled}">
+            <input type="checkbox" x-model="upscale.enabled"> Upscale (after generate)
+          </label>
+          <div class="axes-body" x-show="upscale.enabled">
+            <div class="slider">
+              <div class="slider-head"><span>Scale</span>
+                <input type="number" x-model.number="upscale.scale" min="1.0" max="4.0" step="0.5"></div>
+              <input type="range" x-model.number="upscale.scale" min="1.0" max="4.0" step="0.5">
+            </div>
+            <div class="slider">
+              <div class="slider-head"><span>Denoise</span>
+                <input type="number" x-model.number="upscale.denoise" min="0.05" max="0.8" step="0.05"></div>
+              <input type="range" x-model.number="upscale.denoise" min="0.05" max="0.8" step="0.05">
+            </div>
+            <div class="detail-grid">
+              <label class="field"><span>Tile size</span>
+                <input type="number" x-model.number="upscale.tile" min="256" max="2048" step="64"></label>
+              <label class="field"><span>Overlap</span>
+                <input type="number" x-model.number="upscale.overlap" min="0" max="512" step="16"></label>
+            </div>
+            <label class="field"><span>Base upscaler</span>
+              <select x-model="upscale.base">
+                <option value="">Lanczos (soft — use higher denoise)</option>
+                <template x-for="u in upscalers" :key="u"><option :value="u" x-text="u"></option></template>
+              </select></label>
+            <p class="hint" x-show="upscale.base" style="margin:4px 0 0">Sharp base — use low denoise (~0.2) to avoid duplicated subjects.</p>
+            <div class="slider">
+              <div class="slider-head"><span>TeaCache <small>(0 = off)</small></span>
+                <input type="number" x-model.number="upscale.teacache" min="0.0" max="1.0" step="0.05"></div>
+              <input type="range" x-model.number="upscale.teacache" min="0.0" max="1.0" step="0.05">
+            </div>
+            <textarea class="autosize" x-model="upscale.prompt" rows="1"
+                      x-effect="autogrow($el, upscale.prompt)" @input="autogrow($el)"
+                      placeholder="prompt (blank = main prompt)"></textarea>
+            <p class="hint" style="margin:4px 0 0">Uses main prompt when left blank.</p>
+          </div>
+        </fieldset>
+
         <fieldset>
           <legend>Size</legend>
           <p class="hint" x-show="mode!=='t2i'" style="margin:0 0 8px">Defaults to the input image; the image is resized to fit.</p>
@@ -506,6 +546,53 @@
           <template x-if="!sweeping && !(busy && previewUrl) && !resultUrl"><div class="placeholder">No image yet</div></template>
         </div>
         <div class="info" x-text="sweeping ? xyzInfo : info"></div>
+        <button class="btn small" x-show="resultUrl && !sweeping && !busy" @click="openUpscale()"
+                style="margin-top:8px; width:100%">Upscale ⬆</button>
+      </div>
+
+      <!-- standalone upscale popover -->
+      <div class="upscale-pop" x-show="upscalePopover.open"
+           @keydown.escape.window="closeUpscale()" x-transition.opacity>
+        <div class="upscale-backdrop" @click="closeUpscale()"></div>
+        <div class="upscale-card">
+          <div class="upscale-head">
+            <span>Upscale image</span>
+            <button class="btn small" @click="closeUpscale()">✕</button>
+          </div>
+          <div class="slider">
+            <div class="slider-head"><span>Scale</span>
+              <input type="number" x-model.number="upscaleForm.scale" min="1.0" max="4.0" step="0.5"></div>
+            <input type="range" x-model.number="upscaleForm.scale" min="1.0" max="4.0" step="0.5">
+          </div>
+          <div class="slider">
+            <div class="slider-head"><span>Denoise</span>
+              <input type="number" x-model.number="upscaleForm.denoise" min="0.05" max="0.8" step="0.05"></div>
+            <input type="range" x-model.number="upscaleForm.denoise" min="0.05" max="0.8" step="0.05">
+          </div>
+          <div class="detail-grid">
+            <label class="field"><span>Tile size</span>
+              <input type="number" x-model.number="upscaleForm.tile" min="256" max="2048" step="64"></label>
+            <label class="field"><span>Overlap</span>
+              <input type="number" x-model.number="upscaleForm.overlap" min="0" max="512" step="16"></label>
+          </div>
+          <label class="field"><span>Base upscaler</span>
+            <select x-model="upscaleForm.base">
+              <option value="">Lanczos (soft — use higher denoise)</option>
+              <template x-for="u in upscalers" :key="u"><option :value="u" x-text="u"></option></template>
+            </select></label>
+          <p class="hint" x-show="upscaleForm.base" style="margin:4px 0 0">Sharp base — use low denoise (~0.2) to avoid duplicated subjects.</p>
+          <div class="slider">
+            <div class="slider-head"><span>TeaCache <small>(0 = off)</small></span>
+              <input type="number" x-model.number="upscaleForm.teacache" min="0.0" max="1.0" step="0.05"></div>
+            <input type="range" x-model.number="upscaleForm.teacache" min="0.0" max="1.0" step="0.05">
+          </div>
+          <textarea class="autosize" x-model="upscaleForm.prompt" rows="1"
+                    x-effect="autogrow($el, upscaleForm.prompt)" @input="autogrow($el)"
+                    placeholder="optional prompt"></textarea>
+          <button class="btn primary" style="margin-top:10px; width:100%"
+                  @click="runUpscale()" :disabled="upscalePopover.busy"
+                  x-text="upscalePopover.busy ? 'Upscaling…' : 'Start upscale'"></button>
+        </div>
       </div>
     </section>
 
@@ -567,6 +654,7 @@
                :download="selected ? selected.name : ''">Download</a>
             <button class="btn small" @click="sendToMode('i2i')">To img2img</button>
             <button class="btn small" @click="sendToMode('inpaint')">To inpaint</button>
+            <button class="btn small" @click="openUpscale()">Upscale ⬆</button>
             <button class="btn small primary" @click="loadToWorkspace()">Load to Generate</button>
           </div>
         </div>
