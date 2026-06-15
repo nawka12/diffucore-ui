@@ -23,6 +23,11 @@ network/share flags, architecture, and status.
 - **Detailer** — an ADetailer-style toggle that detects faces/hands with a YOLO
   model and inpaints each region at native resolution after generation. Works on
   UNet (SD/SDXL) and DiT (Anima, FLUX) backbones.
+- **Tiled upscaler** — an Ultimate-SD-Upscale-style toggle (and a standalone
+  "Upscale" action on any result or gallery image) that enlarges 2×/4× by
+  re-running low-denoise img2img over overlapping tiles and feather-blending them
+  back, so large factors fit in modest VRAM. Optional **ESRGAN** base (via
+  `spandrel`) for genuine detail; Lanczos otherwise. Works on every family.
 - **Live preview** — watch the image form during sampling. A fast latent→RGB
   approximation (no VAE decode) streams a rough preview each step; toggle it off
   in the Generate view. SD/SDXL and Anima.
@@ -93,6 +98,10 @@ update.bat           REM Windows
 
 Both reuse the existing `.venv` — run setup first if you don't have one yet.
 
+If you update with a plain `git pull` instead, the launch script has a safety
+net: it re-syncs `requirements.txt` whenever it changes (hash-gated, so it's a
+no-op otherwise), so a newly added dependency won't surface as a runtime error.
+
 ## Usage
 
 ### Place your models
@@ -104,11 +113,17 @@ models/
 ├── vae/                     # Anima / FLUX VAE .safetensors
 ├── text-encoders/           # Anima / FLUX text encoders .safetensors
 ├── loras/                   # LoRA adapters (.safetensors)
-└── detailers/               # YOLO detection models for the detailer (.pt)
+├── detailers/               # YOLO detection models for the detailer (.pt)
+└── upscalers/               # ESRGAN-family models for the upscaler base (.pth)
 ```
 
 The detailer needs `ultralytics` (installed via `requirements.txt`) and at least
 one YOLO model in `detailers/` — e.g. ADetailer's `face_yolov8n.pt` / `hand_yolov8n.pt`.
+
+The upscaler's ESRGAN base is optional: it needs `spandrel` (installed via
+`requirements.txt`) and an ESRGAN-family model in `upscalers/` — e.g.
+`4x-UltraSharp.pth`, or an anime model like `4x_IllustrationJaNai`. Without one
+the upscaler falls back to a Lanczos base.
 
 ### Start the UI
 
@@ -258,6 +273,29 @@ therefore defaults the detailer strength to **0.25** (a true refine); SD/SDXL an
 FLUX keep **0.4**, so on FLUX you'll usually want to lower it by hand. Lower it to
 preserve more of the original, raise it to regenerate more.
 
+### Upscaler (after generate)
+
+Enable **Upscaler** in the Generate view, or use the standalone **Upscale ⬆**
+button on a result or any gallery image, to enlarge with an
+Ultimate-SD-Upscale-style pass: the image is pre-upscaled, then refined by
+low-denoise img2img over overlapping tiles and feather-blended back. Because each
+tile is only ~1024², 2× **and** 4× both fit in modest VRAM.
+
+**Pick a base upscaler.** With **Lanczos** (the default) the base is soft, so the
+refine needs high denoise to add detail — but high denoise makes each tile redraw
+the whole prompt and duplicate the subject. Drop an **ESRGAN** model into
+`models/upscalers/` and select it instead: it synthesises real per-pixel detail,
+so the refine only needs a low denoise (~0.2) to clean it up — sharp, with no
+duplication. ESRGAN is the recommended path; Lanczos is a fallback. (ESRGAN runs
+through `spandrel`; see [Place your models](#place-your-models).)
+
+**TeaCache is separate here.** The upscale pass has its own TeaCache control
+(default **off**), independent of the main generation: caching is more
+detail-costly on a low-denoise refine, so leave it off (or low) for the sharpest
+result. Tile size, overlap, denoise, and an optional per-pass prompt (blank
+reuses the main prompt) round out the controls; all upscale settings are written
+into the output PNG's metadata.
+
 ### Sweep parameters (X/Y/Z)
 
 In txt2img mode, enable **X/Y/Z sweep** to compare a grid of settings. Each axis
@@ -282,8 +320,9 @@ as the input. The **Metadata** view reads parameters out of any PNG you drop in
 ├── backend/            Python backend (FastAPI server + engine glue)
 │   ├── app.py          Entry point — launches the FastAPI server (uvicorn)
 │   ├── server.py       FastAPI app — REST, a job queue, and a shared SSE event stream over the engine
-│   ├── engine.py       Engine singleton — model lifecycle, generation, LoRA, detailer
+│   ├── engine.py       Engine singleton — model lifecycle, generation, LoRA, detailer, upscaler
 │   ├── detailer.py     YOLO detection + crop/expand geometry for the detailer
+│   ├── upscale.py      Tile geometry + feather-blend helpers for the tiled upscaler
 │   ├── metadata.py     PNG metadata — write params, read/parse AUTO1111 & ComfyUI
 │   ├── utils.py        Directory scanning helpers (checkpoints, LoRAs, outputs)
 │   ├── xyz_grid.py     X/Y/Z plot grid assembly

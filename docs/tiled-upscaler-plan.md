@@ -1,6 +1,8 @@
 # Tiled (Ultimate-SD-Upscale style) upscaler — implementation plan
 
-> Status: **planned, not implemented.** Captured for a later implementation pass.
+> Status: **implemented & shipped**, including the ESRGAN/spandrel base (the one
+> item this plan originally deferred). Kept as the design record; the "Deferred"
+> section below tracks what's still outstanding.
 
 ## Context
 
@@ -136,6 +138,10 @@ not-yet-GPU-tested.
 
 ## Deferred (not in this change)
 
-- ESRGAN/spandrel base (drop-in swap of the one Lanczos `resize` call + a
-  `models/upscalers/` scan).
-- Metadata `extract_upscale` + frontend restore of upscale settings.
+- ~~ESRGAN/spandrel base~~ — **done.** `Engine._esrgan_upscale` (guarded
+  `import spandrel`, tiled + feather-blended), `models/upscalers/` scan, and a
+  "Base upscaler" dropdown; Lanczos stays the default fallback. ESRGAN base + low
+  denoise (~0.2) is the recommended path — a Lanczos base has no denoise sweet
+  spot (low = no detail added, high = per-tile subject duplication).
+- Metadata `extract_upscale` + frontend restore of upscale settings (the write
+  side ships: `Upscale scale/tile/overlap/denoise/teacache/base` in the PNG).

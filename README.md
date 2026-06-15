@@ -36,9 +36,9 @@ frontend is plain HTML/CSS/JS with Alpine.js (no build step).
 ## 📖 Full guide
 
 **[GUIDE.md](GUIDE.md)** covers everything else — the full feature list, model
-setup, all three modes (txt2img / img2img / inpaint), the detailer, X/Y/Z
-sweeps, the gallery, network/share flags (`--listen`, `--share`), architecture,
-and status.
+setup, all three modes (txt2img / img2img / inpaint), the detailer, the tiled
+upscaler, X/Y/Z sweeps, the gallery, network/share flags (`--listen`, `--share`),
+architecture, and status.
 
 ## License
 
