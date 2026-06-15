@@ -305,7 +305,6 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
 
         t0 = time.perf_counter()
         image, info = gen_fn(**gen_kwargs)
-        elapsed = time.perf_counter() - t0
 
         # Detailer: run each stacked detection model in sequence, feeding the
         # refined image into the next pass. Per-model prompt; the rest is shared.
@@ -363,6 +362,10 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                 upscale_info = "  |  " + unote
             except Exception as e:  # noqa: BLE001 — keep current image on a pass failure
                 upscale_info = f"  |  upscale error: {e}"
+
+        # inference clock spans base generation plus the detailer and upscaler
+        # passes — i.e. everything but the disk save below.
+        elapsed = time.perf_counter() - t0
 
         # Save the *raw* prompt/neg (the <lora:…> tags survive parse_lora_prompt
         # stripping) so the LoRA selection round-trips through metadata restore.
