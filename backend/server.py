@@ -717,14 +717,17 @@ def api_status():
 
 def _do_load(p: LoadPayload) -> str:
     # Offload: explicit UI choice, else the per-family default. FLUX's ~23 GB
-    # transformer OOMs under whole-module staging (full), so it defaults to
-    # "stream" block-streaming — the only mode that fits a 24 GB card. "stream"
-    # is FLUX-only (it streams the DiT blocks); full/encoders/none work for all.
+    # transformer OOMs under whole-module staging (full), so it always defaults to
+    # "stream" block-streaming. Every family (SD/SDXL, FLUX, Anima) streams on a
+    # very-low-VRAM card (the backend recommends "stream" ≤6 GB — fits the backbone
+    # on ~4 GB); otherwise full. full/encoders/none/stream all work for all.
+    _to_bundle = {"none": False, "full": True,
+                  "encoders": "encoders", "stream": "stream"}
     if p.offload is None:
-        offload = "stream" if p.model_type == "FLUX" else True
+        stream = p.model_type == "FLUX" or ENGINE.recommended_offload() == "stream"
+        offload = "stream" if stream else True
     else:
-        offload = {"none": False, "full": True,
-                   "encoders": "encoders", "stream": "stream"}.get(p.offload, True)
+        offload = _to_bundle.get(p.offload, True)
 
     # VAE tiling preference (settings panel): "always" forces tiled decode; "auto"
     # lets the pipeline decide per decode from free VRAM. FLUX ignores this — it's

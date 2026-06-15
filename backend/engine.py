@@ -238,9 +238,11 @@ class Engine:
 
     def recommended_offload(self) -> str:
         """A sensible default offload mode for the UI, picked from the GPU's VRAM.
-        More VRAM → keep more resident (faster): ``none`` > ``encoders`` > ``full``.
+        More VRAM → keep more resident (faster):
+        ``none`` > ``encoders`` > ``full`` > ``stream``.
         FLUX overrides this to ``stream`` in the UI regardless (it can't stage its
-        ~23 GB DiT as one blob). CPU-only falls back to ``full``."""
+        ~23 GB DiT as one blob). SD/SDXL, FLUX, and Anima all support ``stream``.
+        CPU-only falls back to ``full``."""
         if self.device.type != "cuda":
             return "full"
         vram_gb = torch.cuda.get_device_properties(self.device).total_memory / 1024**3
@@ -251,7 +253,12 @@ class Engine:
                                # Anima DiT (~4 GB) fit alongside activations; the heavy
                                # VAE decode auto-tiles. Avoids shuffling the backbone
                                # on/off the GPU every image.
-        return "full"          # ≤10 GB: shuttle everything (safest against OOM)
+        if vram_gb >= 6:       # 6-10 GB: shuttle the whole backbone per image (safe)
+            return "full"
+        return "stream"        # ≤4-6 GB: even whole-backbone staging ("full") OOMs
+                               # once 1024² activations land on top, so stream the
+                               # backbone blocks (ComfyUI --lowvram analog). SD/SDXL,
+                               # FLUX, and Anima all support it.
 
     @property
     def available_schedulers(self) -> List[str]:
@@ -397,7 +404,7 @@ class Engine:
 
     def load_anima(
         self, dit_name: str, vae_name: str, te_name: str,
-        offload: bool = True, vae_tile: bool = True,
+        offload: bool | str = True, vae_tile: bool = True,
         compile: bool = False, cuda_graphs: bool = False,
     ) -> str:
         label = f"Anima({dit_name})"

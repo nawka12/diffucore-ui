@@ -47,8 +47,12 @@ network/share flags, architecture, and status.
   click.
 - **Selectable CPU offload & tiled VAE** — the offload default is auto-picked
   from your GPU's VRAM on startup (24 GB → keep everything resident, 16 GB → park
-  encoders, ≤12 GB → full offload), and you can override it per load
-  (full / encoders / none, plus `stream` for FLUX) to fit the model on your GPU.
+  encoders, 6–12 GB → full offload, ≤6 GB → `stream`), and you can override it
+  per load (full / encoders / none / stream) to fit the model on your GPU.
+  `stream` is the low-VRAM mode (ComfyUI `--lowvram` analog): it shuttles the
+  backbone's blocks on/off the GPU one at a time, so SDXL's UNet or Anima's DiT
+  fit a ~4 GB card where whole-backbone staging would OOM — at the cost of some
+  speed. Works for SD/SDXL, FLUX, and Anima (FLUX always uses it).
   Tiled VAE decode triggers automatically when a full-resolution decode
   wouldn't fit free VRAM, keeping large images within budget — or set the
   **VAE decode** mode in Settings to *Always tiled* to force it every time

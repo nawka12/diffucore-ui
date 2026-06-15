@@ -152,11 +152,9 @@ document.addEventListener('alpine:init', () => {
       return false;
     },
     get offloadOptions() {
-      // "stream" streams the FLUX DiT blocks — FLUX-only; the rest stage the
-      // whole backbone (or keep it resident) and work for every family.
-      return this.modelType === 'FLUX'
-        ? ['stream', 'full', 'encoders', 'none']
-        : ['full', 'encoders', 'none'];
+      // "stream" streams the backbone's blocks (ComfyUI --lowvram analog): the
+      // FLUX DiT, the SD/SDXL UNet, and the Anima DiT all support it.
+      return ['stream', 'full', 'encoders', 'none'];
     },
     get sweeping() {
       return this.mode === 't2i' && this.xyzSweep;
@@ -336,8 +334,9 @@ document.addEventListener('alpine:init', () => {
       this.modelType = type;
       this.syncSampler();
       this.syncScheduler();
-      // FLUX must stream its DiT to fit a 24 GB card; the rest use the
-      // GPU-VRAM-based default the backend recommended at startup.
+      // FLUX must stream its DiT to fit a 24 GB card. SD/SDXL and Anima use the
+      // VRAM-based default the backend recommended at startup (which is "stream"
+      // on a ≤6 GB card — backbone-block streaming that fits SDXL/Anima on ~4 GB).
       this.perf.offload = (type === 'FLUX') ? 'stream' : this.recommendedOffload;
       // channels_last only helps the conv backbones (SD/SDXL UNet + VAE); it's a
       // no-op for the DiT families, so default it on only for SD/SDXL.
