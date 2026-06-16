@@ -84,6 +84,7 @@ pip install -r requirements.txt
 pip install -e ./diffucore
 
 # 3. Install the CUDA build of torch for your GPU
+#    cu124 covers most cards; RTX 50-series (Blackwell) needs cu128 instead.
 pip install torch --index-url https://download.pytorch.org/whl/cu124
 ```
 

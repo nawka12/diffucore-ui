@@ -40,8 +40,7 @@ REM mismatched wheel is already installed, so it could never repair a CPU build.
 "%VPY%" -c "import torch; assert torch.cuda.is_available()" 2>nul
 if errorlevel 1 (
     echo [4/4] Reinstalling CUDA torch...
-    "%VPY%" -m pip uninstall -y -q torch torchvision
-    "%VPY%" -m pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cu124
+    call :repair_torch
     if errorlevel 1 goto :error
 ) else (
     echo [4/4] CUDA torch OK.
@@ -60,3 +59,17 @@ echo === Update failed ===
 popd
 pause
 exit /b 1
+
+REM Reinstall CUDA torch from the right index. cu124 wheels stop at sm_90, so
+REM Blackwell (RTX 50-series, compute cap 10.0+) needs the cu128 build instead.
+:repair_torch
+set "TORCH_INDEX=https://download.pytorch.org/whl/cu124"
+where nvidia-smi >nul 2>nul && (
+    nvidia-smi --query-gpu=compute_cap,name --format=csv,noheader > "%TEMP%\dc_gpu.txt" 2>nul
+    findstr /r "^1[0-9]\." "%TEMP%\dc_gpu.txt" >nul 2>nul && set "TORCH_INDEX=https://download.pytorch.org/whl/cu128"
+    findstr /i /r "RTX 50[0-9][0-9]" "%TEMP%\dc_gpu.txt" >nul 2>nul && set "TORCH_INDEX=https://download.pytorch.org/whl/cu128"
+    del "%TEMP%\dc_gpu.txt" >nul 2>nul
+)
+"%VPY%" -m pip uninstall -y -q torch torchvision
+"%VPY%" -m pip install -q torch torchvision --index-url %TORCH_INDEX%
+goto :eof

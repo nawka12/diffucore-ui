@@ -39,12 +39,23 @@ source "$VENV_DIR/bin/activate"
 # --- pip deps ---
 echo "[3/4] Installing Python dependencies..."
 pip install --upgrade pip -q
-# Install the cu124 torch build first so requirements.txt / ultralytics /
+# Install the CUDA torch build first so requirements.txt / ultralytics /
 # spandrel don't pull the default PyPI wheel (built for a newer CUDA than many
 # drivers run). torchvision is included because spandrel depends on it — pulling
 # it from PyPI would drag in a mismatched torch.
+# Pick the wheel by GPU arch: cu124 wheels stop at sm_90, so Blackwell
+# (RTX 50-series, compute cap 10.0+/sm_120) needs the cu128 build instead.
+TORCH_INDEX="https://download.pytorch.org/whl/cu124"
+if command -v nvidia-smi >/dev/null 2>&1; then
+    cc="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n1 | tr -dc 0-9)"
+    if { [ -n "$cc" ] && [ "$cc" -ge 100 ] 2>/dev/null; } \
+       || nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -qiE 'RTX *50[0-9][0-9]'; then
+        TORCH_INDEX="https://download.pytorch.org/whl/cu128"
+        echo "Detected Blackwell-class GPU — using CUDA 12.8 torch wheels."
+    fi
+fi
 echo "Downloading the CUDA torch build, ~2.5 GB — this is the slow part..."
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+pip install torch torchvision --index-url "$TORCH_INDEX"
 pip install -r "$SCRIPT_DIR/requirements.txt"
 pip install -q -e "$SCRIPT_DIR/diffucore"
 

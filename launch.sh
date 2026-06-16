@@ -25,11 +25,20 @@ if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$REQ_HASH" ]; then
     echo "requirements.txt changed — syncing dependencies..."
     pip install -q -r "$REQ_FILE"
     # A new dep (e.g. spandrel) can pull torchvision from PyPI and clobber the
-    # cu124 torch; repair from the cu124 index if CUDA broke.
+    # CUDA torch; repair from the right index if CUDA broke. cu124 wheels stop
+    # at sm_90, so Blackwell (RTX 50-series, compute cap 10.0+) needs cu128.
     if ! python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
         echo "Repairing CUDA torch..."
+        TORCH_INDEX="https://download.pytorch.org/whl/cu124"
+        if command -v nvidia-smi >/dev/null 2>&1; then
+            cc="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n1 | tr -dc 0-9)"
+            if { [ -n "$cc" ] && [ "$cc" -ge 100 ] 2>/dev/null; } \
+               || nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -qiE 'RTX *50[0-9][0-9]'; then
+                TORCH_INDEX="https://download.pytorch.org/whl/cu128"
+            fi
+        fi
         pip uninstall -y -q torch torchvision
-        pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cu124
+        pip install -q torch torchvision --index-url "$TORCH_INDEX"
     fi
     echo "$REQ_HASH" > "$STAMP"
 fi

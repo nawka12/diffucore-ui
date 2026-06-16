@@ -31,9 +31,19 @@ pip install -q -e "$SCRIPT_DIR/diffucore"
 # --- ensure CUDA torch is still present ---
 # On failure, uninstall first: a bare `pip install torch` is a no-op when a
 # mismatched wheel is already installed, so it could never repair a CPU build.
+# Pick the wheel by GPU arch: cu124 wheels stop at sm_90, so Blackwell
+# (RTX 50-series, compute cap 10.0+/sm_120) needs the cu128 build.
+TORCH_INDEX="https://download.pytorch.org/whl/cu124"
+if command -v nvidia-smi >/dev/null 2>&1; then
+    cc="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n1 | tr -dc 0-9)"
+    if { [ -n "$cc" ] && [ "$cc" -ge 100 ] 2>/dev/null; } \
+       || nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -qiE 'RTX *50[0-9][0-9]'; then
+        TORCH_INDEX="https://download.pytorch.org/whl/cu128"
+    fi
+fi
 python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null && \
     echo "[4/4] CUDA torch OK." || \
-    { echo "[4/4] Reinstalling CUDA torch..."; pip uninstall -y -q torch torchvision; pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cu124; }
+    { echo "[4/4] Reinstalling CUDA torch..."; pip uninstall -y -q torch torchvision; pip install -q torch torchvision --index-url "$TORCH_INDEX"; }
 
 echo ""
 echo "=== Update complete ==="
