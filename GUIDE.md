@@ -52,7 +52,10 @@ network/share flags, architecture, and status.
   `stream` is the low-VRAM mode (ComfyUI `--lowvram` analog): it shuttles the
   backbone's blocks on/off the GPU one at a time, so SDXL's UNet or Anima's DiT
   fit a ~4 GB card where whole-backbone staging would OOM — at the cost of some
-  speed. Works for SD/SDXL, FLUX, and Anima (FLUX always uses it).
+  speed. Works for SD/SDXL, FLUX, and Anima (FLUX always uses it). Because
+  `stream` moves the backbone on and off the GPU per step, it can't be combined
+  with `torch.compile` — enabling both auto-disables compile (with a one-line
+  notice in the server log) instead of failing the load.
   Tiled VAE decode triggers automatically when a full-resolution decode
   wouldn't fit free VRAM, keeping large images within budget — or set the
   **VAE decode** mode in Settings to *Always tiled* to force it every time
@@ -177,7 +180,9 @@ public.
 1. Select **SD/SDXL**, **Anima**, or **FLUX** from the top-bar radio.
 2. Pick your checkpoint files from the dropdowns. FLUX takes either an all-in-one
    checkpoint or split DiT / VAE / text-encoder files (CLIP-L for FLUX.1 only).
-3. Click **Load** — the status bar shows model info and VRAM usage.
+3. Click **Load** — the status bar shows model info and VRAM usage. Loading a
+   large model (e.g. Anima's multi-GB files) prints per-stage progress to the
+   server terminal, so a slow load is distinguishable from a stuck one.
 
 ### Generate
 

@@ -341,6 +341,14 @@ class Engine:
     ) -> str:
         if compile and offload is True:
             offload = "encoders"
+        elif compile and offload == "stream":
+            # stream is the only mode that fits the backbone on a tiny card, so we
+            # can't downgrade it to "encoders" (that would OOM). Drop compile instead
+            # — it's the optional speed feature; fitting in VRAM is not.
+            compile = False
+            cuda_graphs = False  # cuda_graphs needs compile, so it goes too
+            print("[load] compile disabled: incompatible with offload='stream' "
+                  "(backbone is block-streamed to fit VRAM)", flush=True)
         if (self._loaded and self._loaded.name == model_name
                 and self._settings_match(offload, vae_tile, compile,
                                          cuda_graphs, channels_last, tf32)):
@@ -410,6 +418,14 @@ class Engine:
         label = f"Anima({dit_name})"
         if compile and offload is True:
             offload = "encoders"
+        elif compile and offload == "stream":
+            # stream is the only mode that fits the backbone on a tiny card, so we
+            # can't downgrade it to "encoders" (that would OOM). Drop compile instead
+            # — it's the optional speed feature; fitting in VRAM is not.
+            compile = False
+            cuda_graphs = False  # cuda_graphs needs compile, so it goes too
+            print("[load] compile disabled: incompatible with offload='stream' "
+                  "(backbone is block-streamed to fit VRAM)", flush=True)
         if (self._loaded and self._loaded.name == label
                 and self._settings_match(offload, vae_tile, compile,
                                          cuda_graphs, False, False)):
@@ -436,6 +452,8 @@ class Engine:
             compile=compile, cuda_graphs=cuda_graphs,
         )
 
+        print(f"[load] Anima: DiT={dit_name} VAE={vae_name} TE={te_name} "
+              f"offload={offload} compile={compile}", flush=True)
         t0 = time.time()
         model = load_anima_checkpoint(
             str(dit_path), str(vae_file), str(te_file), policy=policy,
@@ -465,6 +483,14 @@ class Engine:
         label = f"FLUX({dit_name})"
         if compile and offload is True:
             offload = "encoders"
+        elif compile and offload == "stream":
+            # stream is the only mode that fits the backbone on a tiny card, so we
+            # can't downgrade it to "encoders" (that would OOM). Drop compile instead
+            # — it's the optional speed feature; fitting in VRAM is not.
+            compile = False
+            cuda_graphs = False  # cuda_graphs needs compile, so it goes too
+            print("[load] compile disabled: incompatible with offload='stream' "
+                  "(backbone is block-streamed to fit VRAM)", flush=True)
         if (self._loaded and self._loaded.name == label
                 and self._settings_match(offload, vae_tile, compile,
                                          cuda_graphs, False, False)):
