@@ -11,6 +11,11 @@ document.addEventListener('alpine:init', () => {
     status: 'No model loaded',
     modelLoaded: false,
     loadingModel: false,
+    // Set when the user edits the model rack (family/checkpoint/file selectors)
+    // but hasn't loaded yet. A shared SSE broadcast (status from another tab's
+    // load) must not clobber that in-progress selection; cleared on a successful
+    // local load, so untouched tabs still sync to a model loaded elsewhere.
+    loadFormDirty: false,
     animaApplied: false,
     fluxApplied: false,
     uiId: 'diffucore-ui', diffId: 'diffucore',
@@ -283,7 +288,9 @@ document.addEventListener('alpine:init', () => {
       this.status = s.status;
       this.modelLoaded = !!s.loaded;
       if (s.last_seed !== undefined) this.lastSeed = s.last_seed;
-      if (s.load_form) this.restoreLoadForm(s.load_form);
+      // Don't overwrite a selection the user is editing locally (loadFormDirty);
+      // a broadcast from another tab's load would otherwise revert it.
+      if (s.load_form && !this.loadFormDirty) this.restoreLoadForm(s.load_form);
     },
 
     restoreLoadForm(f) {
@@ -333,6 +340,7 @@ document.addEventListener('alpine:init', () => {
 
     setModelType(type) {
       this.modelType = type;
+      this.loadFormDirty = true;
       this.syncSampler();
       this.syncScheduler();
       // FLUX must stream its DiT to fit a 24 GB card. SD/SDXL and Anima use the
@@ -390,6 +398,8 @@ document.addEventListener('alpine:init', () => {
         if (ev.type === 'done') {
           this.status = ev.status;
           this.modelLoaded = !!ev.loaded;
+          // Our selection is now the loaded/persisted form — let broadcasts sync again.
+          if (this.modelLoaded) this.loadFormDirty = false;
           if (!this.modelLoaded) this.flash(ev.status);
         } else if (ev.type === 'cancelled') {
           this.status = 'Load cancelled';

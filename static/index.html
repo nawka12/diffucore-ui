@@ -34,47 +34,47 @@
         <div class="rack-models">
           <label class="field" x-show="modelType==='SD/SDXL'">
             <span>Checkpoint</span>
-            <select x-model="checkpoint">
+            <select x-model="checkpoint" @change="loadFormDirty = true">
               <template x-for="m in checkpointChoices" :key="m"><option :value="m" x-text="m"></option></template>
             </select>
           </label>
           <div class="anima-grid" x-show="modelType==='Anima'">
             <label class="field">
               <span>DiT</span>
-              <select x-model="dit"><template x-for="m in ditChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+              <select x-model="dit" @change="loadFormDirty = true"><template x-for="m in ditChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
             </label>
             <label class="field">
               <span>VAE</span>
-              <select x-model="vae"><template x-for="m in vaeChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+              <select x-model="vae" @change="loadFormDirty = true"><template x-for="m in vaeChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
             </label>
             <label class="field">
               <span>TE</span>
-              <select x-model="te"><template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+              <select x-model="te" @change="loadFormDirty = true"><template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
             </label>
           </div>
           <div class="anima-grid" x-show="modelType==='FLUX'">
             <label class="field" style="grid-column: 1 / -1;">
               <span>All-in-one checkpoint <small>(optional — else use files below)</small></span>
-              <select x-model="fluxCheckpoint">
+              <select x-model="fluxCheckpoint" @change="loadFormDirty = true">
                 <option value="">— none —</option>
                 <template x-for="m in checkpointChoices" :key="m"><option :value="m" x-text="m"></option></template>
               </select>
             </label>
             <label class="field">
               <span>DiT</span>
-              <select x-model="dit"><template x-for="m in ditChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+              <select x-model="dit" @change="loadFormDirty = true"><template x-for="m in ditChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
             </label>
             <label class="field">
               <span>VAE</span>
-              <select x-model="vae"><template x-for="m in vaeChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+              <select x-model="vae" @change="loadFormDirty = true"><template x-for="m in vaeChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
             </label>
             <label class="field">
               <span>Text enc <small>(T5 / Mistral)</small></span>
-              <select x-model="te"><template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+              <select x-model="te" @change="loadFormDirty = true"><template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
             </label>
             <label class="field">
               <span>CLIP-L <small>(FLUX.1 — none for FLUX.2)</small></span>
-              <select x-model="clip">
+              <select x-model="clip" @change="loadFormDirty = true">
                 <option value="">— none —</option>
                 <template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template>
               </select>
