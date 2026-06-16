@@ -787,6 +787,7 @@ class Engine:
         lq_threshold: float = 0.025,
         teacache_thresh: float = 0.0,
         teacache_use_coeffs: bool = True,
+        deepcache_interval: int = 1,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -806,6 +807,7 @@ class Engine:
             seed=seed,
             teacache_thresh=teacache_thresh,
             teacache_coefficients=(self._load_teacache_coeffs() if teacache_use_coeffs else None),
+            deepcache_interval=deepcache_interval,
             curvature=curvature, eta_max=eta_max, beta_alpha=beta_alpha,
             beta_beta=beta_beta, lq_threshold=lq_threshold,
             progress_callback=progress_callback,
@@ -843,6 +845,7 @@ class Engine:
         lq_threshold: float = 0.025,
         teacache_thresh: float = 0.0,
         teacache_use_coeffs: bool = True,
+        deepcache_interval: int = 1,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -865,6 +868,7 @@ class Engine:
             height=gen_h,
             teacache_thresh=teacache_thresh,
             teacache_coefficients=(self._load_teacache_coeffs() if teacache_use_coeffs else None),
+            deepcache_interval=deepcache_interval,
             curvature=curvature, eta_max=eta_max, beta_alpha=beta_alpha,
             beta_beta=beta_beta, lq_threshold=lq_threshold,
             progress_callback=progress_callback,
@@ -902,6 +906,7 @@ class Engine:
         lq_threshold: float = 0.025,
         teacache_thresh: float = 0.0,
         teacache_use_coeffs: bool = True,
+        deepcache_interval: int = 1,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -925,6 +930,7 @@ class Engine:
             height=gen_h,
             teacache_thresh=teacache_thresh,
             teacache_coefficients=(self._load_teacache_coeffs() if teacache_use_coeffs else None),
+            deepcache_interval=deepcache_interval,
             curvature=curvature, eta_max=eta_max, beta_alpha=beta_alpha,
             beta_beta=beta_beta, lq_threshold=lq_threshold,
             progress_callback=progress_callback,

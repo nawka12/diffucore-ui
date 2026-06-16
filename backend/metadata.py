@@ -128,6 +128,8 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     if gen_kwargs.get("teacache_thresh", 0):
         calib = "" if gen_kwargs.get("teacache_use_coeffs", True) else " (raw)"
         fields.append(f"TeaCache: {gen_kwargs['teacache_thresh']}{calib}")
+    if gen_kwargs.get("deepcache_interval", 1) > 1:
+        fields.append(f"DeepCache: {gen_kwargs['deepcache_interval']}")
     if detailer:
         fields.extend(_detailer_fields(detailer))
     if upscale:
@@ -336,6 +338,17 @@ def workspace_fields(meta: dict) -> dict:
             out["teacacheOn"] = True
             out["teacache"] = thresh
             out["teacacheCalibrated"] = not raw.endswith("(raw)")
+    # DeepCache is only written when it ran: "DeepCache: <interval>". Absent
+    # means off — additive, like TeaCache above.
+    dc = meta.get("deepcache")
+    if dc is not None:
+        try:
+            interval = int(str(dc).strip())
+        except (TypeError, ValueError):
+            interval = 1
+        if interval > 1:
+            out["deepcacheOn"] = True
+            out["deepcache"] = interval
     size_str = meta.get("size", "")
     if "x" in size_str:
         try:

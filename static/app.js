@@ -36,6 +36,7 @@ document.addEventListener('alpine:init', () => {
       width: 1024, height: 1024,
       strength: 0.6, shift: 3.0,
       teacacheOn: false, teacache: 0.15, teacacheCalibrated: true,
+      deepcacheOn: false, deepcache: 2,
     },
 
     // ── <lora:…> autocomplete in the prompt ─────────────────────
@@ -733,6 +734,7 @@ document.addEventListener('alpine:init', () => {
           strength: this.form.strength, shift: this.form.shift,
           teacache: this.form.teacacheOn ? this.form.teacache : 0,
           teacache_calibrated: this.form.teacacheCalibrated,
+          deepcache: this.form.deepcacheOn ? this.form.deepcache : 1,
           input_image: this.mode !== 't2i' ? this.inputImage : null,
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
           preview: this.preview,
@@ -1256,7 +1258,8 @@ document.addEventListener('alpine:init', () => {
       if (!f) return;
       const keys = ['prompt', 'neg', 'steps', 'cfg', 'sampler', 'scheduler',
                     'seed', 'shift', 'strength', 'width', 'height',
-                    'teacacheOn', 'teacache', 'teacacheCalibrated'];
+                    'teacacheOn', 'teacache', 'teacacheCalibrated',
+                    'deepcacheOn', 'deepcache'];
       for (const k of keys) if (f[k] !== undefined) this.form[k] = f[k];
       if (f.detailer) this.applyDetailer(f.detailer);
       if (f.upscale) this.applyUpscale(f.upscale);

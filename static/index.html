@@ -282,6 +282,16 @@
               <p class="sub" style="margin:4px 0 0">When on, applies the fitted rescale polynomial (Settings → calibration) so the threshold tracks true per-step change. Turn off to use the raw, uncalibrated estimate — the threshold then maps to change differently, so re-tune it.</p>
             </div>
           </div>
+          <div class="slider" x-show="modelType==='SD/SDXL'">
+            <label class="chip toggle" :class="{on: form.deepcacheOn}" style="margin-bottom:8px">
+              <input type="checkbox" x-model="form.deepcacheOn"> DeepCache (faster sampling)</label>
+            <div x-show="form.deepcacheOn">
+              <div class="slider-head"><span>DeepCache interval</span>
+                <input type="number" x-model.number="form.deepcache" min="2" max="5" step="1"></div>
+              <input type="range" x-model.number="form.deepcache" min="2" max="5" step="1">
+              <p class="sub" style="margin:4px 0 0">Reuses the UNet's deep, low-resolution features across steps, recomputing only the high-resolution detail layers. Interval N runs the full UNet every Nth step and reuses the cache on the others — higher = faster but lower fidelity. N=2 is a near-lossless ~1.5–1.8× speedup; 3+ trades more quality for speed.</p>
+            </div>
+          </div>
         </fieldset>
 
         <fieldset x-show="!sweeping">

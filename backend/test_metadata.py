@@ -77,3 +77,16 @@ def test_no_teacache_meta_leaves_toggle_untouched():
     fields = _roundtrip(_BASE_GEN)
     assert "teacacheOn" not in fields
     assert "teacacheCalibrated" not in fields
+
+
+def test_deepcache_roundtrips():
+    fields = _roundtrip({**_BASE_GEN, "deepcache_interval": 3})
+    assert fields["deepcacheOn"] is True
+    assert fields["deepcache"] == 3
+
+
+def test_deepcache_off_leaves_toggle_untouched():
+    """interval 1 (off) writes no line, so nothing is restored (additive)."""
+    fields = _roundtrip({**_BASE_GEN, "deepcache_interval": 1})
+    assert "deepcacheOn" not in fields
+    assert "deepcache" not in fields

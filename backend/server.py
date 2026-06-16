@@ -90,6 +90,7 @@ class GeneratePayload(BaseModel):
     shift: float = 3.0
     teacache: float = 0.0                # TeaCache rel-L1 threshold (0 = off; Anima only)
     teacache_calibrated: bool = True     # use the fitted rescale polynomial vs the raw identity path
+    deepcache: int = 1                   # DeepCache reuse interval (1 = off; SD/SDXL UNet only)
     input_image: Optional[str] = None   # base64 / data-URL
     mask_image: Optional[str] = None
     preview: bool = True                 # stream live latent previews while sampling
@@ -259,6 +260,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             sampler=p.sampler, scheduler=p.scheduler, seed=int(p.seed),
             teacache_thresh=float(p.teacache),
             teacache_use_coeffs=bool(p.teacache_calibrated),
+            deepcache_interval=int(p.deepcache),
             progress_callback=on_progress,
             preview_callback=on_preview if p.preview else None,
         )
