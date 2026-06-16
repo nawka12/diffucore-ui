@@ -308,8 +308,40 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
         t0 = time.perf_counter()
         image, info = gen_fn(**gen_kwargs)
 
-        # Detailer: run each stacked detection model in sequence, feeding the
-        # refined image into the next pass. Per-model prompt; the rest is shared.
+        # Upscaler (tiled, post-gen): run first, on the base image, so the
+        # detailer below refines at the upscaled resolution and gets the final
+        # say (its region inpaints aren't re-disturbed by the upscale pass).
+        upscale_info = ""
+        upscaled = False
+        if p.upscale_enabled and float(p.upscale_scale) > 1.0:
+            try:
+                image, unote = ENGINE.upscale(
+                    image,
+                    scale=float(p.upscale_scale), tile=int(p.upscale_tile),
+                    overlap=int(p.upscale_overlap), denoise=float(p.upscale_denoise),
+                    base_upscaler=p.upscale_base,
+                    prompt=p.upscale_prompt.strip() or clean_prompt,
+                    negative_prompt=clean_neg,
+                    steps=int(p.steps), cfg_scale=float(p.cfg),
+                    sampler=p.sampler, scheduler=p.scheduler,
+                    seed=int(p.seed),
+                    teacache_thresh=float(p.upscale_teacache),
+                    teacache_use_coeffs=bool(p.teacache_calibrated),
+                    progress_callback=on_progress,
+                    preview_callback=on_preview if p.preview else None,
+                )
+                upscale_info = "  |  " + unote
+                upscaled = True
+            except Exception as e:  # noqa: BLE001 — keep the base image, but surface the
+                # failure loudly and skip the upscale metadata below, so a swallowed
+                # OOM can't masquerade as a successful upscale (saved base + metadata
+                # that claims it was upscaled).
+                upscale_info = f"  |  ⚠ UPSCALE FAILED — saved un-upscaled base image ({e})"
+
+        # Detailer: run last, on the (possibly upscaled) image, so its region
+        # inpaints get the final say. Each stacked detection model runs in
+        # sequence, feeding the refined image into the next pass. Per-model
+        # prompt; the rest is shared.
         detail_info = ""
         active = [dm for dm in p.detail_models
                   if dm.model and not dm.model.startswith("(")] if p.detail_enabled else []
@@ -345,35 +377,6 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                     notes.append(f"⚠ {dm.model} FAILED: {e}")
             detail_info = "  |  detailer [" + "; ".join(notes) + "]"
 
-        # Upscaler (tiled, post-gen): run after the detailer, on the refined
-        # image, then replace the output image with the upscaled version.
-        upscale_info = ""
-        upscaled = False
-        if p.upscale_enabled and float(p.upscale_scale) > 1.0:
-            try:
-                image, unote = ENGINE.upscale(
-                    image,
-                    scale=float(p.upscale_scale), tile=int(p.upscale_tile),
-                    overlap=int(p.upscale_overlap), denoise=float(p.upscale_denoise),
-                    base_upscaler=p.upscale_base,
-                    prompt=p.upscale_prompt.strip() or clean_prompt,
-                    negative_prompt=clean_neg,
-                    steps=int(p.steps), cfg_scale=float(p.cfg),
-                    sampler=p.sampler, scheduler=p.scheduler,
-                    seed=int(p.seed),
-                    teacache_thresh=float(p.upscale_teacache),
-                    teacache_use_coeffs=bool(p.teacache_calibrated),
-                    progress_callback=on_progress,
-                    preview_callback=on_preview if p.preview else None,
-                )
-                upscale_info = "  |  " + unote
-                upscaled = True
-            except Exception as e:  # noqa: BLE001 — keep the base image, but surface the
-                # failure loudly and skip the upscale metadata below, so a swallowed
-                # OOM can't masquerade as a successful upscale (saved base + metadata
-                # that claims it was upscaled).
-                upscale_info = f"  |  ⚠ UPSCALE FAILED — saved un-upscaled base image ({e})"
-
         # inference clock spans base generation plus the detailer and upscaler
         # passes — i.e. everything but the disk save below.
         elapsed = time.perf_counter() - t0
@@ -404,7 +407,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
         rel = out.relative_to(OUTPUTS_DIR)
         return {
             "image_url": _output_url(out),
-            "info": f"{lora_info}{info}  |  inference: {elapsed:.2f}s{detail_info}{upscale_info}  |  saved to {rel}",
+            "info": f"{lora_info}{info}  |  inference: {elapsed:.2f}s{upscale_info}{detail_info}  |  saved to {rel}",
             "seed": ENGINE.last_seed,
         }
     finally:
