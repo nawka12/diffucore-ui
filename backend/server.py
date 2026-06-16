@@ -313,6 +313,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
         detail_info = ""
         active = [dm for dm in p.detail_models
                   if dm.model and not dm.model.startswith("(")] if p.detail_enabled else []
+        applied = []  # detection models that actually refined the image (drives metadata)
         if active and not ENGINE.can_inpaint:
             detail_info = "  |  detailer skipped (no inpaint for this model)"
         elif active:
@@ -337,13 +338,17 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                         preview_callback=on_preview if p.preview else None,
                     )
                     notes.append(f"{dm.model}: {dnote.replace('Detailer: ', '')}")
-                except Exception as e:  # noqa: BLE001 — keep current image on a pass failure
-                    notes.append(f"{dm.model} error: {e}")
+                    applied.append(dm)
+                except Exception as e:  # noqa: BLE001 — keep the image, surface the failure
+                    # loudly, and exclude this model from the metadata below so a
+                    # swallowed pass can't masquerade as a successful detail.
+                    notes.append(f"⚠ {dm.model} FAILED: {e}")
             detail_info = "  |  detailer [" + "; ".join(notes) + "]"
 
         # Upscaler (tiled, post-gen): run after the detailer, on the refined
         # image, then replace the output image with the upscaled version.
         upscale_info = ""
+        upscaled = False
         if p.upscale_enabled and float(p.upscale_scale) > 1.0:
             try:
                 image, unote = ENGINE.upscale(
@@ -362,8 +367,12 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                     preview_callback=on_preview if p.preview else None,
                 )
                 upscale_info = "  |  " + unote
-            except Exception as e:  # noqa: BLE001 — keep current image on a pass failure
-                upscale_info = f"  |  upscale error: {e}"
+                upscaled = True
+            except Exception as e:  # noqa: BLE001 — keep the base image, but surface the
+                # failure loudly and skip the upscale metadata below, so a swallowed
+                # OOM can't masquerade as a successful upscale (saved base + metadata
+                # that claims it was upscaled).
+                upscale_info = f"  |  ⚠ UPSCALE FAILED — saved un-upscaled base image ({e})"
 
         # inference clock spans base generation plus the detailer and upscaler
         # passes — i.e. everything but the disk save below.
@@ -373,7 +382,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
         # stripping) so the LoRA selection round-trips through metadata restore.
         gen_kwargs["prompt"], gen_kwargs["negative_prompt"] = p.prompt, p.neg
         detailer_meta = {
-            "models": [{"model": dm.model, "prompt": dm.prompt} for dm in active],
+            "models": [{"model": dm.model, "prompt": dm.prompt} for dm in applied],
             "neg": p.detail_neg,
             "confidence": p.detail_confidence,
             "strength": p.detail_strength,
@@ -381,7 +390,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             "padding": p.detail_padding,
             "blur": p.detail_blur,
             "maxDet": p.detail_max,
-        } if active else None
+        } if applied else None
         upscale_meta = {
             "scale": float(p.upscale_scale),
             "tile": int(p.upscale_tile),
@@ -390,7 +399,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             "teacache": float(p.upscale_teacache),
             "base": p.upscale_base or "Lanczos",
             "prompt": p.upscale_prompt.strip() or "",
-        } if p.upscale_enabled and float(p.upscale_scale) > 1.0 else None
+        } if upscaled else None
         out = _save_output(image, gen_kwargs, detailer=detailer_meta, upscale=upscale_meta)
         rel = out.relative_to(OUTPUTS_DIR)
         return {
