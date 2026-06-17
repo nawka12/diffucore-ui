@@ -87,6 +87,8 @@ document.addEventListener('alpine:init', () => {
     preview: true,
     info: '',
     lastSeed: -1,
+    _titleBase: '',       // original tab title, captured on init
+    _titleDone: false,    // a job finished while this tab was hidden → badge until looked at
 
     // ── shared queue (broadcast over /api/events to every device) ──
     queue: [],            // [{id, kind, label, status}] — running first, then pending
@@ -209,7 +211,36 @@ document.addEventListener('alpine:init', () => {
       await this.refreshModels();
       await this.loadSettings();
       this.applyGenDefaults();
+      this._initTitle();
       this.connectEvents();
+    },
+
+    // ── browser-tab title reflects this device's job state ──────
+    // While a job runs the tab title shows a spinner + %, so the user can
+    // tell from the tab alone — even sitting on another tab — whether their
+    // generation is still going. When one finishes while the tab is hidden
+    // we leave a "done" badge until they look back.
+    _initTitle() {
+      this._titleBase = document.title;   // "Diffucore"
+      const apply = () => {
+        if (this.busy) {
+          this._titleDone = false;
+          const t = this.progress.total;
+          document.title = t > 0
+            ? `⏳ ${this.progressPct}% · ${this._titleBase}`
+            : `⏳ ${this._titleBase}`;
+        } else {
+          document.title = this._titleDone ? `✓ ${this._titleBase}` : this._titleBase;
+        }
+      };
+      this.$watch('busy', (now, was) => {
+        if (was && !now && document.hidden) this._titleDone = true;
+        apply();
+      });
+      this.$watch('progress', apply);
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && this._titleDone) { this._titleDone = false; apply(); }
+      });
     },
 
     // ── shared events (one SSE stream per device) ───────────────
