@@ -102,7 +102,13 @@ SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm"]
 # secant_anneal is that annealed ancestral burn-in handing off to secant's
 # 2nd-order x0 refinement as σ→0 (curvature=0 ⇒ euler_ancestral_anneal,
 # eta_max=0 ⇒ deterministic secant); Anima-only.
-SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal"]
+# dpmpp_2m_anneal is the "good and fast" variant: euler_ancestral_anneal's same
+# σ-annealed burn-in (eta = eta_max·σ) but with the DPM++(2M) flow exponential
+# integrator as the deterministic core instead of plain Euler / the secant — it
+# stays genuinely 2nd-order at low step counts (where the secant self-gates to
+# Euler), so it needs fewer steps. eta_max=0 ⇒ deterministic 2M flow multistep.
+# Anima-only; pair with beta/flow like its siblings.
+SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal", "dpmpp_2m_anneal"]
 SAMPLERS_FLUX = SAMPLERS_FLOW
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
