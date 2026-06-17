@@ -95,6 +95,7 @@ SAMPLERS_SD = [
     "ddpm",
     "lcm",
     "secant",
+    "flow_budget",
 ]
 SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm"]
 # euler_ancestral_anneal anneals eta with σ (full ancestral burn-in at high σ,
@@ -102,11 +103,14 @@ SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm"]
 # secant_anneal is that annealed ancestral burn-in handing off to secant's
 # 2nd-order x0 refinement as σ→0 (curvature=0 ⇒ euler_ancestral_anneal,
 # eta_max=0 ⇒ deterministic secant); Anima-only.
+# flow_budget (sd-flow's adaptive 4-tier sampler) is in SAMPLERS_SD, so it's
+# inherited by FLOW → ANIMA/FLUX automatically; works on VE and flow alike.
 SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal"]
 SAMPLERS_FLUX = SAMPLERS_FLOW
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
-                 "sgm_uniform", "simple", "normal", "ddim_uniform", "linear_quadratic"]
+                 "sgm_uniform", "simple", "normal", "ddim_uniform", "linear_quadratic",
+                 "flow_budget"]
 # "oss" is a calibrated optimal-stepsize schedule: it needs a one-time
 # calibration for the exact (model, steps, resolution, shift) before it works.
 # The UI's OSS panel runs that calibration (Engine.calibrate_oss) and writes the
@@ -118,10 +122,14 @@ SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
 # designed to pair with euler_ancestral_anneal on rectified-flow merges.
 # beta is the Beta(0.6, 0.6)-quantile schedule (ComfyUI's "beta", pure-torch):
 # a tunable U-shape in t mapped through the flow shift; Anima-only for now.
+# flow_budget is sd-flow's linear-σ schedule (no shift map) paired with the
+# adaptive flow_budget sampler; the budget refill is σ_max-normalized so it
+# serves flow (σ∈[0,1]) and VE (σ∈[0.002,80]) alike.
 SCHEDULERS_ANIMA = ["flow", "flow_dyn", "oss", "sgm_uniform", "simple",
-                    "normal", "kl_optimal", "linear_quadratic", "smoothstep", "beta"]
-SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple",
-                   "normal", "kl_optimal", "linear_quadratic"]
+                    "normal", "kl_optimal", "linear_quadratic", "smoothstep", "beta",
+                    "flow_budget"]
+SCHEDULERS_FLUX = ["flux", "flow", "flow_budget", "sgm_uniform", "simple",
+                    "normal", "kl_optimal", "linear_quadratic"]
 
 # Calibrated OSS schedules are cached one JSON (list of descending sigmas) per
 # (model, steps, resolution, shift); calibrate_oss.py writes them here.
