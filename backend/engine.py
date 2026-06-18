@@ -124,8 +124,14 @@ SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
 # designed to pair with euler_ancestral_anneal on rectified-flow merges.
 # beta is the Beta(0.6, 0.6)-quantile schedule (ComfyUI's "beta", pure-torch):
 # a tunable U-shape in t mapped through the flow shift; Anima-only for now.
+# beta_mix is a two-Beta mixture generalization of beta — drops the
+# symmetric-peak constraint so the low-/high-freq endpoint peaks can differ
+# in shape; defaults are detail-leaning (Lee et al. 2024 Fig. 2d's LDM
+# importance curve) but tuned for the flow shift map, not transcribed from
+# SD. Anima-only.
 SCHEDULERS_ANIMA = ["flow", "flow_dyn", "oss", "sgm_uniform", "simple",
-                    "normal", "kl_optimal", "linear_quadratic", "smoothstep", "beta"]
+                    "normal", "kl_optimal", "linear_quadratic", "smoothstep",
+                    "beta", "beta_mix"]
 SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple",
                    "normal", "kl_optimal", "linear_quadratic"]
 
@@ -817,6 +823,9 @@ class Engine:
         beta_alpha: float = 0.6,
         beta_beta: float = 0.6,
         lq_threshold: float = 0.025,
+        bm_weight: float = 0.5,
+        bm_alpha1: float = 0.8, bm_beta1: float = 2.0,
+        bm_alpha2: float = 3.0, bm_beta2: float = 0.7,
         teacache_thresh: float = 0.0,
         teacache_use_coeffs: bool = True,
         deepcache_interval: int = 1,
@@ -842,6 +851,8 @@ class Engine:
             deepcache_interval=deepcache_interval,
             curvature=curvature, eta_max=eta_max, beta_alpha=beta_alpha,
             beta_beta=beta_beta, lq_threshold=lq_threshold,
+            bm_weight=bm_weight, bm_alpha1=bm_alpha1, bm_beta1=bm_beta1,
+            bm_alpha2=bm_alpha2, bm_beta2=bm_beta2,
             progress_callback=progress_callback,
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
@@ -875,6 +886,9 @@ class Engine:
         beta_alpha: float = 0.6,
         beta_beta: float = 0.6,
         lq_threshold: float = 0.025,
+        bm_weight: float = 0.5,
+        bm_alpha1: float = 0.8, bm_beta1: float = 2.0,
+        bm_alpha2: float = 3.0, bm_beta2: float = 0.7,
         teacache_thresh: float = 0.0,
         teacache_use_coeffs: bool = True,
         deepcache_interval: int = 1,
@@ -903,6 +917,8 @@ class Engine:
             deepcache_interval=deepcache_interval,
             curvature=curvature, eta_max=eta_max, beta_alpha=beta_alpha,
             beta_beta=beta_beta, lq_threshold=lq_threshold,
+            bm_weight=bm_weight, bm_alpha1=bm_alpha1, bm_beta1=bm_beta1,
+            bm_alpha2=bm_alpha2, bm_beta2=bm_beta2,
             progress_callback=progress_callback,
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
@@ -936,6 +952,9 @@ class Engine:
         beta_alpha: float = 0.6,
         beta_beta: float = 0.6,
         lq_threshold: float = 0.025,
+        bm_weight: float = 0.5,
+        bm_alpha1: float = 0.8, bm_beta1: float = 2.0,
+        bm_alpha2: float = 3.0, bm_beta2: float = 0.7,
         teacache_thresh: float = 0.0,
         teacache_use_coeffs: bool = True,
         deepcache_interval: int = 1,
@@ -965,6 +984,8 @@ class Engine:
             deepcache_interval=deepcache_interval,
             curvature=curvature, eta_max=eta_max, beta_alpha=beta_alpha,
             beta_beta=beta_beta, lq_threshold=lq_threshold,
+            bm_weight=bm_weight, bm_alpha1=bm_alpha1, bm_beta1=bm_beta1,
+            bm_alpha2=bm_alpha2, bm_beta2=bm_beta2,
             progress_callback=progress_callback,
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
