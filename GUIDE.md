@@ -207,7 +207,7 @@ LoRAs can be activated inline: `a castle in autumn, <lora:autumn_style:0.8>`.
 ### Working with Anima
 
 Anima is an LLM-conditioned DiT, and its `shift = 3` flow schedule makes a few
-settings behave differently from SD/SDXL. Three things worth knowing — none are
+settings behave differently from SD/SDXL. A few things worth knowing — none are
 bugs, just how the model responds:
 
 - **Write detailed prompts.** Anima conditions on a language model (Qwen3 +
@@ -228,6 +228,18 @@ bugs, just how the model responds:
   at partial denoise the original content bleeds into the masked region and
   ghosts through the fill. For a clean repaint use **denoise ~0.9–1.0**; drop to
   ~0.35–0.45 only for subtle, structure-preserving edits.
+
+- **For fast, low-step sampling, prefer a deterministic multistep sampler.**
+  Anima's rectified-flow trajectory converges fine detail (faces, small text)
+  faster under a deterministic 2nd-order solver than under the ancestral /
+  annealed samplers (`er_sde`, `secant_anneal`) — the ancestral noise injection
+  needs more steps to settle, so it can garble small details at low step counts.
+  **`dpmpp_2m` on the `beta` schedule stays clean and coherent down to ~16–20
+  steps**, where `er_sde` / `secant_anneal` want ~24–30 for the same result — at
+  the same per-step cost. `res_multistep` and `gradient_estimation` are
+  equivalent, and the scheduler barely matters for these (`beta`, `flow`,
+  `sgm_uniform`, `simple` all work). Avoid `lcm`, `dpmpp_sde`, `lms`, `ipndm_v`,
+  and `dpmpp_3m_sde` at low steps — they go muddy or break.
 
 ### TeaCache — faster Anima sampling
 
