@@ -11,7 +11,7 @@
   <script src="/static/app.js"></script>
   <script src="/static/alpine.min.js" defer></script>
 </head>
-<body x-data="app" x-init="init()">
+<body x-data="app">
 
   <div class="shell" x-cloak>
 
@@ -230,13 +230,13 @@
           <legend>Sampling</legend>
           <label class="field">
             <span>Sampler</span>
-            <select x-model="form.sampler">
+            <select x-model="form.sampler" x-effect="samplers; $nextTick(() => $el.value = form.sampler)">
               <template x-for="s in samplers" :key="s"><option :value="s" x-text="s"></option></template>
             </select>
           </label>
           <label class="field">
             <span>Scheduler</span>
-            <select x-model="form.scheduler">
+            <select x-model="form.scheduler" x-effect="schedulers; $nextTick(() => $el.value = form.scheduler)">
               <template x-for="s in schedulers" :key="s"><option :value="s" x-text="s"></option></template>
             </select>
           </label>
