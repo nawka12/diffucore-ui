@@ -251,9 +251,20 @@ speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
   step input drifts and forces a real recompute once that crosses the threshold;
   higher = more skipping = faster but lower fidelity. There is no universal sweet
   spot — it depends on your sampler and step count. High step counts with
-  single-step or secant-family samplers stay near-lossless up to ~0.3–0.5;
-  few-step multistep samplers like `dpmpp_2m` need ≤0.01. Start low and raise it
-  until quality dips.
+  single-step or secant-family samplers stay near-lossless up to ~0.3–0.5. Start
+  low and raise it until quality dips.
+
+- **Multistep solvers (`dpmpp_2m`, `res_multistep`, `ipndm`) have essentially no
+  usable TeaCache window — get their speed from fewer steps instead.** These
+  linearly combine the current and previous model evaluations, so reusing a stale
+  one on a skipped step breaks the update. The drift between their steps is also
+  tiny, so the threshold scale is far smaller than for other samplers: even
+  `≤0.012` only skips ~1 step (~4%, negligible), and pushing higher corrupts the
+  image in stages — color cast (~2 skips) → distorted anatomy (~5) → blur (~7+) —
+  long before you get a real speedup. Since `dpmpp_2m` already stays coherent at
+  16–20 steps (see *Working with Anima*), lowering the step count is the clean,
+  controlled way to go faster with it; reserve TeaCache for the single-step /
+  ancestral samplers that tolerate skipping.
 
 - **Calibration (Settings → TeaCache).** Calibrating fits a per-architecture
   polynomial that remaps the raw per-step *input* drift into an estimate of the
