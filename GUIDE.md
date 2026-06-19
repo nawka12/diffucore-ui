@@ -241,6 +241,20 @@ bugs, just how the model responds:
   `sgm_uniform`, `simple` all work). Avoid `lcm`, `dpmpp_sde`, `lms`, `ipndm_v`,
   and `dpmpp_3m_sde` at low steps — they go muddy or break.
 
+- **`exp_heun_2_x0`** is a deterministic 2nd-order option in the same family — a
+  true single-step exponential Heun (two model evaluations per step, no multistep
+  history) instead of `dpmpp_2m`'s one-eval history-reuse multistep. It costs one
+  extra evaluation per step but needs no warm-up history, which can help at very
+  low step counts; image-quality A/B versus `dpmpp_2m` is still pending.
+
+- **`uni_pc` / `uni_pc_bh2`** (UniPC, a unified predictor-corrector multistep
+  solver) are deterministic and, like `dpmpp_2m`, stay ~one model evaluation per
+  step — the corrector's evaluation doubles as the next step's history. The
+  corrector gives them an edge over `dpmpp_2m` at the same step count, so they're
+  a strong low-step default. `uni_pc` uses the `bh1` solver variant and
+  `uni_pc_bh2` the `bh2` variant (often a touch better at very low steps); both
+  default to 3rd order and ramp the order down over the final steps.
+
 ### TeaCache — faster Anima sampling
 
 **TeaCache** (opt-in, Anima only) skips recomputing the 28-block DiT on steps

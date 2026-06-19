@@ -95,6 +95,9 @@ SAMPLERS_SD = [
     "ddpm",
     "lcm",
     "secant",
+    "exp_heun_2_x0",
+    "uni_pc",
+    "uni_pc_bh2",
 ]
 SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm"]
 # euler_ancestral_anneal anneals eta with σ (full ancestral burn-in at high σ,
