@@ -111,7 +111,13 @@ SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm"]
 # stays genuinely 2nd-order at low step counts (where the secant self-gates to
 # Euler), so it needs fewer steps. eta_max=0 ⇒ deterministic 2M flow multistep.
 # Anima-only; pair with beta/flow like its siblings.
-SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal", "dpmpp_2m_anneal"]
+# uni_pc_anneal is the stochastic sibling of uni_pc: UniPC's predictor-corrector
+# core (eta_max=0 ⇒ deterministic uni_pc bit-for-bit) plus a light σ-annealed
+# ancestral burn-in for stochastic diversity / merge robustness. Its high-order
+# core amplifies injected noise, so it ships a low baked-in eta_max (0.2) and is
+# NOT wired to the shared eta_max panel knob (1.0 over-smooths it). Anima-only.
+SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal",
+                                  "dpmpp_2m_anneal", "uni_pc_anneal"]
 SAMPLERS_FLUX = SAMPLERS_FLOW
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",

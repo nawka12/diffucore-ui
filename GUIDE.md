@@ -255,6 +255,18 @@ bugs, just how the model responds:
   `uni_pc_bh2` the `bh2` variant (often a touch better at very low steps); both
   default to 3rd order and ramp the order down over the final steps.
 
+- **`uni_pc_anneal`** is the *stochastic* sibling of `uni_pc`: the same UniPC
+  predictor-corrector core plus a light, σ-annealed ancestral noise term (noise at
+  high σ, vanishing as σ→0) for stochastic sample diversity and a shot at the
+  merge-robustness that makes `er_sde` reliable — but on UniPC's higher-accuracy
+  drift instead of a first-order one. It is a strict generalization of `uni_pc`
+  (its `eta_max=0` limit is deterministic UniPC, exactly). Because the high-order
+  core *amplifies* injected noise, it ships a deliberately small baked-in noise
+  level (`eta_max=0.2`) and ignores the shared `eta_max` settings knob, which is
+  tuned for the lower-order anneal samplers and over-smooths this one. Use it when
+  you want UniPC quality with a touch of stochastic variation; for the crispest
+  deterministic result, use plain `uni_pc`. See `docs/uni-pc-anneal.md`.
+
 ### TeaCache — faster Anima sampling
 
 **TeaCache** (opt-in, Anima only) skips recomputing the 28-block DiT on steps

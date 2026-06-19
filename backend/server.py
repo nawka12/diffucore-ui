@@ -271,8 +271,10 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
         if ENGINE.loaded_family == "anima":
             if p.sampler in ("secant", "secant_anneal"):
                 common["curvature"] = float(SETTINGS["curvature"])
-            if p.sampler in ("secant_anneal", "euler_ancestral_anneal"):
+            if p.sampler in ("secant_anneal", "euler_ancestral_anneal", "dpmpp_2m_anneal"):
                 common["eta_max"] = float(SETTINGS["eta_max"])
+            # uni_pc_anneal omitted on purpose: it uses its own low baked-in
+            # eta_max (0.2); the shared 1.0 panel default over-smooths it.
             if p.scheduler == "beta":
                 common["beta_alpha"] = float(SETTINGS["beta_alpha"])
                 common["beta_beta"] = float(SETTINGS["beta_beta"])
