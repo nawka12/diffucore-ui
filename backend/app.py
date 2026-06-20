@@ -29,7 +29,8 @@ parser.add_argument(
     "--autolaunch",
     action="store_true",
     help="Open the UI in the default web browser once the server starts "
-         "(launch.sh / launch.bat pass this by default).",
+         "(launch.sh / launch.bat pass this by default). Suppressed when "
+         "--share or --listen is set, since those serve remote clients.",
 )
 args = parser.parse_args()
 
@@ -37,7 +38,7 @@ if args.share:
     import share
     share.start(args.port)
 
-if args.autolaunch:
+if args.autolaunch and not (args.share or args.listen):
     import threading
     import webbrowser
 
