@@ -180,6 +180,9 @@ class GenDefaults(BaseModel):
     width: int = 1024
     height: int = 1024
     shift: float = 3.0
+    # Prompt/negative are saved only when filled (None = leave the form's own value).
+    prompt: Optional[str] = None
+    neg: Optional[str] = None
 
 
 class Settings(BaseModel):

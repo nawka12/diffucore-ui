@@ -981,7 +981,7 @@ document.addEventListener('alpine:init', () => {
     applyGenDefaults() {
       const d = this.settings.gen_defaults;
       if (!d) return;
-      for (const k of ['sampler', 'scheduler', 'steps', 'cfg', 'width', 'height', 'shift']) {
+      for (const k of ['sampler', 'scheduler', 'steps', 'cfg', 'width', 'height', 'shift', 'prompt', 'neg']) {
         if (d[k] !== undefined && d[k] !== null) this.form[k] = d[k];
       }
       this.syncSampler();
@@ -990,11 +990,21 @@ document.addEventListener('alpine:init', () => {
 
     async saveGenDefaults() {
       const f = this.form;
-      this.settings.gen_defaults = {
+      const d = {
         sampler: f.sampler, scheduler: f.scheduler, steps: f.steps,
         cfg: f.cfg, width: f.width, height: f.height, shift: f.shift,
       };
+      // Prompt/negative are only worth pinning when the user actually filled them.
+      if (f.prompt && f.prompt.trim()) d.prompt = f.prompt;
+      if (f.neg && f.neg.trim()) d.neg = f.neg;
+      this.settings.gen_defaults = d;
       await this.saveSettings();
+    },
+
+    swapDimensions() {
+      const w = this.form.width;
+      this.form.width = this.form.height;
+      this.form.height = w;
     },
 
     clearGenDefaults() {

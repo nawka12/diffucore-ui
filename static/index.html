@@ -399,6 +399,9 @@
               <input type="number" x-model.number="form.width" min="256" max="2048" step="64"></div>
             <input type="range" x-model.number="form.width" min="256" max="2048" step="64">
           </div>
+          <div style="text-align:center; margin:-2px 0 6px">
+            <button type="button" class="btn small" style="margin-top:0" @click="swapDimensions()" title="Swap width and height">⇅ Swap</button>
+          </div>
           <div class="slider">
             <div class="slider-head"><span>Height</span>
               <input type="number" x-model.number="form.height" min="256" max="2048" step="64"></div>
