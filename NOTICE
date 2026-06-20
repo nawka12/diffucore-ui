@@ -1,0 +1,17 @@
+Diffucore UI
+Copyright 2026 The Diffucore Authors
+
+This product includes software developed by The Diffucore Authors.
+
+Diffucore UI is a web frontend for the Diffucore diffusion inference engine,
+which is bundled as a git submodule under diffucore/ and carries its own
+license and attribution (see diffucore/LICENSE and diffucore/NOTICE).
+
+This product bundles the following third-party software:
+
+  - static/alpine.min.js
+    Alpine.js, Copyright (c) 2019 Caleb Porzio and contributors.
+    Licensed under the MIT License.
+
+Google Fonts (Fraunces, Inter, JetBrains Mono) are loaded at runtime from
+Google's CDN and are not bundled with this product.

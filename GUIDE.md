@@ -416,8 +416,9 @@ HTML/CSS/JS with Alpine.js and no build step. No ML logic lives in the web layer
 
 ## Status
 
-Diffucore UI is **under active development** (pre-1.0). The interface is
+Diffucore UI is at **v0.1.0** — its first tagged release. The interface is
 functional end-to-end across its model families, with full metadata
-round-trip, LoRA support, and X/Y/Z sweeps — but APIs, HTTP endpoints, and UI
-layout may shift between commits, and rough edges are expected. The engine
-itself is seed-reproducible and verified against reference implementations.
+round-trip, LoRA support, and X/Y/Z sweeps, and the feature surface has been
+verified on real hardware. It's an early release, so expect the occasional
+rough edge and please report issues. The engine itself is seed-reproducible
+and verified against reference implementations.
