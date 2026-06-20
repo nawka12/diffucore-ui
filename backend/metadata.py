@@ -29,10 +29,11 @@ def _git_short(cwd: Path) -> str:
         return ""
 
 
+_UI_VERSION = "0.1.0"
 _UI_COMMIT = _git_short(_ROOT)
 _DIFF_COMMIT = _git_short(_ROOT / "diffucore")
 
-UI_ID = f"diffucore-ui+{_UI_COMMIT}" if _UI_COMMIT else "diffucore-ui"
+UI_ID = f"diffucore-ui+{_UI_VERSION}" + (f"+{_UI_COMMIT}" if _UI_COMMIT else "")
 DIFF_ID = f"diffucore+{_DIFF_COMMIT}" if _DIFF_COMMIT else f"diffucore+{_DIFFUCORE_VERSION}"
 
 
