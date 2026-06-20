@@ -23,7 +23,7 @@ from typing import Callable, List, Optional
 
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Request, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from PIL import Image
@@ -42,6 +42,24 @@ MAX_UPLOAD_BYTES = 64 * 1024 * 1024  # 64 MB cap for metadata-parse uploads
 
 _ROOT = Path(__file__).resolve().parent.parent
 _STATIC = _ROOT / "static"
+
+# Cache-bust token for static assets: the newest mtime among the bundled files,
+# in hex. After an update (git pull rewrites the files) the token changes, so
+# the versioned ?v= URLs in index.html miss the browser cache and refetch the
+# new app.js/style.css. A startup snapshot is enough since updates restart the
+# server. index.html itself is served no-cache so the fresh token always wins.
+def _asset_version() -> str:
+    mtimes = [
+        (_STATIC / name).stat().st_mtime
+        for name in ("index.html", "app.js", "style.css", "alpine.min.js")
+        if (_STATIC / name).exists()
+    ]
+    return format(int(max(mtimes, default=0)), "x")
+
+ASSET_VERSION = _asset_version()
+_INDEX_HTML = (_STATIC / "index.html").read_text(encoding="utf-8").replace(
+    "__ASSETV__", ASSET_VERSION
+)
 _THUMBS_DIR = _ROOT / ".cache" / "thumbs"  # lazily-built gallery-grid thumbnails
 THUMB_MAX = 384  # long-edge px; the grid uses these instead of the full PNGs
 
@@ -696,7 +714,7 @@ async def _startup():
 
 @app.get("/")
 def index():
-    return FileResponse(_STATIC / "index.html")
+    return HTMLResponse(_INDEX_HTML, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/models")
