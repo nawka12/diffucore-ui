@@ -416,7 +416,7 @@ HTML/CSS/JS with Alpine.js and no build step. No ML logic lives in the web layer
 
 ## Status
 
-Diffucore UI is at **v0.1.0** — its first tagged release. The interface is
+Diffucore UI is at **v0.1.1** — its first tagged release was v0.1.0. The interface is
 functional end-to-end across its model families, with full metadata
 round-trip, LoRA support, and X/Y/Z sweeps, and the feature surface has been
 verified on real hardware. It's an early release, so expect the occasional

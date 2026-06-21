@@ -15,6 +15,7 @@ import base64
 import io
 import itertools
 import json
+import os
 import threading
 import time
 from collections import deque
@@ -60,6 +61,21 @@ ASSET_VERSION = _asset_version()
 _INDEX_HTML = (_STATIC / "index.html").read_text(encoding="utf-8").replace(
     "__ASSETV__", ASSET_VERSION
 )
+# Dev mode (DIFFUCORE_DEV=1): re-read index.html, app.js, style.css from disk on
+# every request so frontend edits show up on a plain refresh without restarting
+# the server. The asset version is recomputed too, so the ?v= URLs in index.html
+# change and the browser refetches the new JS/CSS. Production stays on the
+# startup snapshot — a single read, no per-request stat calls.
+_DEV_MODE = os.environ.get("DIFFUCORE_DEV") in ("1", "true", "yes")
+
+
+def _render_index() -> str:
+    if not _DEV_MODE:
+        return _INDEX_HTML
+    version = _asset_version()
+    return (_STATIC / "index.html").read_text(encoding="utf-8").replace(
+        "__ASSETV__", version
+    )
 _THUMBS_DIR = _ROOT / ".cache" / "thumbs"  # lazily-built gallery-grid thumbnails
 THUMB_MAX = 384  # long-edge px; the grid uses these instead of the full PNGs
 
@@ -717,7 +733,7 @@ async def _startup():
 
 @app.get("/")
 def index():
-    return HTMLResponse(_INDEX_HTML, headers={"Cache-Control": "no-cache"})
+    return HTMLResponse(_render_index(), headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/models")
@@ -994,16 +1010,83 @@ def api_oss_status(steps: int, width: int, height: int, shift: float):
 
 
 @app.get("/api/gallery")
-def api_gallery():
-    return {"images": [
-        {
-            "url": _output_url(f),
-            "name": f.name,
+def api_gallery(q: str = ""):
+    """List gallery images, optionally filtered by a metadata substring.
+
+    ``q`` matches case-insensitively across the parsed prompt, negative prompt,
+    model name, sampler and scheduler fields. When empty, every output is
+    returned (the existing behaviour). Search uses a cached metadata index that
+    rebuilds when the outputs directory's newest folder mtime advances — so a
+    newly saved image shows up on the next search without a manual refresh."""
+    query = (q or "").strip().lower()
+    if not query:
+        return {"images": [
+            {
+                "url": _output_url(f),
+                "name": f.name,
+                "path": f.relative_to(OUTPUTS_DIR).as_posix(),
+                "date": f.parent.name,
+            }
+            for f in scan_outputs()
+        ]}
+    return {"images": _gallery_search(query)}
+
+
+# ── gallery search index ────────────────────────────────────────────
+# One pass opens every output PNG to parse its AUTO1111 metadata — too costly to
+# repeat per keystroke, so the result is cached and only rebuilt when the outputs
+# dir's newest folder mtime advances (a saved image bumps its date folder's
+# mtime, invalidating the cache).
+_GALLERY_INDEX: Optional[list] = None
+_GALLERY_INDEX_KEY: float = 0.0
+
+
+def _gallery_index() -> list:
+    global _GALLERY_INDEX, _GALLERY_INDEX_KEY
+    try:
+        newest = max(
+            (d.stat().st_mtime for d in OUTPUTS_DIR.iterdir() if d.is_dir()),
+            default=0.0,
+        )
+    except OSError:
+        newest = 0.0
+    if _GALLERY_INDEX is not None and newest <= _GALLERY_INDEX_KEY:
+        return _GALLERY_INDEX
+    index: list = []
+    for f in scan_outputs():
+        raw = md.read_png_metadata(str(f))
+        fields = md.parse_metadata(raw) if raw else {}
+        index.append({
             "path": f.relative_to(OUTPUTS_DIR).as_posix(),
+            "name": f.name,
             "date": f.parent.name,
-        }
-        for f in scan_outputs()
-    ]}
+            "prompt": str(fields.get("prompt", "")),
+            "neg": str(fields.get("negative_prompt", "")),
+            "model": str(fields.get("model", "")),
+            "sampler": str(fields.get("sampler", "")),
+            "scheduler": str(fields.get("scheduler", "")),
+        })
+    _GALLERY_INDEX = index
+    _GALLERY_INDEX_KEY = newest
+    return index
+
+
+def _gallery_search(query: str) -> list:
+    """Filter the cached index by a lowercased substring across metadata fields."""
+    out = []
+    for entry in _gallery_index():
+        haystack = " ".join(
+            (entry["prompt"], entry["neg"], entry["model"],
+             entry["sampler"], entry["scheduler"])
+        ).lower()
+        if query in haystack:
+            out.append({
+                "url": f"/outputs/{entry['path']}",
+                "name": entry["name"],
+                "path": entry["path"],
+                "date": entry["date"],
+            })
+    return out
 
 
 @app.get("/api/thumb")
@@ -1024,6 +1107,35 @@ def api_thumb(path: str):
             im.thumbnail((THUMB_MAX, THUMB_MAX))
             im.save(cache, "WEBP", quality=80)
     return FileResponse(cache, media_type="image/webp")
+
+
+@app.delete("/api/gallery")
+def api_gallery_delete(path: str):
+    """Delete a gallery image and its cached thumbnail.
+
+    Path is scoped under ``outputs/``; the same traversal guard as ``/api/thumb``
+    keeps a malicious path from escaping the directory. On success the cached
+    search index is invalidated so the next search reflects the deletion."""
+    target = (OUTPUTS_DIR / path).resolve()
+    outputs_root = OUTPUTS_DIR.resolve()
+    if outputs_root not in target.parents or not target.is_file():
+        raise HTTPException(status_code=404, detail="Image not found")
+    try:
+        target.unlink()
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not delete: {e}")
+    # Drop the cached thumbnail (may not exist if never viewed).
+    cache = (_THUMBS_DIR / target.relative_to(outputs_root)).with_suffix(".webp")
+    if cache.is_file():
+        try: cache.unlink()
+        except OSError: pass
+    # Invalidate the search index so the next /api/gallery?q= reflects the
+    # deletion. Rebuilding is cheap (50 ms for ~1k images) and only happens
+    # when search is actually used next.
+    global _GALLERY_INDEX, _GALLERY_INDEX_KEY
+    _GALLERY_INDEX = None
+    _GALLERY_INDEX_KEY = 0.0
+    return {"deleted": path}
 
 
 @app.get("/api/metadata")

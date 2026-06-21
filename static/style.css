@@ -344,6 +344,12 @@ input[type="range"]::-moz-range-thumb {
   border-color: transparent;
 }
 .btn.primary:hover { background: var(--accent-dim); color: #111; }
+.btn.danger {
+  background: var(--danger);
+  color: #111;
+  border-color: transparent;
+}
+.btn.danger:hover { background: var(--danger-dim); color: #111; }
 .btn.small { padding: 5px 12px; font-size: 12px; margin-top: 8px; }
 a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .btn.icon {
@@ -553,6 +559,19 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 
 /* ── gallery ──────────────────────────────────────────────────── */
 .page-bar { display: flex; gap: 10px; margin-bottom: 16px; }
+.gallery-search {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line-hi);
+  border-radius: var(--r);
+  color: var(--txt);
+  font-family: var(--sans);
+  font-size: 13px;
+}
+.gallery-search::placeholder { color: var(--txt-3); }
+.gallery-search:focus { outline: none; border-color: var(--accent-dim); }
 .gallery-day { margin-bottom: 24px; }
 .gallery-date {
   font-size: 13px;

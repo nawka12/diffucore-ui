@@ -29,7 +29,7 @@ def _git_short(cwd: Path) -> str:
         return ""
 
 
-_UI_VERSION = "0.1.0"
+_UI_VERSION = "0.1.1"
 _UI_COMMIT = _git_short(_ROOT)
 _DIFF_COMMIT = _git_short(_ROOT / "diffucore")
 
@@ -144,9 +144,13 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
 
 
 def read_png_metadata(path: str) -> str:
-    """Return the AUTO1111 ``parameters`` chunk of a PNG, or ``""``."""
-    img = Image.open(path)
-    return img.info.get("parameters", "")
+    """Return the AUTO1111 ``parameters`` chunk of a PNG, or ``""``.
+
+    Uses a context manager so the file handle is released promptly — under heavy
+    gallery use (lightbox paging, search indexing), the prior lazy-open form
+    leaked descriptors until the GC closed the underlying PIL image."""
+    with Image.open(path) as img:
+        return img.info.get("parameters", "")
 
 
 # key: value, where value is a JSON-quoted string (so commas/colons inside a

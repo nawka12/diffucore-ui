@@ -43,6 +43,11 @@ document.addEventListener('alpine:init', () => {
       teacacheOn: false, teacache: 0.15, teacacheCalibrated: true,
       deepcacheOn: false, deepcache: 2,
     },
+    // Batch count: >1 submits N generate jobs at once. With a pinned seed each
+    // job gets seed+i; with seed=-1 each gets a fresh backend random. The queue
+    // runs them one at a time (as it does for any job); progress/preview route
+    // to whichever batch member is currently running.
+    batchCount: 1,
 
     // ── <lora:…> autocomplete in the prompt ─────────────────────
     loraAC: { open: false, items: [], index: 0, start: -1, key: 'prompt', el: null, set: null, wrap: null },
@@ -94,7 +99,8 @@ document.addEventListener('alpine:init', () => {
     queue: [],            // [{id, kind, label, status}] — running first, then pending
     runningJob: null,     // id of the job currently on the GPU (any device)
     runProg: { step: 0, total: 0 },  // progress of the running job (for the queue panel)
-    myJobId: null,        // id of the job THIS device submitted and is watching
+    myJobId: null,        // id of the single job THIS device submitted and is watching
+    _myBatchIds: [],      // ids of in-flight batch jobs (empty for single-job flows)
     _jobWaiters: {},      // id -> resolve fn, fulfilled by the terminal SSE event
 
     // ── OSS calibration ─────────────────────────────────────────
@@ -112,10 +118,13 @@ document.addEventListener('alpine:init', () => {
     gallery: [],
     galleryGroups: [],
     galleryLimit: 60,   // chunked rendering: only this many thumbs live in the DOM
+    galleryQuery: '',   // substring filter applied via /api/gallery?q=
+    gallerySearching: false,
     selected: null,
     selectedMeta: '',
     selectedFields: {},
     lightbox: { open: false, index: 0, info: false },
+    deleteConfirm: false,   // two-click confirm in the lightbox Delete button
 
     // ── metadata reader ─────────────────────────────────────────
     metaPreview: null,
@@ -266,6 +275,8 @@ document.addEventListener('alpine:init', () => {
               if (!live.has(id)) {
                 const w = this._jobWaiters[id];
                 delete this._jobWaiters[id];
+                const bi = this._myBatchIds.indexOf(+id);
+                if (bi !== -1) this._myBatchIds.splice(bi, 1);
                 if (String(this.myJobId) === id) this.myJobId = null;
                 w({ type: 'error', message: 'Lost connection during the job — check the gallery for the result.' });
               }
@@ -280,19 +291,23 @@ document.addEventListener('alpine:init', () => {
           break;
         case 'progress':
           // Running-job progress feeds the queue panel; the main bar only
-          // tracks THIS device's own job, so a queued device isn't shown
-          // another device's progress.
+          // tracks THIS device's own job (or one of its in-flight batch jobs),
+          // so a queued device isn't shown another device's progress.
           this.runProg = { step: ev.step, total: ev.total };
-          if (ev.job === this.myJobId) this.progress = { step: ev.step, total: ev.total, cell: ev.cell, cells: ev.cells };
+          if (ev.job === this.myJobId || this._myBatchIds.includes(ev.job))
+            this.progress = { step: ev.step, total: ev.total, cell: ev.cell, cells: ev.cells };
           break;
         case 'preview':
-          if (ev.job === this.myJobId) this.previewUrl = ev.image;
+          if (ev.job === this.myJobId || this._myBatchIds.includes(ev.job))
+            this.previewUrl = ev.image;
           break;
         case 'done':
         case 'error':
         case 'cancelled': {
           const w = this._jobWaiters[ev.job];
           if (w) { delete this._jobWaiters[ev.job]; w(ev); }
+          const bi = this._myBatchIds.indexOf(ev.job);
+          if (bi !== -1) this._myBatchIds.splice(bi, 1);
           // Clear myJobId only when THIS job ends. A job queued behind it has
           // already moved myJobId on at submit time, so an earlier job's
           // completion must not null it out — otherwise the queued job's
@@ -312,6 +327,44 @@ document.addEventListener('alpine:init', () => {
       })).json();
       this.myJobId = r.job;
       return new Promise((resolve) => { this._jobWaiters[r.job] = resolve; });
+    },
+
+    // Submit N copies of a job for batch generation. A pinned seed is offset by
+    // i per copy so the N images differ; seed=-1 is forwarded as-is so the
+    // backend picks a fresh random per job (its existing behavior). Each job's
+    // terminal event resolves one promise; Promise.all in the caller waits for
+    // every copy. Unlike submitJob, this leaves myJobId null — onServerEvent
+    // routes progress/preview through _myBatchIds instead.
+    async submitBatch(url, payload, count) {
+      const baseSeed = payload.seed;
+      const promises = [];
+      try {
+        for (let i = 0; i < count; i++) {
+          const body = { ...payload };
+          if (baseSeed !== -1 && baseSeed != null) body.seed = baseSeed + i;
+          const r = await (await fetch(url, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          })).json();
+          this._myBatchIds.push(r.job);
+          promises.push(new Promise((resolve) => { this._jobWaiters[r.job] = resolve; }));
+        }
+      } catch (e) {
+        // Fetch failed partway: cancel any jobs already enqueued so they don't
+        // run orphaned, drop their waiters, then surface the error to the caller.
+        for (const id of [...this._myBatchIds]) {
+          delete this._jobWaiters[id];
+          try {
+            await fetch('/api/cancel', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ job: id }),
+            });
+          } catch (_) { /* the worker still drops the job from its queue */ }
+        }
+        this._myBatchIds = [];
+        throw e;
+      }
+      return promises;
     },
 
     // Reflect server-side model-load state (shared across devices/refresh).
@@ -720,6 +773,21 @@ document.addEventListener('alpine:init', () => {
       else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); this.applyLora(ac.items[ac.index]); }
       else if (e.key === 'Escape') { e.preventDefault(); ac.open = false; }
     },
+
+    // Keydown for the prompt textarea: Ctrl/Cmd+Enter triggers Generate (the
+    // usual shortcut in every comparable UI), unless the LoRA autocomplete is
+    // open — then Enter inserts the selected LoRA and Ctrl/Cmd+Enter is left
+    // alone so the user can dismiss it first. Other keys fall through to
+    // loraKeydown for autocomplete navigation.
+    promptKeydown(e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        if (this.loraAC.open) return;   // don't fire through an open dropdown
+        e.preventDefault();
+        if (!this.busy) this.runGenerate();
+        return;
+      }
+      this.loraKeydown(e);
+    },
     applyLora(name) {
       const ac = this.loraAC;
       const el = ac.el;
@@ -752,6 +820,7 @@ document.addEventListener('alpine:init', () => {
         this.maskImage = this.exportMask();
       }
       this.busy = true;
+      this.cancelling = false;
       this.progress = { step: 0, total: 0 };
       this.previewUrl = null;
       this.info = '';
@@ -798,19 +867,46 @@ document.addEventListener('alpine:init', () => {
           upscale_teacache: this.upscale.teacache,
           upscale_base: this.upscale.base,
         };
-        // Progress + preview arrive on the shared stream; we await the result.
-        const ev = await this.submitJob('/api/generate', payload);
-        if (ev.type === 'done') {
+        // Batch: submit N copies, await all. Single (count=1) keeps the original
+        // submitJob path so load/upscale/xyz/calibrate semantics are unchanged.
+        const batchCount = Math.max(1, Math.min(16, Math.floor(this.batchCount) || 1));
+        if (batchCount > 1) {
+          const promises = await this.submitBatch('/api/generate', payload, batchCount);
+          const results = await Promise.all(promises);
           this.previewUrl = null;
-          this.resultUrl = ev.image_url + '?t=' + Date.now();
-          this.info = ev.info;
-          this.lastSeed = ev.seed;
-        } else if (ev.type === 'cancelled') {
-          this.previewUrl = null;
-          this.info = 'Cancelled';
-        } else if (ev.type === 'error') {
-          this.info = 'Error: ' + ev.message;
-          this.flash(ev.message);
+          let lastDone = null, nDone = 0, nErr = 0, nCancel = 0;
+          for (const ev of results) {
+            if (ev.type === 'done') { nDone++; lastDone = ev; }
+            else if (ev.type === 'error') nErr++;
+            else if (ev.type === 'cancelled') nCancel++;
+          }
+          if (lastDone) {
+            this.resultUrl = lastDone.image_url + '?t=' + Date.now();
+            this.info = `Batch: ${nDone} done`
+              + (nErr ? `, ${nErr} errored` : '')
+              + (nCancel ? `, ${nCancel} cancelled` : '')
+              + `  |  ${lastDone.info}`;
+            this.lastSeed = lastDone.seed;
+          } else {
+            this.info = `Batch: ${nCancel ? 'cancelled' : 'no images'}`
+              + (nErr ? ` · ${nErr} errored` : '');
+          }
+          if (nErr) this.flash(`${nErr} batch job(s) failed`);
+        } else {
+          // Progress + preview arrive on the shared stream; we await the result.
+          const ev = await this.submitJob('/api/generate', payload);
+          if (ev.type === 'done') {
+            this.previewUrl = null;
+            this.resultUrl = ev.image_url + '?t=' + Date.now();
+            this.info = ev.info;
+            this.lastSeed = ev.seed;
+          } else if (ev.type === 'cancelled') {
+            this.previewUrl = null;
+            this.info = 'Cancelled';
+          } else if (ev.type === 'error') {
+            this.info = 'Error: ' + ev.message;
+            this.flash(ev.message);
+          }
         }
       } catch (e) {
         this.info = 'Error: ' + e;
@@ -818,12 +914,29 @@ document.addEventListener('alpine:init', () => {
         this.busy = false;
         this.cancelling = false;
         this.previewUrl = null;
+        // Belt-and-suspenders: terminal events should have emptied the set, but
+        // a missed event (e.g. a future code path that doesn't register a waiter)
+        // would otherwise leave stale ids routing unrelated progress here.
+        this._myBatchIds = [];
       }
     },
 
     // Cancel a job by id (defaults to this device's running job). A running job
-    // stops at its next sampling step; a still-queued job is dropped.
+    // stops at its next sampling step; a still-queued job is dropped. With no
+    // arg and an in-flight batch, every batch member is cancelled.
     async cancel(jobId) {
+      if (jobId == null && this._myBatchIds.length > 0) {
+        this.cancelling = true;
+        for (const id of [...this._myBatchIds]) {
+          try {
+            await fetch('/api/cancel', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ job: id }),
+            });
+          } catch (e) { /* the stream still resolves each */ }
+        }
+        return;
+      }
       const id = jobId ?? this.myJobId ?? this.runningJob;
       if (id == null) return;
       if (id === this.myJobId) this.cancelling = true;
@@ -1149,8 +1262,29 @@ document.addEventListener('alpine:init', () => {
       this.selected = null;
       this.selectedMeta = '';
       this.galleryLimit = 60;
+      this.galleryQuery = '';
+      this.gallerySearching = false;
       this.gallery = (await (await fetch('/api/gallery')).json()).images;
       this.buildGalleryGroups();
+    },
+
+    // Debounced search field: fetch the filtered list from the backend's cached
+    // metadata index. An empty query restores the full list (no index needed).
+    async searchGallery() {
+      const q = (this.galleryQuery || '').trim();
+      this.gallerySearching = true;
+      try {
+        const url = q ? `/api/gallery?q=${encodeURIComponent(q)}` : '/api/gallery';
+        this.gallery = (await (await fetch(url)).json()).images;
+        this.selected = null;
+        this.selectedMeta = '';
+        this.galleryLimit = 60;
+        this.buildGalleryGroups();
+      } catch (e) {
+        /* keep the previous list on a transient fetch error */
+      } finally {
+        this.gallerySearching = false;
+      }
     },
 
     // Group the (date-desc) gallery list into day sections, carrying each
@@ -1224,12 +1358,13 @@ document.addEventListener('alpine:init', () => {
       this.lightbox.open = true;
       this.selectImage(this.gallery[i]);
     },
-    closeLightbox() { this.lightbox.open = false; },
+    closeLightbox() { this.lightbox.open = false; this.deleteConfirm = false; },
     lbPrev() { this.lbGo(-1); },
     lbNext() { this.lbGo(1); },
     lbGo(d) {
       const n = this.gallery.length;
       if (!n) return;
+      this.deleteConfirm = false;   // reset the two-click confirm on navigation
       this.lightbox.index = (this.lightbox.index + d + n) % n;
       this.selectImage(this.gallery[this.lightbox.index]);
     },
@@ -1252,6 +1387,53 @@ document.addEventListener('alpine:init', () => {
       this.tab = 'generate';
       this.resizeTextareas();
       this.flash('Loaded settings into Generate');
+    },
+
+    // Two-click delete: first click arms the confirm; the second fires the
+    // DELETE. Clicking anywhere else (click.outside on the button) disarms it.
+    // After the file is gone, drop it from the in-memory list, rebuild the
+    // grid groups, and step the lightbox to a neighbor (or close if it was the
+    // last image entirely).
+    async deleteSelected() {
+      if (!this.selected) return;
+      if (!this.deleteConfirm) {
+        this.deleteConfirm = true;
+        return;
+      }
+      this.deleteConfirm = false;
+      const path = this.selected.path;
+      const idx = this.lightbox.index;
+      try {
+        const r = await fetch('/api/gallery?path=' + encodeURIComponent(path), {
+          method: 'DELETE',
+        });
+        if (!r.ok) {
+          const detail = await r.json().catch(() => ({}));
+          this.flash('Could not delete: ' + (detail.detail || r.statusText));
+          return;
+        }
+      } catch (e) {
+        this.flash('Could not delete: ' + e);
+        return;
+      }
+      // Remove from the in-memory gallery; if the gallery list is currently a
+      // search result, the next openGallery()/searchGallery() will refetch —
+      // the backend already invalidated its search index.
+      this.gallery = this.gallery.filter((g) => g.path !== path);
+      this.buildGalleryGroups();
+      if (this.gallery.length === 0) {
+        this.closeLightbox();
+        this.selected = null;
+        this.selectedMeta = '';
+        this.selectedFields = null;
+        this.flash('Deleted — gallery is now empty');
+        return;
+      }
+      // Step to the neighbor (clamp, since idx may now point past the end).
+      const nextIdx = Math.min(idx, this.gallery.length - 1);
+      this.lightbox.index = nextIdx;
+      this.selectImage(this.gallery[nextIdx]);
+      this.flash('Deleted');
     },
 
     // Send the selected gallery image into img2img / inpaint as the input image.
@@ -1364,10 +1546,56 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── toast ───────────────────────────────────────────────────
+    // A small FIFO queue so a burst of messages (e.g. several batch errors)
+    // each get a turn instead of the last overwriting the rest instantly.
+    // Capped at 4 pending so a runaway loop can't pile up dozens.
     flash(msg) {
+      if (!msg) return;
+      this._toastQueue.push(msg);
+      if (this._toastQueue.length > 4) this._toastQueue.length = 4;
+      if (!this._toastShowing) this._toastNext();
+    },
+    _toastQueue: [],
+    _toastShowing: false,
+    _toastNext() {
+      const msg = this._toastQueue.shift();
+      if (msg == null) { this._toastShowing = false; this.toast = ''; return; }
+      this._toastShowing = true;
       this.toast = msg;
       clearTimeout(this._toastTimer);
-      this._toastTimer = setTimeout(() => { this.toast = ''; }, 3500);
+      this._toastTimer = setTimeout(() => {
+        this.toast = '';
+        // Brief gap before the next so the fade-out completes (x-transition)
+        // and the new toast fades in, rather than two messages snapping together.
+        setTimeout(() => this._toastNext(), 250);
+      }, 2500);
+    },
+
+    // Copy the lightbox's raw AUTO1111 parameters string to the clipboard.
+    // `navigator.clipboard` is the modern path but needs a secure context
+    // (HTTPS or localhost); on a plain-HTTP LAN (--listen) it's unavailable, so
+    // fall back to a hidden-textarea + execCommand for those clients.
+    async copyMeta() {
+      const text = this.selectedMeta;
+      if (!text) return;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        this.flash('Parameters copied');
+      } catch (e) {
+        this.flash('Could not copy: ' + e);
+      }
     },
   }));
 });

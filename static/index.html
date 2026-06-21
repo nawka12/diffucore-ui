@@ -136,7 +136,7 @@
           <textarea class="autosize" x-model="form.prompt" rows="3"
                     x-effect="autogrow($el, form.prompt)"
                     @input="autogrow($el); loraAutocomplete($el)"
-                    @keydown="loraKeydown($event)"
+                    @keydown="promptKeydown($event)"
                     placeholder="a watercolor fox in a misty forest"></textarea>
           <ul class="lora-ac" x-show="loraAC.open && loraAC.key==='prompt'" @mousedown.prevent>
             <template x-for="(name, i) in loraAC.items" :key="name">
@@ -149,6 +149,7 @@
           <span>Negative prompt</span>
           <textarea class="autosize" x-model="form.neg" rows="2"
                     x-effect="autogrow($el, form.neg)" @input="autogrow($el)"
+                    @keydown="promptKeydown($event)"
                     placeholder="blurry, low quality"></textarea>
         </label>
         <p class="hint">LoRA — use <code>&lt;lora:name:mult&gt;</code> in your prompt, e.g. <code>&lt;lora:my_lora:0.75&gt;</code></p>
@@ -426,6 +427,12 @@
             <button class="btn icon" title="Randomize" @click="form.seed = -1">🎲</button>
           </div>
           <p class="sub">-1 = random</p>
+          <div class="slider" style="margin-top:10px">
+            <div class="slider-head"><span>Batch count</span>
+              <input type="number" x-model.number="batchCount" min="1" max="16" step="1"></div>
+            <input type="range" x-model.number="batchCount" min="1" max="16" step="1">
+          </div>
+          <p class="sub">Submit N jobs at once. Pinned seed → seed+i per image; random → fresh seed each.</p>
         </fieldset>
 
         <fieldset x-show="mode==='t2i'">
@@ -523,7 +530,7 @@
       <!-- output -->
       <div class="output">
         <button class="btn primary generate" x-show="!busy" @click="runGenerate()"
-                x-text="sweeping ? 'Generate grid' : 'Generate'"></button>
+                x-text="sweeping ? 'Generate grid' : (batchCount > 1 ? 'Generate ×' + batchCount : 'Generate')"></button>
         <button class="btn generate cancel" x-show="busy" @click="cancel()" :disabled="cancelling"
                 x-text="cancelling ? 'Cancelling…' : 'Cancel'"></button>
         <label class="chip toggle preview-toggle" :class="{on: preview}">
@@ -537,7 +544,7 @@
         <!-- shared queue — visible to every device -->
         <div class="queue" x-show="queue.length">
           <template x-for="j in queue" :key="j.id">
-            <div class="queue-item" :class="{running: j.status==='running', mine: j.id===myJobId}">
+            <div class="queue-item" :class="{running: j.status==='running', mine: j.id===myJobId || _myBatchIds.includes(j.id)}">
               <span class="queue-dot" x-text="j.status==='running' ? '●' : '◷'"></span>
               <span class="queue-label" x-text="j.label"></span>
               <span class="queue-prog" x-show="j.status==='running' && runProg.total"
@@ -612,7 +619,12 @@
     <!-- ── GALLERY ────────────────────────────────────────────── -->
     <section class="page" x-show="tab==='gallery'">
       <div class="page-bar">
-        <button class="btn" @click="openGallery()">Refresh</button>
+        <input type="text" class="gallery-search" x-model="galleryQuery"
+               @input.debounce.300ms="searchGallery()"
+               placeholder="Search prompts, models, samplers…"
+               aria-label="Search gallery">
+        <button class="btn" @click="openGallery()" :disabled="gallerySearching"
+                x-text="gallerySearching ? 'Indexing…' : 'Refresh'"></button>
       </div>
       <template x-for="g in galleryGroups" :key="g.date">
         <section class="gallery-day">
@@ -628,7 +640,8 @@
       </template>
       <div class="gallery-sentinel" x-show="galleryLimit < gallery.length"
            x-init="observeSentinel($el)">Loading more…</div>
-      <p class="placeholder" x-show="gallery.length===0">No outputs yet.</p>
+      <p class="placeholder" x-show="gallery.length===0 && !gallerySearching">No outputs yet.</p>
+      <p class="placeholder" x-show="gallery.length===0 && gallerySearching">Searching…</p>
     </section>
 
     <!-- ── METADATA ───────────────────────────────────────────── -->
@@ -663,12 +676,19 @@
           <div class="lb-head-btns">
             <button class="btn small" @click="lightbox.info=!lightbox.info"
                     x-text="lightbox.info ? 'Hide info' : 'Info'"></button>
+            <button class="btn small" @click="copyMeta()" x-show="selectedMeta"
+                    title="Copy AUTO1111 parameters to clipboard">Copy params</button>
             <a class="btn small" x-show="selected" :href="selected ? selected.url : '#'"
                :download="selected ? selected.name : ''">Download</a>
             <button class="btn small" @click="sendToMode('i2i')">To img2img</button>
             <button class="btn small" @click="sendToMode('inpaint')">To inpaint</button>
             <button class="btn small" @click="openUpscale()">Upscale ⬆</button>
             <button class="btn small primary" @click="loadToWorkspace()">Load to Generate</button>
+            <button class="btn small"
+                    :class="{danger: deleteConfirm}"
+                    @click="deleteSelected()"
+                    x-text="deleteConfirm ? 'Confirm delete?' : 'Delete'"
+                    @click.outside="deleteConfirm=false"></button>
           </div>
         </div>
         <pre class="meta" x-show="lightbox.info" x-text="selectedMeta || 'No metadata.'"></pre>
