@@ -38,6 +38,9 @@ from utils import (
 )
 from xyz_grid import generate_xyz_grid, PARAM_TYPES as XYZ_PARAM_TYPES
 import metadata as md
+from extensions import (
+    ExtensionLoader, InstallPayload, TogglePayload, UninstallPayload,
+)
 
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024  # 64 MB cap for metadata-parse uploads
 
@@ -69,13 +72,23 @@ _INDEX_HTML = (_STATIC / "index.html").read_text(encoding="utf-8").replace(
 _DEV_MODE = os.environ.get("DIFFUCORE_DEV") in ("1", "true", "yes")
 
 
+def _ext_script_tags() -> str:
+    # One <script> tag per enabled extension JS file (see extensions.py). Built
+    # at render time so a freshly-installed extension's UI shows up after the
+    # install endpoint returns, without a server restart.
+    return "".join(
+        f'<script src="{s["src"]}?v={ASSET_VERSION}" defer></script>'
+        for s in EXTENSIONS.web_script_urls()
+    )
+
+
 def _render_index() -> str:
     if not _DEV_MODE:
-        return _INDEX_HTML
+        return _INDEX_HTML.replace("__EXT_SCRIPTS__", _ext_script_tags())
     version = _asset_version()
     return (_STATIC / "index.html").read_text(encoding="utf-8").replace(
         "__ASSETV__", version
-    )
+    ).replace("__EXT_SCRIPTS__", _ext_script_tags())
 _THUMBS_DIR = _ROOT / ".cache" / "thumbs"  # lazily-built gallery-grid thumbnails
 THUMB_MAX = 384  # long-edge px; the grid uses these instead of the full PNGs
 
@@ -283,6 +296,10 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
     if not ENGINE.loaded_name:
         raise RuntimeError("Load a model first")
 
+    # pre_generate: extensions can tweak the payload (prompt, seed, steps, …)
+    # before the engine runs. Mutations land on the Pydantic model in place.
+    EXTENSIONS.run_hook("pre_generate", payload=p)
+
     clean_prompt, prompt_loras = ENGINE.parse_lora_prompt(p.prompt)
     clean_neg, neg_loras = ENGINE.parse_lora_prompt(p.neg)
     loras = prompt_loras + neg_loras
@@ -442,8 +459,19 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             "base": p.upscale_base or "Lanczos",
             "prompt": p.upscale_prompt.strip() or "",
         } if upscaled else None
+        # post_generate: extensions can post-process the image (watermark,
+        # filter, composite) before it's written. A handler may replace
+        # ctx.image; info carries the base gen info for reference.
+        gctx = EXTENSIONS.run_hook(
+            "post_generate", payload=p, image=image, info=info,
+        )
+        image = gctx.image
+
         out = _save_output(image, gen_kwargs, detailer=detailer_meta, upscale=upscale_meta)
         rel = out.relative_to(OUTPUTS_DIR)
+        # post_save: fire-and-forget notification that the PNG is on disk; an
+        # extension might mirror it elsewhere, log it, etc.
+        EXTENSIONS.run_hook("post_save", payload=p, image=image, path=out)
         return {
             "image_url": _output_url(out),
             "info": f"{lora_info}{info}  |  inference: {elapsed:.2f}s{upscale_info}{detail_info}  |  saved to {rel}",
@@ -680,6 +708,25 @@ def _enqueue(job: Job) -> None:
     _broadcast_queue()
 
 
+# ── extension platform ──────────────────────────────────────────────
+# The loader is constructed with callables back into the server's queue and SSE
+# stream so extensions can enqueue GPU-sharing jobs and broadcast events without
+# importing server.py. EXTENSIONS is referenced by _render_index (script
+# injection), the /api/ext/* routes, and the generation/load hooks below.
+
+def _ext_enqueue_job(ext_name: str, label: str, run: Callable, kind: str = "ext") -> int:
+    job = Job(f"{kind}:{ext_name}", label, run)
+    _enqueue(job)
+    return job.id
+
+
+EXTENSIONS = ExtensionLoader(
+    ENGINE,
+    enqueue_job=_ext_enqueue_job,
+    broadcast=_push,
+)
+
+
 def _worker() -> None:
     global CURRENT
     while True:
@@ -729,6 +776,14 @@ async def _startup():
     global APP_LOOP
     APP_LOOP = asyncio.get_running_loop()
     threading.Thread(target=_worker, daemon=True).start()
+    # Load every enabled extension and mount its routes/statics into the app.
+    # Done at startup (not import) so a manifest edit between imports and the
+    # server actually starting is picked up, and so the app object exists.
+    EXTENSIONS.load_all()
+    EXTENSIONS.mount_into(app)
+    n = sum(1 for e in EXTENSIONS.extensions.values() if e.module is not None)
+    print(f"[startup] extensions: {n} loaded, "
+          f"{len(EXTENSIONS.extensions)} total", flush=True)
 
 
 @app.get("/")
@@ -769,6 +824,16 @@ def api_status():
 
 
 def _do_load(p: LoadPayload) -> str:
+    # pre_load: extensions can observe/adjust the load request before it runs.
+    EXTENSIONS.run_hook("pre_load", payload=p)
+    status = _do_load_impl(p)
+    # post_load: notify extensions of the outcome (status starts with "Loaded"
+    # on success, or "Model already loaded"; anything else is an error message).
+    EXTENSIONS.run_hook("post_load", payload=p, status=status)
+    return status
+
+
+def _do_load_impl(p: LoadPayload) -> str:
     # Offload: explicit UI choice, else the per-family default. FLUX's ~23 GB
     # transformer OOMs under whole-module staging (full), so it always defaults to
     # "stream" block-streaming. Every family (SD/SDXL, FLUX, Anima) streams on a
@@ -948,6 +1013,62 @@ def api_save_settings(s: Settings):
     # without a reload (future loads pick it up via _do_load).
     ENGINE.apply_vae_tiling(SETTINGS["vae_tiling"] == "always")
     return SETTINGS
+
+
+# ── extension management ────────────────────────────────────────────
+
+@app.get("/api/extensions")
+def api_extensions():
+    """List every discovered extension with its load state and web scripts."""
+    return {"extensions": EXTENSIONS.list_serializable()}
+
+
+@app.get("/api/extensions/web")
+def api_extensions_web():
+    """Script URLs to inject into the index page (one per enabled ext JS file).
+    The frontend reads this on connect to know which extension scripts already
+    loaded inline; the page itself is built server-side with the tags in place."""
+    return {"scripts": EXTENSIONS.web_script_urls()}
+
+
+@app.post("/api/extensions/install")
+def api_extensions_install(p: InstallPayload):
+    """Install an extension from a git URL or a .zip archive URL. Clones /
+    extracts into extensions/, runs its requirements.txt if present, then loads
+    it. Returns the new extension's record."""
+    try:
+        ext = EXTENSIONS.install(p.url)
+    except Exception as e:  # noqa: BLE001 — surface install failures to the UI
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"extension": ext.to_dict()}
+
+
+@app.post("/api/extensions/toggle")
+def api_extensions_toggle(p: TogglePayload):
+    """Enable or disable an extension. Disabling unloads its hooks/routes so they
+    stop firing until re-enabled (no server restart needed for the backend; the
+    frontend script tags refresh on the next page load)."""
+    ext = EXTENSIONS.set_enabled(p.name, p.enabled)
+    return {"extension": ext.to_dict()}
+
+
+@app.post("/api/extensions/reload")
+def api_extensions_reload(name: str):
+    """Re-import an extension's entry module — handy while developing one. Drops
+    its old hooks/routes/statics first so nothing doubles up."""
+    EXTENSIONS.reload_one(name)
+    ext = EXTENSIONS.extensions.get(name)
+    if ext is None:
+        raise HTTPException(status_code=404, detail="extension not found")
+    return {"extension": ext.to_dict()}
+
+
+@app.post("/api/extensions/uninstall")
+def api_extensions_uninstall(p: UninstallPayload):
+    """Remove an extension's folder and drop its hooks/routes. Its persisted
+    enabled/state entries are cleared too."""
+    EXTENSIONS.uninstall(p.name)
+    return {"uninstalled": p.name}
 
 
 @app.post("/api/cancel")

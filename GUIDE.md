@@ -70,6 +70,12 @@ network/share flags, architecture, and status.
   any job can be cancelled from any device.
 - **Custom darkroom theme** — warm amber safelight aesthetics on a hand-rolled
   dark UI, Fraunces serif + Inter + JetBrains Mono fonts.
+- **Extensions** — an AUTO1111 / ComfyUI-style extension platform. Drop a
+  folder under `extensions/` (or install from a git/zip URL in Settings →
+  Extensions) to add API endpoints, hook into generation and model loads, queue
+  jobs on the shared worker, and add tabs/panels to the UI. A reference
+  `example-watermark` extension ships with the app; see
+  [`docs/EXTENSIONS.md`](docs/EXTENSIONS.md) for the full API.
 
 ## Install
 
@@ -373,6 +379,21 @@ the Generate view, or **To img2img** / **To inpaint** to send the image itself i
 as the input. The **Metadata** view reads parameters out of any PNG you drop in
 (AUTO1111 / Forge or ComfyUI) and can send them to txt2img.
 
+### Extend the UI
+
+**Settings → Extensions** lists every extension under `extensions/`, lets you
+install new ones from a git URL or a `.zip` archive URL, and enable/disable,
+reload (handy while developing), or uninstall each one. A broken extension is
+shown with its error and never blocks the app.
+
+An extension is just a folder with an `extension.json` manifest, a Python entry
+point, and an optional `web/` directory of JS that gets injected into the UI.
+Extensions can add API endpoints, hook into generation and model loading, queue
+jobs on the shared worker, broadcast SSE events, store their own settings, and
+add tabs and panels to the frontend. A reference `example-watermark`
+extension ships with the app — read it alongside
+[`docs/EXTENSIONS.md`](docs/EXTENSIONS.md) for the full API.
+
 ## Project structure
 
 ```
@@ -387,6 +408,8 @@ as the input. The **Metadata** view reads parameters out of any PNG you drop in
 │   ├── xyz_grid.py     X/Y/Z plot grid assembly
 │   └── calibrate_oss.py  Headless CLI to calibrate an Anima OSS schedule
 ├── static/             Frontend — index.html, app.js (Alpine), style.css
+├── extensions/         Drop-in extensions (AUTO1111/ComfyUI-style); ships example-watermark
+├── docs/               EXTENSIONS.md and feature design notes
 ├── requirements.txt    Python dependencies
 ├── setup.sh / setup.bat    One-shot setup (submodule init, venv, pip install) — Linux / Windows
 ├── launch.sh / launch.bat  Activate venv and run `python backend/app.py` — Linux / Windows

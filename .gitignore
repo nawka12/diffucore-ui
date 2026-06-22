@@ -15,6 +15,12 @@ scripts/
 models/**
 !models/**/
 !models/**/.gitkeep
+# Extensions: ignore user-installed extensions + runtime state, ship the example
+# and this folder's README. The example-watermark/ folder is tracked so the
+# reference extension ships with the repo.
+extensions/*
+!extensions/README.md
+!extensions/example-watermark
 *.egg-info/
 dist/
 build/

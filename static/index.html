@@ -9,6 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css?v=__ASSETV__">
   <script src="/static/app.js?v=__ASSETV__"></script>
+  __EXT_SCRIPTS__
   <script src="/static/alpine.min.js?v=__ASSETV__" defer></script>
 </head>
 <body x-data="app">
@@ -115,6 +116,9 @@
       <button :class="{active: tab==='generate'}" @click="tab='generate'">Generate</button>
       <button :class="{active: tab==='gallery'}" @click="openGallery()">Gallery</button>
       <button :class="{active: tab==='metadata'}" @click="tab='metadata'">Metadata</button>
+      <template x-for="t in extTabs" :key="t.id">
+        <button :class="{active: tab===t.id}" @click="switchExtTab(t)" x-text="t.title"></button>
+      </template>
     </nav>
 
     <!-- ── GENERATE ───────────────────────────────────────────── -->
@@ -661,6 +665,14 @@
       </div>
     </section>
 
+    <!-- ── EXTENSION TABS (mounted by enabled extensions) ─────── -->
+    <section class="page" x-show="isExtTab(tab)" x-cloak
+             x-effect="mountExtTab(tab, $refs.extTabMount)">
+      <div class="ext-mount" x-ref="extTabMount">
+        <p class="hint" x-show="!extTabs.length">No extension has registered a tab.</p>
+      </div>
+    </section>
+
     <!-- ── GALLERY LIGHTBOX ───────────────────────────────────── -->
     <div class="lightbox" x-show="lightbox.open" @keydown.window="lightboxKey($event)">
       <div class="lb-backdrop" @click="closeLightbox()"></div>
@@ -711,6 +723,7 @@
             <button :class="{active: settingsTab==='sampler'}" @click="settingsTab='sampler'">Sampler &amp; scheduler</button>
             <button :class="{active: settingsTab==='vae'}" @click="settingsTab='vae'">VAE decode</button>
             <button :class="{active: settingsTab==='defaults'}" @click="settingsTab='defaults'">Generate defaults</button>
+            <button :class="{active: settingsTab==='extensions'}" @click="settingsTab='extensions'">Extensions</button>
           </nav>
 
           <div class="settings-content">
@@ -795,6 +808,60 @@
               <p class="sub" x-show="!settings.gen_defaults">No saved defaults — using the app's built-in values.</p>
               <button class="btn small primary" @click="saveGenDefaults()">Save current as defaults</button>
               <button class="btn small" x-show="settings.gen_defaults" @click="clearGenDefaults()">Clear</button>
+            </section>
+
+            <!-- Extensions -->
+            <section class="settings-sec" x-show="settingsTab==='extensions'"
+                     x-effect="refreshExtensionsIfOpen(settingsTab)">
+              <h3>Extensions</h3>
+              <p class="sub">Diffucore UI loads every extension folder under
+                <code>extensions/</code> at startup. Install from a git URL or a
+                .zip archive URL, then enable/disable, reload while developing,
+                or uninstall. A broken extension is shown here and never blocks
+                the app. See <code>docs/EXTENSIONS.md</code> for the full API.</p>
+
+              <div class="ext-install-row">
+                <input type="text" class="ext-install-url" x-model="extInstallUrl"
+                       placeholder="https://github.com/you/your-ext  or  https://host/ext.zip"
+                       @keydown.enter="installExtension()">
+                <button class="btn small primary" @click="installExtension()"
+                        :disabled="!extInstallUrl.trim() || extBusy"
+                        x-text="extBusy ? 'Installing…' : 'Install'"></button>
+              </div>
+
+              <p class="sub" x-show="!extensions.length">No extensions installed.</p>
+              <ul class="ext-list">
+                <template x-for="e in extensions" :key="e.name">
+                  <li class="ext-card" :class="{disabled: !e.enabled, errored: e.load_error}">
+                    <div class="ext-card-head">
+                      <label class="chip on">
+                        <input type="checkbox" :checked="e.enabled"
+                               @change="toggleExtension(e.name, $event.target.checked)">
+                      </label>
+                      <span class="ext-title" x-text="e.title || e.name"></span>
+                      <span class="ext-ver" x-text="e.version"></span>
+                      <span class="ext-status" x-show="e.loaded && !e.load_error">loaded</span>
+                      <span class="ext-status off" x-show="!e.default_enabled && !e.enabled"
+                            title="This extension opts out of auto-loading. Enable it to use it.">default off</span>
+                      <span class="ext-status err" x-show="e.load_error"
+                            :title="e.load_error" x-text="e.load_error ? 'error' : ''"></span>
+                      <div class="ext-card-actions">
+                        <button class="btn small" @click="reloadExtension(e.name)"
+                                title="Re-import the entry module (for development)">Reload</button>
+                        <button class="btn small" @click="uninstallExtension(e.name)"
+                                :disabled="extBusy">Uninstall</button>
+                      </div>
+                    </div>
+                    <p class="ext-desc" x-show="e.description" x-text="e.description"></p>
+                    <p class="ext-name"><code x-text="e.name"></code>
+                      <span x-show="e.has_ui"> · UI</span></p>
+                  </li>
+                </template>
+              </ul>
+
+              <!-- Mount point for extension-provided settings panels. -->
+              <div class="ext-mount" x-ref="extSettingsMount"
+                   x-effect="mountExtSettings(settingsTab, $refs.extSettingsMount)"></div>
             </section>
           </div>
         </div>

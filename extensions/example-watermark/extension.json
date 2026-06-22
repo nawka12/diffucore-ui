@@ -1,0 +1,11 @@
+{
+  "name": "example-watermark",
+  "title": "Watermark (example)",
+  "version": "0.1.0",
+  "author": "Diffucore UI",
+  "description": "A minimal example extension. Stamps the seed into the bottom-right corner of every generated image, adds an Extensions settings panel, and adds a tab that calls its own API endpoint. Read extension.py and web/example.js alongside docs/EXTENSIONS.md to see how every piece wires up. Ships disabled by default — enable it in Settings → Extensions to try it.",
+  "entry": "extension.py",
+  "web": "web",
+  "min_ui_version": "0.1.0",
+  "default_enabled": false
+}

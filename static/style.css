@@ -968,3 +968,60 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
     grid-auto-flow: column;
   }
 }
+
+/* ── extensions ─────────────────────────────────────────────────── */
+.ext-install-row {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 14px;
+}
+.ext-install-url {
+  flex: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  color: var(--txt);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 7px 10px;
+}
+.ext-install-url:focus { outline: none; border-color: var(--accent-dim); }
+
+.ext-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.ext-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 10px 12px;
+  background: var(--surface);
+}
+.ext-card.disabled { opacity: 0.55; }
+.ext-card.errored { border-color: var(--danger-dim); }
+
+.ext-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ext-card-head .chip { padding: 2px 6px; }
+.ext-title { font-weight: 600; color: var(--txt); }
+.ext-ver {
+  font-family: var(--mono); font-size: 11px; color: var(--txt-3);
+  border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px;
+}
+.ext-status { font-size: 11px; color: var(--teal); font-family: var(--mono); }
+.ext-status.off { color: var(--txt-3); cursor: help; }
+.ext-status.err { color: var(--danger); cursor: help; }
+.ext-card-actions { margin-left: auto; display: flex; gap: 6px; }
+
+.ext-desc { font-size: 12px; color: var(--txt-2); margin: 6px 0 2px; }
+.ext-name { font-size: 11px; color: var(--txt-3); margin: 0; }
+.ext-name code { color: var(--accent); }
+
+/* Mount points handed to extension JS. Empty by default; extensions fill them. */
+.ext-mount { width: 100%; }
+.ext-settings-panel {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}

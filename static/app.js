@@ -1,5 +1,30 @@
 // Diffucore UI — Alpine state + streaming. No build step.
 
+// ── extension bridge ──────────────────────────────────────────────
+// Set up before Alpine inits so extension scripts (injected between this file
+// and alpine.min.js) can register tabs/settings panels by calling
+// window.DiffucoreExt.registerTab / registerSettingsPanel. The Alpine app
+// reads .tabs during init() and renders them in the main nav.
+window.DiffucoreExt = (function () {
+  const tabs = [];
+  const settingsPanels = [];
+  function registerTab(spec) {
+    if (!spec || !spec.id || !spec.title || typeof spec.mount !== 'function') {
+      console.warn('[DiffucoreExt] registerTab needs {id, title, mount(el)}');
+      return;
+    }
+    if (!tabs.find(t => t.id === spec.id)) tabs.push(spec);
+  }
+  function registerSettingsPanel(spec) {
+    if (!spec || !spec.id || !spec.title || typeof spec.mount !== 'function') {
+      console.warn('[DiffucoreExt] registerSettingsPanel needs {id, title, mount(el)}');
+      return;
+    }
+    if (!settingsPanels.find(s => s.id === spec.id)) settingsPanels.push(spec);
+  }
+  return { tabs, settingsPanels, registerTab, registerSettingsPanel };
+})();
+
 document.addEventListener('alpine:init', () => {
   Alpine.data('app', () => ({
     // ── model rack ──────────────────────────────────────────────
@@ -115,6 +140,18 @@ document.addEventListener('alpine:init', () => {
     teacacheStatus: { loaded: false, calibratable: false, family: null, coefficients: null },
     calibratingTea: false,
 
+    // ── extensions ──────────────────────────────────────────────
+    // `extensions` mirrors /api/extensions (list of installed exts). `extTabs`
+    // is filled by extensions calling window.DiffucoreExt.registerTab from
+    // their injected JS. `_mountedExtTab`/`_mountedExtSettings` track the
+    // currently mounted panel so we unmount it cleanly on switch.
+    extensions: [],
+    extTabs: [],
+    extInstallUrl: '',
+    extBusy: false,
+    _mountedExtTab: null,
+    _mountedExtSettings: null,
+
     // ── gallery ─────────────────────────────────────────────────
     gallery: [],
     galleryGroups: [],
@@ -218,11 +255,14 @@ document.addEventListener('alpine:init', () => {
 
     // ── init ────────────────────────────────────────────────────
     async init() {
+      // Pull in tabs registered by already-loaded extension scripts.
+      this.extTabs = window.DiffucoreExt ? [...window.DiffucoreExt.tabs] : [];
       await this.refreshModels();
       await this.loadSettings();
       this.applyGenDefaults();
       this._initTitle();
       this.connectEvents();
+      this.refreshExtensions();
     },
 
     // ── browser-tab title reflects this device's job state ──────
@@ -1596,6 +1636,158 @@ document.addEventListener('alpine:init', () => {
         this.flash('Parameters copied');
       } catch (e) {
         this.flash('Could not copy: ' + e);
+      }
+    },
+
+    // ── extensions ──────────────────────────────────────────────
+    // Backend list + install/toggle/reload/uninstall. The DiffucoreExt global
+    // (set up at the top of this file, before Alpine inits) is how extension
+    // scripts register tabs and settings panels into extTabs/extSettingsSpecs.
+
+    async refreshExtensions() {
+      try {
+        const r = await (await fetch('/api/extensions')).json();
+        this.extensions = r.extensions || [];
+      } catch (e) { /* server may be mid-startup; silently retry on next open */ }
+    },
+
+    // x-effect on the Extensions settings section: only fetch when it's the
+    // active tab, so an idle settings modal doesn't poll.
+    refreshExtensionsIfOpen(tab) {
+      if (tab === 'extensions') this.refreshExtensions();
+    },
+
+    isExtTab(tab) {
+      return this.extTabs.some(t => t.id === tab);
+    },
+
+    switchExtTab(t) {
+      this.tab = t.id;
+    },
+
+    // x-effect: when `tab` changes, mount/unmount the extension tab panel.
+    // Extensions own their DOM; we just hand them the container element.
+    mountExtTab(tab, el) {
+      if (!el) return;
+      const spec = this.extTabs.find(t => t.id === tab);
+      if (spec && this._mountedExtTab !== spec) {
+        this._unmountExtTab();
+        try { spec.mount(el); this._mountedExtTab = spec; }
+        catch (e) { el.textContent = 'Extension UI error: ' + e; }
+      } else if (!spec && this._mountedExtTab) {
+        this._unmountExtTab();
+      }
+    },
+
+    _unmountExtTab() {
+      if (this._mountedExtTab && this._mountedExtTab.unmount) {
+        const el = this.$refs.extTabMount;
+        try { this._mountedExtTab.unmount(el); } catch (e) { /* best-effort */ }
+      }
+      this._mountedExtTab = null;
+      const el = this.$refs.extTabMount;
+      if (el) el.innerHTML = '';
+    },
+
+    mountExtSettings(tab, el) {
+      if (!el) return;
+      if (tab !== 'extensions') return;
+      // Extensions registered via DiffucoreExt.registerSettingsPanel each get a
+      // child container; we mount all of them once.
+      if (this._mountedExtSettings) return;
+      const specs = (window.DiffucoreExt && window.DiffucoreExt.settingsPanels) || [];
+      for (const spec of specs) {
+        const child = document.createElement('div');
+        child.className = 'ext-settings-panel';
+        el.appendChild(child);
+        try { spec.mount(child); } catch (e) {
+          child.textContent = 'Extension settings UI error: ' + e;
+        }
+      }
+      this._mountedExtSettings = true;
+    },
+
+    async installExtension() {
+      const url = this.extInstallUrl.trim();
+      if (!url) return;
+      this.extBusy = true;
+      try {
+        const r = await fetch('/api/extensions/install', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || 'install failed');
+        this.flash('Installed ' + (data.extension.name || url));
+        this.extInstallUrl = '';
+        await this.refreshExtensions();
+        // Extension JS is injected server-side into the page on render; a
+        // reload picks up the newly-installed extension's UI script.
+        if (data.extension.has_ui) this.flash('Reload the page to load the extension UI');
+      } catch (e) {
+        this.flash('Install failed: ' + e.message);
+      } finally {
+        this.extBusy = false;
+      }
+    },
+
+    async toggleExtension(name, enabled) {
+      this.extBusy = true;
+      try {
+        const r = await fetch('/api/extensions/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, enabled }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || 'toggle failed');
+        await this.refreshExtensions();
+        if (enabled && data.extension.has_ui)
+          this.flash('Reload the page to load the extension UI');
+      } catch (e) {
+        this.flash('Toggle failed: ' + e.message);
+        await this.refreshExtensions();
+      } finally {
+        this.extBusy = false;
+      }
+    },
+
+    async reloadExtension(name) {
+      this.extBusy = true;
+      try {
+        const r = await fetch('/api/extensions/reload?name=' + encodeURIComponent(name), {
+          method: 'POST',
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || 'reload failed');
+        await this.refreshExtensions();
+        this.flash('Reloaded ' + name + (data.extension.load_error
+          ? ' (error: ' + data.extension.load_error + ')' : ''));
+      } catch (e) {
+        this.flash('Reload failed: ' + e.message);
+      } finally {
+        this.extBusy = false;
+      }
+    },
+
+    async uninstallExtension(name) {
+      if (!confirm('Uninstall extension "' + name + '"? This deletes its folder.')) return;
+      this.extBusy = true;
+      try {
+        const r = await fetch('/api/extensions/uninstall', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || 'uninstall failed');
+        this.flash('Uninstalled ' + name);
+        await this.refreshExtensions();
+      } catch (e) {
+        this.flash('Uninstall failed: ' + e.message);
+      } finally {
+        this.extBusy = false;
       }
     },
   }));
