@@ -17,6 +17,8 @@ cases avoid that cost.
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import os
 import threading
@@ -344,6 +346,50 @@ def test_parse_lora_prompt_accepts_valid_weight():
     cleaned, loras = engine.Engine.parse_lora_prompt("a cat <lora:mychar:0.8>")
     assert loras == [("mychar", 0.8)]
     assert "<lora" not in cleaned
+
+
+# ── #18: live-preview throttle + resolution/format cap ──────────────
+
+def test_on_preview_throttles_and_caps(monkeypatch):
+    from PIL import Image
+
+    pushed = []
+    monkeypatch.setattr(server, "_push", lambda ev: pushed.append(ev))
+    clock = [1000.0]
+    monkeypatch.setattr(server.time, "monotonic", lambda: clock[0])
+
+    job = server.Job("generate", "t", lambda j: {})
+    _on_progress, on_preview = server._make_callbacks(job)
+
+    big = Image.new("RGB", (1024, 1024), (120, 60, 30))
+    on_preview(big)                                   # first → emits
+    clock[0] += server.PREVIEW_MIN_INTERVAL / 2
+    on_preview(big)                                   # within interval → dropped
+    clock[0] += server.PREVIEW_MIN_INTERVAL
+    on_preview(big)                                   # interval elapsed → emits
+
+    assert len(pushed) == 2                           # the mid frame was throttled
+    ev = pushed[0]
+    assert ev["type"] == "preview" and ev["job"] == job.id
+    assert ev["image"].startswith("data:image/webp;base64,")
+
+    raw = base64.b64decode(ev["image"].split(",", 1)[1])
+    im = Image.open(io.BytesIO(raw))
+    assert im.format == "WEBP"
+    assert max(im.size) <= server.PREVIEW_MAX_SIDE     # downscaled to the cap
+
+
+def test_preview_webp_payload_smaller_than_full_png():
+    """The shipped path (≤512 WebP) is far smaller than the old full-res PNG for
+    worst-case noisy content — what drove the per-client serialize cost."""
+    import os
+    from PIL import Image
+    noisy = Image.frombytes("RGB", (1024, 1024), os.urandom(1024 * 1024 * 3))
+
+    b = io.BytesIO(); noisy.save(b, "PNG"); png = len(b.getvalue())
+    small = noisy.copy(); small.thumbnail((server.PREVIEW_MAX_SIDE, server.PREVIEW_MAX_SIDE))
+    b = io.BytesIO(); small.save(b, "WEBP", quality=80); webp = len(b.getvalue())
+    assert webp < png
 
 
 # ── HTTP integration through the real app ───────────────────────────

@@ -633,6 +633,16 @@ SSE_QUEUE_MAX = 256
 SUBSCRIBERS: "set[asyncio.Queue]" = set()
 APP_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
+# Live-preview cost control. A preview is a rough latent→RGB approximation that
+# is broadcast to every connected client and json-serialized per client on the
+# event loop. Re-encoding a full-res lossless PNG on every sampling step and
+# fanning a multi-MB data-URL out N times stalls the loop, so cap the rate
+# (time-based, so it adapts to both step speed and step count) and the
+# resolution, and use lossy WebP — the preview is noisy and transient while the
+# saved result is always full quality.
+PREVIEW_MIN_INTERVAL = 0.2   # seconds between streamed previews (≤5 fps)
+PREVIEW_MAX_SIDE = 512       # downscale to this long side before encoding
+
 # The /api/events SSE streams are long-lived, so uvicorn's graceful shutdown would
 # wait on them forever — Ctrl+C appears to hang until a second, forced Ctrl+C.
 # uvicorn calls Server.handle_exit the instant a signal arrives (before it starts
@@ -757,12 +767,24 @@ def _make_callbacks(job: Job):
             ev["cell"], ev["cells"] = int(cell), int(cells)
         _push(ev)
 
+    preview_last = [0.0]   # monotonic time of the last emitted preview (closure cell)
+
     def on_preview(image):
-        # Encode the approx preview to a PNG data-URL on the worker thread, then
-        # hand the small string to the broadcaster.
+        # Throttle to PREVIEW_MIN_INTERVAL so a fast sampler doesn't flood the
+        # event loop; the dropped frames are never the final result (the `done`
+        # event always carries the full-quality saved image).
+        now = time.monotonic()
+        if now - preview_last[0] < PREVIEW_MIN_INTERVAL:
+            return
+        preview_last[0] = now
+        # Cap resolution + encode lossy WebP on the worker thread so the data-URL
+        # broadcast/serialized per client stays small.
+        if max(image.size) > PREVIEW_MAX_SIDE:
+            image = image.copy()
+            image.thumbnail((PREVIEW_MAX_SIDE, PREVIEW_MAX_SIDE))
         buf = io.BytesIO()
-        image.save(buf, format="PNG")
-        data = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+        image.save(buf, format="WEBP", quality=80)
+        data = "data:image/webp;base64," + base64.b64encode(buf.getvalue()).decode()
         _push({"type": "preview", "job": job.id, "image": data})
 
     return on_progress, on_preview
