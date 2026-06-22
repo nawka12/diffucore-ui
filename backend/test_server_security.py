@@ -328,6 +328,24 @@ def test_mount_into_is_idempotent_and_picks_up_new_routes():
     assert len(app.router.routes) > after_first
 
 
+# ── #13: LoRA weight validation ─────────────────────────────────────
+
+def test_parse_lora_prompt_rejects_non_numeric_weight():
+    import engine
+    with pytest.raises(ValueError, match="not a number"):
+        engine.Engine.parse_lora_prompt("a cat <lora:mychar:high> sitting")
+    # A comma-decimal typo is caught too (would otherwise crash in apply_lora).
+    with pytest.raises(ValueError, match="not a number"):
+        engine.Engine.parse_lora_prompt("<lora:x:0,8>")
+
+
+def test_parse_lora_prompt_accepts_valid_weight():
+    import engine
+    cleaned, loras = engine.Engine.parse_lora_prompt("a cat <lora:mychar:0.8>")
+    assert loras == [("mychar", 0.8)]
+    assert "<lora" not in cleaned
+
+
 # ── HTTP integration through the real app ───────────────────────────
 
 @pytest.fixture

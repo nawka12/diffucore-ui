@@ -309,7 +309,13 @@ class Engine:
         loras = []
         def _extract(m):
             name = m.group(1)
-            mult = float(m.group(2))
+            raw = m.group(2)
+            try:
+                mult = float(raw)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid LoRA weight in <lora:{name}:{raw}>: "
+                    f"{raw!r} is not a number (expected e.g. <lora:{name}:0.8>)")
             loras.append((name, mult))
             return ""
         cleaned = LORA_PROMPT_RE.sub(_extract, prompt)

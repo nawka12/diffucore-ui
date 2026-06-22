@@ -25,6 +25,27 @@ window.DiffucoreExt = (function () {
   return { tabs, settingsPanels, registerTab, registerSettingsPanel };
 })();
 
+// ── fetch helper ──────────────────────────────────────────────────
+// fetch + JSON parse that fails loudly. A non-2xx response (e.g. a 500 whose
+// body is an HTML/text error page, not JSON) would otherwise blow up inside
+// .json() with a cryptic "Unexpected token '<'" and silently blank the calling
+// state. This throws a real Error carrying the status plus the server's FastAPI
+// `detail` (or a short body snippet), so callers' catch blocks can surface
+// something actionable.
+async function fetchJSON(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) {
+    let detail = '';
+    try {
+      const body = await r.text();
+      try { detail = JSON.parse(body).detail || ''; }
+      catch (_) { detail = body.slice(0, 200); }
+    } catch (_) { /* body unreadable */ }
+    throw new Error(detail ? `${r.status}: ${detail}` : `Request failed (${r.status} ${r.statusText})`);
+  }
+  return r.json();
+}
+
 document.addEventListener('alpine:init', () => {
   Alpine.data('app', () => ({
     // ── model rack ──────────────────────────────────────────────
@@ -362,10 +383,10 @@ document.addEventListener('alpine:init', () => {
     // Submit a job, then resolve once its terminal event arrives on the stream.
     // Live progress/preview are handled globally by onServerEvent.
     async submitJob(url, payload) {
-      const r = await (await fetch(url, {
+      const r = await fetchJSON(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-      })).json();
+      });
       this.myJobId = r.job;
       return new Promise((resolve) => { this._jobWaiters[r.job] = resolve; });
     },
@@ -383,10 +404,10 @@ document.addEventListener('alpine:init', () => {
         for (let i = 0; i < count; i++) {
           const body = { ...payload };
           if (baseSeed !== -1 && baseSeed != null) body.seed = baseSeed + i;
-          const r = await (await fetch(url, {
+          const r = await fetchJSON(url, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
-          })).json();
+          });
           this._myBatchIds.push(r.job);
           promises.push(new Promise((resolve) => { this._jobWaiters[r.job] = resolve; }));
         }
@@ -435,7 +456,7 @@ document.addEventListener('alpine:init', () => {
     },
 
     async refreshModels() {
-      const m = await (await fetch('/api/models')).json();
+      const m = await fetchJSON('/api/models');
       this.checkpoints = m.checkpoints; this.dits = m.dits;
       this.vaes = m.vaes; this.tes = m.tes; this.loras = m.loras;
       this.detailers = m.detailers || [];
@@ -1054,7 +1075,7 @@ document.addEventListener('alpine:init', () => {
       }
       const q = new URLSearchParams({ steps, width, height, shift });
       try {
-        this.ossCalibrated = (await (await fetch('/api/oss_status?' + q)).json()).calibrated;
+        this.ossCalibrated = (await fetchJSON('/api/oss_status?' + q)).calibrated;
       } catch (e) {
         this.ossCalibrated = null;
       }
@@ -1110,22 +1131,22 @@ document.addEventListener('alpine:init', () => {
 
     // ── settings panel ──────────────────────────────────────────
     async loadSettings() {
-      try { this.settings = await (await fetch('/api/settings')).json(); }
+      try { this.settings = await fetchJSON('/api/settings'); }
       catch (e) { /* keep defaults */ }
     },
 
     async saveSettings() {
       try {
-        this.settings = await (await fetch('/api/settings', {
+        this.settings = await fetchJSON('/api/settings', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(this.settings),
-        })).json();
+        });
         this.flash('Settings saved');
       } catch (e) { this.flash('Could not save settings'); }
     },
 
     async refreshTeacacheStatus() {
-      try { this.teacacheStatus = await (await fetch('/api/teacache_status')).json(); }
+      try { this.teacacheStatus = await fetchJSON('/api/teacache_status'); }
       catch (e) { this.teacacheStatus = { loaded: false, calibratable: false, family: null, coefficients: null }; }
     },
 
@@ -1305,7 +1326,7 @@ document.addEventListener('alpine:init', () => {
       this.galleryLimit = 60;
       this.galleryQuery = '';
       this.gallerySearching = false;
-      this.gallery = (await (await fetch('/api/gallery')).json()).images;
+      this.gallery = (await fetchJSON('/api/gallery')).images;
       this.buildGalleryGroups();
     },
 
@@ -1316,7 +1337,7 @@ document.addEventListener('alpine:init', () => {
       this.gallerySearching = true;
       try {
         const url = q ? `/api/gallery?q=${encodeURIComponent(q)}` : '/api/gallery';
-        this.gallery = (await (await fetch(url)).json()).images;
+        this.gallery = (await fetchJSON(url)).images;
         this.selected = null;
         this.selectedMeta = '';
         this.galleryLimit = 60;
@@ -1382,7 +1403,7 @@ document.addEventListener('alpine:init', () => {
       this._metaToken = token;
       this._metaLoad = (async () => {
         try {
-          const r = await (await fetch('/api/metadata?path=' + encodeURIComponent(img.path))).json();
+          const r = await fetchJSON('/api/metadata?path=' + encodeURIComponent(img.path));
           if (this._metaToken !== token) return;   // a newer selection won
           this.selectedMeta = r.raw;
           this.selectedFields = r.fields;
@@ -1514,7 +1535,7 @@ document.addEventListener('alpine:init', () => {
       pre.readAsDataURL(f);
       const fd = new FormData();
       fd.append('file', f);
-      const r = await (await fetch('/api/metadata/parse', { method: 'POST', body: fd })).json();
+      const r = await fetchJSON('/api/metadata/parse', { method: 'POST', body: fd });
       this.metaText = r.text;
       this.metaFields = Object.keys(r.fields).length ? r.fields : null;
     },
@@ -1567,11 +1588,11 @@ document.addEventListener('alpine:init', () => {
       const text = this.form.prompt;
       if (!text || !text.trim()) { this.flash('Paste generation parameters into the prompt first'); return; }
       try {
-        const r = await (await fetch('/api/metadata/parse_text', {
+        const r = await fetchJSON('/api/metadata/parse_text', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text }),
-        })).json();
+        });
         // workspace_fields always echoes a default seed, so "has params" means
         // an actual settings key was parsed — not just prompt/neg/seed.
         const f = r.fields || {};
@@ -1646,7 +1667,7 @@ document.addEventListener('alpine:init', () => {
 
     async refreshExtensions() {
       try {
-        const r = await (await fetch('/api/extensions')).json();
+        const r = await fetchJSON('/api/extensions');
         this.extensions = r.extensions || [];
       } catch (e) { /* server may be mid-startup; silently retry on next open */ }
     },
