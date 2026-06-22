@@ -84,7 +84,21 @@ def te_path(name: str) -> Path:
 
 
 def lora_path(name: str) -> Path:
-    return LORAS_DIR / name
+    """Resolve a LoRA filename to its on-disk path.
+
+    Accepts both the full filename (``my_lora.safetensors``, as returned by
+    ``scan_loras`` and used by the built-in autocomplete) and the bare name
+    (``my_lora``, as inserted by the tagcomplete extension). If the exact
+    name doesn't exist, tries appending each known LoRA extension.
+    """
+    p = LORAS_DIR / name
+    if p.exists():
+        return p
+    for ext in _LORA_EXTS:
+        candidate = LORAS_DIR / (name + ext)
+        if candidate.exists():
+            return candidate
+    return p  # return the original path so the caller's "not found" error is clear
 
 
 def detector_path(name: str) -> Path:
