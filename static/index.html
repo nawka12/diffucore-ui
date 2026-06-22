@@ -280,7 +280,7 @@
               <p class="sub" style="margin:4px 0 0">Reuses the transformer output on low-change steps; the threshold directly bounds accumulated per-step change. Higher = more skipping = faster but lower fidelity. The safe value depends on sampler &amp; steps: high step counts + single-step/secant samplers stay near-lossless to ~0.3–0.5, while few-step multistep samplers (dpmpp_2m) need ≤0.01.</p>
               <label class="chip toggle" :class="{on: form.teacacheCalibrated}" style="margin-top:8px">
                 <input type="checkbox" x-model="form.teacacheCalibrated"> Use calibrated coefficients</label>
-              <p class="sub" style="margin:4px 0 0">When on, applies the fitted rescale polynomial (Settings → calibration) so the threshold tracks true per-step change. Turn off to use the raw, uncalibrated estimate — the threshold then maps to change differently, so re-tune it.</p>
+              <p class="sub" style="margin:4px 0 0">When on, applies the fitted rescale polynomial (Settings → TeaCache) so the threshold tracks true per-step change. Turn off to use the raw, uncalibrated estimate — the threshold then maps to change differently, so re-tune it.</p>
             </div>
           </div>
           <div class="slider" x-show="modelType==='SD/SDXL'">
@@ -705,88 +705,99 @@
           <button class="gear" @click="settingsOpen=false" title="Close" aria-label="Close">✕</button>
         </div>
 
-        <!-- TeaCache calibration -->
-        <section class="settings-sec">
-          <h3>TeaCache calibration</h3>
-          <p class="sub">A one-time, per-architecture fit of the rescaling polynomial that
-            maps input drift to output drift — it makes the TeaCache threshold behave
-            consistently across step counts, resolutions and schedulers. Without it,
-            generations fall back to an identity rescale.</p>
+        <div class="settings-body">
+          <nav class="settings-nav">
+            <button :class="{active: settingsTab==='teacache'}" @click="settingsTab='teacache'">TeaCache</button>
+            <button :class="{active: settingsTab==='sampler'}" @click="settingsTab='sampler'">Sampler &amp; scheduler</button>
+            <button :class="{active: settingsTab==='vae'}" @click="settingsTab='vae'">VAE decode</button>
+            <button :class="{active: settingsTab==='defaults'}" @click="settingsTab='defaults'">Generate defaults</button>
+          </nav>
 
-          <div class="oss-panel">
-            <p class="sub" x-show="!teacacheStatus.loaded">Load a model to manage TeaCache calibration.</p>
+          <div class="settings-content">
+            <!-- TeaCache calibration -->
+            <section class="settings-sec" x-show="settingsTab==='teacache'">
+              <h3>TeaCache calibration</h3>
+              <p class="sub">A one-time, per-architecture fit of the rescaling polynomial that
+                maps input drift to output drift — it makes the TeaCache threshold behave
+                consistently across step counts, resolutions and schedulers. Without it,
+                generations fall back to an identity rescale.</p>
 
-            <p class="sub" x-show="teacacheStatus.loaded && !teacacheStatus.calibratable">
-              Applies to Anima models only (current family:
-              <code x-text="teacacheStatus.family"></code>).</p>
+              <div class="oss-panel">
+                <p class="sub" x-show="!teacacheStatus.loaded">Load a model to manage TeaCache calibration.</p>
 
-            <template x-if="teacacheStatus.calibratable">
-              <div>
-                <p class="sub" x-show="teacacheStatus.coefficients">
-                  <strong style="color:var(--teal)">Calibrated</strong> — fitted polynomial active:
-                  <code x-text="'[' + (teacacheStatus.coefficients||[]).map(c=>(+c).toFixed(3)).join(', ') + ']'"></code>
-                </p>
-                <p class="sub" x-show="!teacacheStatus.coefficients">
-                  <strong style="color:var(--accent)">Not calibrated</strong> — generations use the identity rescale.
-                </p>
-                <button class="btn small" @click="calibrateTeacache()" :disabled="busy"
-                        x-text="calibratingTea ? 'Calibrating…' : (teacacheStatus.coefficients ? 'Re-calibrate' : 'Calibrate')"></button>
-                <p class="sub">Runs a full 50-step trajectory on the GPU (~1–2 min) and writes
-                  <code>models/teacache_cache/&lt;family&gt;.json</code>, then frees the model.</p>
+                <p class="sub" x-show="teacacheStatus.loaded && !teacacheStatus.calibratable">
+                  Applies to Anima models only (current family:
+                  <code x-text="teacacheStatus.family"></code>).</p>
+
+                <template x-if="teacacheStatus.calibratable">
+                  <div>
+                    <p class="sub" x-show="teacacheStatus.coefficients">
+                      <strong style="color:var(--teal)">Calibrated</strong> — fitted polynomial active:
+                      <code x-text="'[' + (teacacheStatus.coefficients||[]).map(c=>(+c).toFixed(3)).join(', ') + ']'"></code>
+                    </p>
+                    <p class="sub" x-show="!teacacheStatus.coefficients">
+                      <strong style="color:var(--accent)">Not calibrated</strong> — generations use the identity rescale.
+                    </p>
+                    <button class="btn small" @click="calibrateTeacache()" :disabled="busy"
+                            x-text="calibratingTea ? 'Calibrating…' : (teacacheStatus.coefficients ? 'Re-calibrate' : 'Calibrate')"></button>
+                    <p class="sub">Runs a full 50-step trajectory on the GPU (~1–2 min) and writes
+                      <code>models/teacache_cache/&lt;family&gt;.json</code>, then frees the model.</p>
+                  </div>
+                </template>
               </div>
-            </template>
+            </section>
+
+            <!-- Sampler & scheduler knobs -->
+            <section class="settings-sec" x-show="settingsTab==='sampler'">
+              <h3>Sampler &amp; scheduler defaults</h3>
+              <p class="sub">Anima only. Each applies when its sampler/scheduler is active, and is
+                written into the image's metadata so the generation stays reproducible.</p>
+              <div class="detail-grid">
+                <label class="field"><span>curvature</span>
+                  <input type="number" step="0.05" min="0" x-model.number="settings.curvature"></label>
+                <label class="field"><span>eta_max</span>
+                  <input type="number" step="0.05" min="0" max="1" x-model.number="settings.eta_max"></label>
+                <label class="field"><span>beta α</span>
+                  <input type="number" step="0.1" min="0.05" x-model.number="settings.beta_alpha"></label>
+                <label class="field"><span>beta β</span>
+                  <input type="number" step="0.1" min="0.05" x-model.number="settings.beta_beta"></label>
+                <label class="field"><span>lq threshold</span>
+                  <input type="number" step="0.005" min="0" max="1" x-model.number="settings.lq_threshold"></label>
+              </div>
+              <p class="sub">curvature → secant / secant_anneal · eta_max → secant_anneal /
+                euler_ancestral_anneal / dpmpp_2m_anneal · beta α/β → beta scheduler · lq threshold → linear_quadratic</p>
+              <button class="btn small primary" @click="saveSettings()">Save settings</button>
+            </section>
+
+            <!-- VAE decode -->
+            <section class="settings-sec" x-show="settingsTab==='vae'">
+              <h3>VAE decode</h3>
+              <p class="sub">How the final latent is turned into pixels.
+                <strong>Automatic</strong> decodes in one pass and only tiles when free VRAM
+                can't fit it. <strong>Always tiled</strong> forces tiled decode every time —
+                slower, but the lowest, most predictable peak memory. Applies to Anima and
+                SD/SDXL (FLUX always tiles). Takes effect immediately on the loaded model.</p>
+              <label class="field"><span>Mode</span>
+                <select x-model="settings.vae_tiling" @change="saveSettings()">
+                  <option value="auto">Automatic (tile only when needed)</option>
+                  <option value="always">Always tiled</option>
+                </select></label>
+            </section>
+
+            <!-- Generate form defaults -->
+            <section class="settings-sec" x-show="settingsTab==='defaults'">
+              <h3>Generate form defaults</h3>
+              <p class="sub">Save the current Generate tab's sampler, scheduler, steps, CFG, size and
+                shift as the values the form starts with each session. A sampler that doesn't apply to
+                the loaded family falls back automatically.</p>
+              <p class="sub" x-show="settings.gen_defaults">Saved:
+                <code x-text="settings.gen_defaults ? (settings.gen_defaults.sampler + ' · ' + settings.gen_defaults.scheduler + ' · ' + settings.gen_defaults.steps + ' steps · cfg ' + settings.gen_defaults.cfg + ' · ' + settings.gen_defaults.width + '×' + settings.gen_defaults.height) : ''"></code></p>
+              <p class="sub" x-show="!settings.gen_defaults">No saved defaults — using the app's built-in values.</p>
+              <button class="btn small primary" @click="saveGenDefaults()">Save current as defaults</button>
+              <button class="btn small" x-show="settings.gen_defaults" @click="clearGenDefaults()">Clear</button>
+            </section>
           </div>
-        </section>
-
-        <!-- Sampler & scheduler knobs -->
-        <section class="settings-sec">
-          <h3>Sampler &amp; scheduler defaults</h3>
-          <p class="sub">Anima only. Each applies when its sampler/scheduler is active, and is
-            written into the image's metadata so the generation stays reproducible.</p>
-          <div class="detail-grid">
-            <label class="field"><span>curvature</span>
-              <input type="number" step="0.05" min="0" x-model.number="settings.curvature"></label>
-            <label class="field"><span>eta_max</span>
-              <input type="number" step="0.05" min="0" max="1" x-model.number="settings.eta_max"></label>
-            <label class="field"><span>beta α</span>
-              <input type="number" step="0.1" min="0.05" x-model.number="settings.beta_alpha"></label>
-            <label class="field"><span>beta β</span>
-              <input type="number" step="0.1" min="0.05" x-model.number="settings.beta_beta"></label>
-            <label class="field"><span>lq threshold</span>
-              <input type="number" step="0.005" min="0" max="1" x-model.number="settings.lq_threshold"></label>
-          </div>
-          <p class="sub">curvature → secant / secant_anneal · eta_max → secant_anneal /
-            euler_ancestral_anneal / dpmpp_2m_anneal · beta α/β → beta scheduler · lq threshold → linear_quadratic</p>
-          <button class="btn small primary" @click="saveSettings()">Save settings</button>
-        </section>
-
-        <!-- VAE decode -->
-        <section class="settings-sec">
-          <h3>VAE decode</h3>
-          <p class="sub">How the final latent is turned into pixels.
-            <strong>Automatic</strong> decodes in one pass and only tiles when free VRAM
-            can't fit it. <strong>Always tiled</strong> forces tiled decode every time —
-            slower, but the lowest, most predictable peak memory. Applies to Anima and
-            SD/SDXL (FLUX always tiles). Takes effect immediately on the loaded model.</p>
-          <label class="field"><span>Mode</span>
-            <select x-model="settings.vae_tiling" @change="saveSettings()">
-              <option value="auto">Automatic (tile only when needed)</option>
-              <option value="always">Always tiled</option>
-            </select></label>
-        </section>
-
-        <!-- Generate form defaults -->
-        <section class="settings-sec">
-          <h3>Generate form defaults</h3>
-          <p class="sub">Save the current Generate tab's sampler, scheduler, steps, CFG, size and
-            shift as the values the form starts with each session. A sampler that doesn't apply to
-            the loaded family falls back automatically.</p>
-          <p class="sub" x-show="settings.gen_defaults">Saved:
-            <code x-text="settings.gen_defaults ? (settings.gen_defaults.sampler + ' · ' + settings.gen_defaults.scheduler + ' · ' + settings.gen_defaults.steps + ' steps · cfg ' + settings.gen_defaults.cfg + ' · ' + settings.gen_defaults.width + '×' + settings.gen_defaults.height) : ''"></code></p>
-          <p class="sub" x-show="!settings.gen_defaults">No saved defaults — using the app's built-in values.</p>
-          <button class="btn small primary" @click="saveGenDefaults()">Save current as defaults</button>
-          <button class="btn small" x-show="settings.gen_defaults" @click="clearGenDefaults()">Clear</button>
-        </section>
+        </div>
       </div>
     </div>
 

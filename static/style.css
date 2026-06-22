@@ -735,24 +735,58 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   position: relative;
   z-index: 1;
   width: 100%;
-  max-width: 560px;
+  max-width: 720px;
   max-height: 86vh;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--line-hi);
   border-radius: 10px;
-  padding: 20px 22px;
 }
 .settings-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 16px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--line);
 }
 .settings-head h2 { font-family: var(--serif); font-size: 22px; font-weight: 600; margin: 0; }
-.settings-sec { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 14px; }
-.settings-sec:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+.settings-body {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  flex: 1;
+  min-height: 0;
+}
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 10px;
+  border-right: 1px solid var(--line);
+  background: var(--surface-2);
+}
+.settings-nav button {
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--txt-2);
+  font-family: var(--sans);
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: var(--r);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.settings-nav button:hover { color: var(--txt); background: var(--surface-3); }
+.settings-nav button.active { color: var(--accent); background: var(--surface-3); }
+.settings-content {
+  padding: 18px 22px 22px;
+  overflow: auto;
+}
 .settings-sec h3 { font-size: 14px; font-weight: 600; margin: 0 0 6px; color: var(--txt); }
+.settings-sec .sub { margin-bottom: 8px; }
+.settings-sec .oss-panel { margin-top: 12px; }
 .settings code {
   font-family: var(--mono);
   font-size: 11px;
@@ -900,6 +934,19 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   .gen-layout { grid-template-columns: 1fr; }
   .output { position: static; }
   .meta-layout { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 700px) {
+  .settings-body { grid-template-columns: 1fr; }
+  .settings-nav {
+    flex-direction: row;
+    gap: 4px;
+    padding: 8px;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto;
+  }
+  .settings-nav button { white-space: nowrap; }
 }
 
 @media (max-width: 640px) {

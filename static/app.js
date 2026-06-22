@@ -110,6 +110,7 @@ document.addEventListener('alpine:init', () => {
 
     // ── settings panel (global, non-per-image knobs) ────────────
     settingsOpen: false,
+    settingsTab: 'teacache',
     settings: { curvature: 0.25, eta_max: 1.0, beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, vae_tiling: 'auto', gen_defaults: null },
     teacacheStatus: { loaded: false, calibratable: false, family: null, coefficients: null },
     calibratingTea: false,
