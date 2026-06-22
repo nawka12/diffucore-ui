@@ -745,96 +745,109 @@
           <div class="settings-content">
             <!-- TeaCache calibration -->
             <section class="settings-sec" x-show="settingsTab==='teacache'">
-              <h3>TeaCache calibration</h3>
-              <p class="sub">A one-time, per-architecture fit of the rescaling polynomial that
-                maps input drift to output drift — it makes the TeaCache threshold behave
-                consistently across step counts, resolutions and schedulers. Without it,
-                generations fall back to an identity rescale.</p>
-
-              <div class="oss-panel">
-                <p class="sub" x-show="!teacacheStatus.loaded">Load a model to manage TeaCache calibration.</p>
-
-                <p class="sub" x-show="teacacheStatus.loaded && !teacacheStatus.calibratable">
-                  Applies to Anima models only (current family:
-                  <code x-text="teacacheStatus.family"></code>).</p>
-
-                <template x-if="teacacheStatus.calibratable">
-                  <div>
-                    <p class="sub" x-show="teacacheStatus.coefficients">
-                      <strong style="color:var(--teal)">Calibrated</strong> — fitted polynomial active:
-                      <code x-text="'[' + (teacacheStatus.coefficients||[]).map(c=>(+c).toFixed(3)).join(', ') + ']'"></code>
-                    </p>
-                    <p class="sub" x-show="!teacacheStatus.coefficients">
-                      <strong style="color:var(--accent)">Not calibrated</strong> — generations use the identity rescale.
-                    </p>
-                    <button class="btn small" @click="calibrateTeacache()" :disabled="busy"
-                            x-text="calibratingTea ? 'Calibrating…' : (teacacheStatus.coefficients ? 'Re-calibrate' : 'Calibrate')"></button>
-                    <p class="sub">Runs a full 50-step trajectory on the GPU (~1–2 min) and writes
-                      <code>models/teacache_cache/&lt;family&gt;.json</code>, then frees the model.</p>
-                  </div>
-                </template>
+              <div class="set-head">
+                <h3>TeaCache calibration</h3>
+                <span class="set-badge" x-show="!teacacheStatus.loaded">No model</span>
+                <span class="set-badge" x-show="teacacheStatus.loaded && !teacacheStatus.calibratable">Anima only</span>
+                <span class="set-badge teal" x-show="teacacheStatus.calibratable && teacacheStatus.coefficients">Calibrated</span>
+                <span class="set-badge accent" x-show="teacacheStatus.calibratable && !teacacheStatus.coefficients">Not calibrated</span>
               </div>
+              <p class="set-purpose">Keeps TeaCache's speed/quality tradeoff steady across sizes and step
+                counts. Tune once per Anima model.</p>
+
+              <p class="set-foot" x-show="!teacacheStatus.loaded">Load an Anima model to calibrate.</p>
+              <p class="set-foot" x-show="teacacheStatus.loaded && !teacacheStatus.calibratable">Loaded model:
+                <code x-text="teacacheStatus.family"></code>.</p>
+
+              <template x-if="teacacheStatus.calibratable">
+                <div class="set-action">
+                  <button class="btn small primary" @click="calibrateTeacache()" :disabled="busy"
+                          x-text="calibratingTea ? 'Calibrating…' : (teacacheStatus.coefficients ? 'Re-calibrate' : 'Calibrate')"></button>
+                  <span class="set-foot inline">~1–2 min on GPU</span>
+                  <details class="set-more">
+                    <summary>What this does</summary>
+                    <p>Runs a 50-step GPU pass to fit a rescaling curve, saves it to
+                      <code>models/teacache_cache/&lt;family&gt;.json</code>, then frees the model.
+                      Without it, TeaCache falls back to a flat rescale.</p>
+                    <p x-show="teacacheStatus.coefficients">Active curve:
+                      <code x-text="'[' + (teacacheStatus.coefficients||[]).map(c=>(+c).toFixed(3)).join(', ') + ']'"></code></p>
+                  </details>
+                </div>
+              </template>
             </section>
 
             <!-- Sampler & scheduler knobs -->
             <section class="settings-sec" x-show="settingsTab==='sampler'">
-              <h3>Sampler &amp; scheduler defaults</h3>
-              <p class="sub">Anima only. Each applies when its sampler/scheduler is active, and is
-                written into the image's metadata so the generation stays reproducible.</p>
+              <div class="set-head">
+                <h3>Sampler &amp; scheduler defaults</h3>
+                <span class="set-badge">Anima only</span>
+              </div>
+              <p class="set-purpose">Default values for these knobs, applied when their sampler is active and
+                saved into image metadata for reproducibility.</p>
               <div class="detail-grid">
                 <label class="field"><span>curvature</span>
-                  <input type="number" step="0.05" min="0" x-model.number="settings.curvature"></label>
+                  <input type="number" step="0.05" min="0" x-model.number="settings.curvature">
+                  <span class="field-tag">secant · secant_anneal</span></label>
                 <label class="field"><span>eta_max</span>
-                  <input type="number" step="0.05" min="0" max="1" x-model.number="settings.eta_max"></label>
+                  <input type="number" step="0.05" min="0" max="1" x-model.number="settings.eta_max">
+                  <span class="field-tag">anneal samplers</span></label>
                 <label class="field"><span>beta α</span>
-                  <input type="number" step="0.1" min="0.05" x-model.number="settings.beta_alpha"></label>
+                  <input type="number" step="0.1" min="0.05" x-model.number="settings.beta_alpha">
+                  <span class="field-tag">beta scheduler</span></label>
                 <label class="field"><span>beta β</span>
-                  <input type="number" step="0.1" min="0.05" x-model.number="settings.beta_beta"></label>
+                  <input type="number" step="0.1" min="0.05" x-model.number="settings.beta_beta">
+                  <span class="field-tag">beta scheduler</span></label>
                 <label class="field"><span>lq threshold</span>
-                  <input type="number" step="0.005" min="0" max="1" x-model.number="settings.lq_threshold"></label>
+                  <input type="number" step="0.005" min="0" max="1" x-model.number="settings.lq_threshold">
+                  <span class="field-tag">linear_quadratic</span></label>
               </div>
-              <p class="sub">curvature → secant / secant_anneal · eta_max → secant_anneal /
-                euler_ancestral_anneal / dpmpp_2m_anneal · beta α/β → beta scheduler · lq threshold → linear_quadratic</p>
               <button class="btn small primary" @click="saveSettings()">Save settings</button>
             </section>
 
             <!-- VAE decode -->
             <section class="settings-sec" x-show="settingsTab==='vae'">
-              <h3>VAE decode</h3>
-              <p class="sub">How the final latent is turned into pixels.
-                <strong>Automatic</strong> decodes in one pass and only tiles when free VRAM
-                can't fit it. <strong>Always tiled</strong> forces tiled decode every time —
-                slower, but the lowest, most predictable peak memory. Applies to Anima and
-                SD/SDXL (FLUX always tiles). Takes effect immediately on the loaded model.</p>
+              <div class="set-head">
+                <h3>VAE decode</h3>
+              </div>
+              <p class="set-purpose">How the final image is rendered from its latent.</p>
               <label class="field"><span>Mode</span>
                 <select x-model="settings.vae_tiling" @change="saveSettings()">
-                  <option value="auto">Automatic (tile only when needed)</option>
-                  <option value="always">Always tiled</option>
+                  <option value="auto">Automatic — tile only when needed</option>
+                  <option value="always">Always tiled — lowest memory</option>
                 </select></label>
+              <p class="set-foot" x-show="settings.vae_tiling==='auto'">One-pass decode; tiles only when VRAM is tight. Best speed.</p>
+              <p class="set-foot" x-show="settings.vae_tiling==='always'">Always tiles — slower, but the lowest, steadiest peak memory.</p>
+              <p class="set-foot muted">FLUX always tiles. Changes apply to the loaded model immediately.</p>
             </section>
 
             <!-- Generate form defaults -->
             <section class="settings-sec" x-show="settingsTab==='defaults'">
-              <h3>Generate form defaults</h3>
-              <p class="sub">Save the current Generate tab's sampler, scheduler, steps, CFG, size and
-                shift as the values the form starts with each session. A sampler that doesn't apply to
-                the loaded family falls back automatically.</p>
-              <p class="sub" x-show="settings.gen_defaults">Saved:
-                <code x-text="settings.gen_defaults ? (settings.gen_defaults.sampler + ' · ' + settings.gen_defaults.scheduler + ' · ' + settings.gen_defaults.steps + ' steps · cfg ' + settings.gen_defaults.cfg + ' · ' + settings.gen_defaults.width + '×' + settings.gen_defaults.height) : ''"></code></p>
-              <p class="sub" x-show="!settings.gen_defaults">No saved defaults — using the app's built-in values.</p>
-              <button class="btn small primary" @click="saveGenDefaults()">Save current as defaults</button>
-              <button class="btn small" x-show="settings.gen_defaults" @click="clearGenDefaults()">Clear</button>
+              <div class="set-head">
+                <h3>Generate form defaults</h3>
+                <span class="set-badge teal" x-show="settings.gen_defaults">Saved</span>
+                <span class="set-badge" x-show="!settings.gen_defaults">Built-in</span>
+              </div>
+              <p class="set-purpose">Start each session with your current Generate settings instead of the
+                built-in ones.</p>
+              <p class="set-saved" x-show="settings.gen_defaults"
+                 x-text="settings.gen_defaults ? (settings.gen_defaults.sampler + ' · ' + settings.gen_defaults.scheduler + ' · ' + settings.gen_defaults.steps + ' steps · cfg ' + settings.gen_defaults.cfg + ' · ' + settings.gen_defaults.width + '×' + settings.gen_defaults.height) : ''"></p>
+              <div class="set-action">
+                <button class="btn small primary" @click="saveGenDefaults()">Save current as defaults</button>
+                <button class="btn small" x-show="settings.gen_defaults" @click="clearGenDefaults()">Clear</button>
+              </div>
+              <p class="set-foot muted">Settings that don't fit the loaded model fall back automatically.</p>
             </section>
 
             <!-- Extensions -->
             <section class="settings-sec" x-show="settingsTab==='extensions'"
                      x-effect="refreshExtensionsIfOpen(settingsTab)">
-              <h3>Extensions</h3>
-              <p class="sub">Diffucore UI loads every extension folder under
-                <code>extensions/</code> at startup. Install from a git URL or a
-                .zip archive URL, then enable/disable, reload while developing,
-                or uninstall. A broken extension is shown here and never blocks
-                the app. See <code>docs/EXTENSIONS.md</code> for the full API.</p>
+              <div class="set-head">
+                <h3>Extensions</h3>
+                <span class="set-badge" x-show="extensions.length"
+                      x-text="extensions.length + ' installed'"></span>
+              </div>
+              <p class="set-purpose">Install from a git or .zip URL, then enable, reload, or remove.</p>
+              <p class="set-foot muted">API reference: <code>docs/EXTENSIONS.md</code></p>
 
               <div class="ext-install-row">
                 <input type="text" class="ext-install-url" x-model="extInstallUrl"
@@ -845,11 +858,11 @@
                         x-text="extBusy ? 'Installing…' : 'Install'"></button>
               </div>
               <label class="ext-install-pip" :class="{off: !extInstallPip}"
-                     title="Run pip install -r requirements.txt on install. This executes
-arbitrary code from the extension source — only enable it for sources you trust.">
+                     title="Runs pip install -r requirements.txt from the extension source on install.
+This executes arbitrary code — only enable it for sources you trust.">
                 <input type="checkbox" x-model="extInstallPip">
-                Install Python dependencies (pip install -r requirements.txt)
-                <small>— runs untrusted code; off by default</small>
+                Install Python dependencies
+                <small>runs untrusted code</small>
               </label>
 
               <p class="sub" x-show="!extensions.length">No extensions installed.</p>
@@ -861,13 +874,17 @@ arbitrary code from the extension source — only enable it for sources you trus
                         <input type="checkbox" :checked="e.enabled"
                                @change="toggleExtension(e.name, $event.target.checked)">
                       </label>
-                      <span class="ext-title" x-text="e.title || e.name"></span>
+                      <span class="ext-title" x-text="e.title || e.name" :title="e.name"></span>
                       <span class="ext-ver" x-text="e.version"></span>
                       <span class="ext-status" x-show="e.loaded && !e.load_error">loaded</span>
                       <span class="ext-status off" x-show="!e.default_enabled && !e.enabled"
                             title="This extension opts out of auto-loading. Enable it to use it.">default off</span>
                       <span class="ext-status err" x-show="e.load_error"
                             :title="e.load_error" x-text="e.load_error ? 'error' : ''"></span>
+                      <span class="ext-ui" x-show="e.has_ui" title="Adds its own UI">UI</span>
+                    </div>
+                    <div class="ext-card-foot">
+                      <p class="ext-desc" x-show="e.description" x-text="e.description" :title="e.description"></p>
                       <div class="ext-card-actions">
                         <button class="btn small" @click="reloadExtension(e.name)"
                                 title="Re-import the entry module (for development)">Reload</button>
@@ -875,9 +892,6 @@ arbitrary code from the extension source — only enable it for sources you trus
                                 :disabled="extBusy">Uninstall</button>
                       </div>
                     </div>
-                    <p class="ext-desc" x-show="e.description" x-text="e.description"></p>
-                    <p class="ext-name"><code x-text="e.name"></code>
-                      <span x-show="e.has_ui"> · UI</span></p>
                   </li>
                 </template>
               </ul>
