@@ -7,7 +7,7 @@ interface with a unified txt2img / img2img / inpaint workspace, an X/Y/Z
 parameter-sweep mode, and a gallery that recycles past generations' metadata
 back into the workspace.
 
-![version](https://img.shields.io/badge/version-0.1.1-blue)
+![version](https://img.shields.io/badge/version-0.1.2-blue)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 
