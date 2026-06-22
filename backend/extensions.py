@@ -412,7 +412,7 @@ class ExtensionLoader:
 
     # ── install / uninstall / toggle ────────────────────────────────
 
-    def install(self, url: str) -> Extension:
+    def install(self, url: str, *, install_pip_deps: bool = False) -> Extension:
         """Install from a git URL or a .zip archive URL. Returns the new
         extension's record (loaded, if it succeeded).
 
@@ -420,6 +420,14 @@ class ExtensionLoader:
         basename), so uninstall/toggle keyed on the manifest name always find
         the right folder. Extraction happens into a scratch name first, then
         the folder is moved to its canonical slot once the manifest is known.
+
+        ``install_pip_deps`` is opt-in (default ``False``): a ``requirements.txt``
+        in the source is **not** auto-``pip install``'d unless the caller
+        explicitly requests it. Running ``pip install -r`` against an untrusted
+        file is remote code execution (build hooks, post-install scripts,
+        arbitrary wheels), so the default is the safe one — the extension loads
+        and a note on its record tells the user requirements exist and how to
+        install them. See IMPROVE.md #1 / docs/EXTENSIONS.md threat model.
         """
         import re as _re
         EXTENSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -467,13 +475,26 @@ class ExtensionLoader:
         self._set_enabled(ext.name, True)
         self.extensions[ext.name] = ext
         self._load_one(ext)
-        # Install deps after the module load attempt so a missing dependency
-        # (the common failure) shows up as the extension's own load_error, and a
-        # pip failure that leaves an importable-but-broken extension is still
-        # surfaced on the record instead of silently "succeeding".
-        pip_err = self._pip_install_requirements(target)
-        if pip_err and ext.load_error is None:
-            ext.load_error = pip_err
+        # Dependency install is opt-in (IMPROVE.md #1). pip install -r against
+        # an untrusted requirements.txt is RCE, so by default we *don't* run it:
+        # the extension loads and a note on its record tells the user a
+        # requirements.txt exists and how to install it. When the caller opts
+        # in, a pip failure surfaces on the record (the extension is already on
+        # disk) instead of silently "succeeding".
+        req = target / "requirements.txt"
+        if req.is_file():
+            if install_pip_deps:
+                pip_err = self._pip_install_requirements(target)
+                if pip_err and ext.load_error is None:
+                    ext.load_error = pip_err
+            else:
+                note = ("requirements.txt present; pip install skipped (opt-in "
+                        "for safety). Reload via the panel after installing deps, "
+                        "or re-install with pip deps enabled.")
+                if ext.load_error is None:
+                    ext.load_error = note
+                else:
+                    ext.load_error = f"{ext.load_error}\n{note}"
         self._write_state()
         return ext
 
@@ -664,6 +685,10 @@ class ExtensionLoader:
 
 class InstallPayload(BaseModel):
     url: str
+    # Opt-in: pip install -r requirements.txt is RCE on an untrusted file, so it
+    # defaults to off. The UI sends true only when the user explicitly checks
+    # "install dependencies" for a trusted source. See docs/EXTENSIONS.md.
+    install_pip_deps: bool = False
 
 
 class TogglePayload(BaseModel):

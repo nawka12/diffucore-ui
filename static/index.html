@@ -23,6 +23,22 @@
       <button class="gear" @click="openSettings()" title="Settings" aria-label="Settings">⚙</button>
     </header>
 
+    <!-- ── SSE connection banner (#7): a stalled stream freezes the queue
+         panel silently; this surfaces "lost connection" so the user knows the
+         UI is no longer live and the queue panel may be stale. -->
+    <div class="conn-banner reconnecting"
+         x-show="connState === 'reconnecting'"
+         x-transition>
+      Reconnecting… <span class="conn-sub">the live queue may be briefly stale.</span>
+    </div>
+    <div class="conn-banner down" role="alert"
+         x-show="connState === 'down'"
+         x-transition>
+      <span class="conn-dot"></span> Lost connection to the server — the queue
+      panel is frozen. <span class="conn-sub">It will resume automatically when
+      the link is back.</span>
+    </div>
+
     <!-- ── model rack ─────────────────────────────────────────── -->
     <section class="rack">
       <div class="rack-row">
@@ -828,6 +844,13 @@
                         :disabled="!extInstallUrl.trim() || extBusy"
                         x-text="extBusy ? 'Installing…' : 'Install'"></button>
               </div>
+              <label class="ext-install-pip" :class="{off: !extInstallPip}"
+                     title="Run pip install -r requirements.txt on install. This executes
+arbitrary code from the extension source — only enable it for sources you trust.">
+                <input type="checkbox" x-model="extInstallPip">
+                Install Python dependencies (pip install -r requirements.txt)
+                <small>— runs untrusted code; off by default</small>
+              </label>
 
               <p class="sub" x-show="!extensions.length">No extensions installed.</p>
               <ul class="ext-list">

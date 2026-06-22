@@ -131,7 +131,10 @@ def _output_sort_key(f: Path) -> tuple:
 def scan_outputs() -> List[Path]:
     _ensure_dirs()
     files = []
-    dirs = [d for d in OUTPUTS_DIR.iterdir() if d.is_dir()]
+    # Skip dot-dirs (notably ``.trash/`` — the gallery's soft-delete holding pen)
+    # so trashed images don't reappear in the gallery list. Real date folders are
+    # ``DD-MM-YYYY`` and never start with a dot.
+    dirs = [d for d in OUTPUTS_DIR.iterdir() if d.is_dir() and not d.name.startswith(".")]
     dirs.sort(key=lambda d: _parse_date_dir(d.name), reverse=True)
     for d in dirs:
         pngs = [f for f in d.iterdir() if f.suffix.lower() == ".png"]

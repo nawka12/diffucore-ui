@@ -271,14 +271,45 @@ Users install extensions from **Settings → Extensions → Install**:
 - a **git URL** (e.g. `https://github.com/you/your-ext.git`) — `git clone --depth 1`,
 - or a **.zip archive URL** (e.g. a GitHub release asset) — downloaded and extracted.
 
+Only `https://` URLs are accepted. `file://`, `http://`, `ssh://`, `git@`,
+`ftp://`, `gopher://`, and the cloud metadata-service hosts are refused up front
+(so a pasted link can't read local files, probe the metadata service, or exfil
+via the SSH agent). For a private repo, clone it manually into `extensions/` or
+use an `https` URL with an embed token.
+
 The installer normalizes the layout: the extension may live at the archive's
 root or one level down (the common "release zip" layout), and the folder is
-moved to `extensions/<manifest-name>`. If the source includes a
-`requirements.txt`, it's `pip install -r`'d into the current venv
-(best-effort). The extension is loaded immediately on successful install.
+moved to `extensions/<manifest-name>`. The manifest `name` is sanitized to
+`[A-Za-z0-9._-]` and path-escape attempts are refused, so a malicious manifest
+can't write outside `extensions/` or escape via the API URL prefix.
+
+**Python dependencies are opt-in.** If the source includes a
+`requirements.txt`, it is **not** `pip install`'d by default — running
+`pip install -r` against an untrusted file is remote code execution (build
+hooks, post-install scripts, arbitrary wheels). Check **"Install Python
+dependencies"** in the install panel only for sources you trust. When left
+unchecked, the extension loads and a note on its record tells you a
+`requirements.txt` exists; install the deps yourself (or re-install with the
+box checked) and Reload the extension.
+
+The install itself runs on the **shared job worker** (the same single-worker
+thread that runs generation and model loads), not in the request handler. This
+means:
+
+- it's **visible in the queue panel** and **cancellable** like any other job,
+- it **serializes with generation** (it imports Python modules and may pip
+  install — racing the GPU worker is bad),
+- a slow clone / pip doesn't tie up a request-threadpool worker.
+
+The POST `/api/extensions/install` returns `{job: <id>}` immediately; the
+terminal `done` SSE event carries the new extension's record (or `error` with
+a `message` on failure).
+
+The extension is loaded immediately on successful install.
 
 Installing from a URL also works for local development — point it at a local
-`file://` .zip, or just drop the folder into `extensions/` and restart.
+`file://` .zip, or just drop the folder into `extensions/` and restart. (For
+`file://`, drop the folder manually — the installer blocks `file://`.)
 
 For development, use **Reload** in the panel (or `POST /api/extensions/reload`)
 to re-import the entry module after an edit, without restarting the server.
@@ -322,6 +353,44 @@ The loader drops the old hooks/routes/statics first so nothing doubles up.
 - `api.engine` is the live singleton. Inspect it freely, but **do not** call
   `load_model` / `generate_*` directly from a request handler — that would race
   with the worker. Use `api.enqueue_job(...)` so the work serializes.
+
+## Threat model & concurrency rules
+
+An extension runs Python in the server process with the full privileges of the
+user running Diffucore UI. Treat extension code the way you'd treat any other
+dependency you `pip install`: assume it can read files, make network calls, and
+spawn processes. The platform isolates *failures* (one broken extension doesn't
+take down the app), not *malice* — a hostile extension can still exfiltrate
+prompts, read `outputs/`, or peg the GPU.
+
+Rules for extension authors, to avoid the common footguns:
+
+- **Never shell out to untrusted input.** `subprocess.run([prompt, ...])` or
+  `os.system` on a user-supplied string is command injection. If you must run a
+  subprocess, pass an arg list (never a shell string) and validate the inputs.
+- **Don't bind to `0.0.0.0` by default.** If your extension opens a port
+  (a webhook receiver, a status server), bind to `127.0.0.1`. A `0.0.0.0`
+  bind on a shared machine exposes the extension to the whole LAN.
+- **Don't call the engine from a request handler.** A route handler runs on a
+  request-threadpool worker; calling `api.engine.generate_*` / `load_*` there
+  races the GPU worker (two torch forward passes at once → OOM or corruption).
+  Route all GPU work through `api.enqueue_job(...)` so it serializes.
+- **Don't auto-`pip install` at import time.** A `setup()` that shells out to
+  `pip` on first load runs arbitrary code from the network without the user
+  opting in. Put dependencies in `requirements.txt` and let the user install
+  them explicitly (the installer makes pip opt-in for exactly this reason).
+- **Keep hooks cheap and non-blocking.** `pre_generate` / `post_generate` run
+  on the worker thread inside a generation; a slow hook stalls every job behind
+  it. Offload slow work to `api.enqueue_job` or a thread of your own.
+- **Don't write outside your extension dir unless the user opted in.** Use
+  `api.ext_dir` for scratch files, `api.get_setting` / `set_setting` for state.
+  Don't touch `outputs/`, `settings.json`, or `last_load.json` directly — go
+  through the API so the app's invariants (atomic writes, search-index
+  invalidation) hold.
+
+The installer's own guards (HTTPS-only URLs, sanitized manifest names, opt-in
+pip) narrow the *install* attack surface, but they do not make an installed
+extension trustworthy — that's still a human judgement call.
 
 ## Versioning
 

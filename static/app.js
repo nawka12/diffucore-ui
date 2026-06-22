@@ -149,6 +149,14 @@ document.addEventListener('alpine:init', () => {
     _myBatchIds: [],      // ids of in-flight batch jobs (empty for single-job flows)
     _jobWaiters: {},      // id -> resolve fn, fulfilled by the terminal SSE event
 
+    // ── SSE connection state (#7) ────────────────────────────────
+    // 'connected' | 'reconnecting' | 'down'. A stalled stream freezes the queue
+    // panel silently; the banner tells the user the UI is no longer live.
+    connState: 'connected',
+    connDownSince: null,        // epoch ms when the connection went 'down'
+    CONN_DOWN_TIMEOUT: 8000,    // reconnect grace before we banner the outage
+    _connTimer: null,
+
     // ── OSS calibration ─────────────────────────────────────────
     calibrating: false,
     ossCalibrated: null,          // null = unknown, true/false = checked
@@ -169,6 +177,7 @@ document.addEventListener('alpine:init', () => {
     extensions: [],
     extTabs: [],
     extInstallUrl: '',
+    extInstallPip: false,  // opt-in: pip install -r requirements.txt on install (RCE risk — off by default)
     extBusy: false,
     _mountedExtTab: null,
     _mountedExtSettings: null,
@@ -315,10 +324,40 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── shared events (one SSE stream per device) ───────────────
+    // The browser auto-reconnects an EventSource on error, but a stalled stream
+    // freezes the queue panel silently — the user thinks a job is still running.
+    // We surface it: onerror bumps connState to 'reconnecting', and if no
+    // reconnect lands within CONN_DOWN_TIMEOUT we escalate to 'down' and show a
+    // banner (IMPROVE.md #7). A fresh snapshot on reconnect re-syncs everything.
     connectEvents() {
       const es = new EventSource('/api/events');
-      es.onmessage = (e) => this.onServerEvent(JSON.parse(e.data));
-      // On error the browser auto-reconnects; the fresh snapshot re-syncs us.
+      this._connEscalate = () => {
+        if (this.connState === 'down') return;
+        this.connState = 'down';
+        this.connDownSince = Date.now();
+      };
+      const armEscalator = () => {
+        clearTimeout(this._connTimer);
+        this._connTimer = setTimeout(this._connEscalate, this.CONN_DOWN_TIMEOUT);
+      };
+      const clearEscalator = () => {
+        clearTimeout(this._connTimer);
+        this._connTimer = null;
+        this.connState = 'connected';
+        this.connDownSince = null;
+      };
+      es.onopen = () => clearEscalator();
+      es.onmessage = (e) => {
+        if (this.connState !== 'connected') clearEscalator();
+        this.onServerEvent(JSON.parse(e.data));
+      };
+      es.onerror = () => {
+        if (this.connState === 'connected') {
+          this.connState = 'reconnecting';
+          armEscalator();
+        }
+      };
+      this._es = es;
     },
 
     onServerEvent(ev) {
@@ -1733,19 +1772,29 @@ document.addEventListener('alpine:init', () => {
       if (!url) return;
       this.extBusy = true;
       try {
-        const r = await fetch('/api/extensions/install', {
+        // Installs run on the shared job worker (not the request threadpool), so
+        // this returns a job id; the terminal SSE event resolves the promise.
+        const r = await fetchJSON('/api/extensions/install', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url }),
+          body: JSON.stringify({ url, install_pip_deps: this.extInstallPip }),
         });
-        const data = await r.json();
-        if (!r.ok) throw new Error(data.detail || 'install failed');
-        this.flash('Installed ' + (data.extension.name || url));
+        if (!r.job) throw new Error('install did not return a job id');
+        const ev = await new Promise((resolve) => { this._jobWaiters[r.job] = resolve; });
+        if (ev.type === 'error') throw new Error(ev.message || 'install failed');
+        if (ev.type === 'cancelled') { this.flash('Install cancelled'); return; }
+        const name = (ev.extension && (ev.extension.name || ev.extension.title)) || url;
+        this.flash('Installed ' + name);
         this.extInstallUrl = '';
         await this.refreshExtensions();
         // Extension JS is injected server-side into the page on render; a
         // reload picks up the newly-installed extension's UI script.
-        if (data.extension.has_ui) this.flash('Reload the page to load the extension UI');
+        if (ev.extension && ev.extension.has_ui) this.flash('Reload the page to load the extension UI');
+        // Surface a skipped-deps / load-error note (opt-in pip leaves a note on
+        // the extension record when requirements.txt was skipped).
+        if (ev.extension && ev.extension.load_error) {
+          this.flash('Note: ' + ev.extension.load_error);
+        }
       } catch (e) {
         this.flash('Install failed: ' + e.message);
       } finally {

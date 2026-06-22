@@ -2,11 +2,6 @@
 
 import argparse
 
-import uvicorn
-
-from server import app, configure_auth
-from auth import load_or_create_token
-
 parser = argparse.ArgumentParser(description="Diffucore UI")
 parser.add_argument(
     "--listen",
@@ -42,6 +37,20 @@ parser.add_argument(
          ".auth_token.",
 )
 parser.add_argument(
+    "--log-file",
+    default=None,
+    help="Append structured logs to this file (rotating, chmod 600) in addition "
+         "to stderr. A per-process run-id is stamped into every line. Useful "
+         "for triaging 'it broke' reports. Secrets (auth token, share URL) are "
+         "never written to the log.",
+)
+parser.add_argument(
+    "--log-level",
+    default="INFO",
+    choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+    help="Logging level for the structured logger (default: INFO).",
+)
+parser.add_argument(
     "--autolaunch",
     action="store_true",
     help="Open the UI in the default web browser once the server starts "
@@ -49,6 +58,18 @@ parser.add_argument(
          "--share or --listen is set, since those serve remote clients.",
 )
 args = parser.parse_args()
+
+# Configure structured logging BEFORE importing server: server.py emits log
+# lines at import time (offload default, FastAPI app creation), so the loggers
+# must be wired up first to capture them. Tokens / share URLs stay on print()
+# (stdout only) so they never land in the log file.
+import log_setup
+log_setup.configure(log_file=args.log_file, level=args.log_level)
+
+import uvicorn
+
+from server import app, configure_auth
+from auth import load_or_create_token
 
 # ── auth ──────────────────────────────────────────────────────────────
 # --share publishes the UI to the public internet, so the gate goes on by

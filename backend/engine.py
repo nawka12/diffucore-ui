@@ -6,12 +6,16 @@ import ctypes
 import ctypes.util
 import gc
 import json
+import logging
 import re
 import sys
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
+
+log = logging.getLogger("diffucore.engine")
 
 
 def _resolve_malloc_trim():
@@ -219,6 +223,16 @@ class LoadedModel:
 
 
 class Engine:
+    # X/Y/Z Checkpoint-axis LRU cache (IMPROVE.md #10): keep the last few
+    # swept checkpoints off-GPU so a re-sweep (or an alternating A/B axis)
+    # doesn't re-read ~23 GB from disk per cell. Only fully-resident
+    # (offload="none") non-FLUX models are cached — offloaded models use a
+    # streaming/staging proxy whose placement ``.to()`` would break, and FLUX
+    # is too large to hold two of alongside the current model. Opportunistic:
+    # any torch error falls back to the normal disk reload, so a cache miss
+    # or a model that can't be moved wholesale just reloads.
+    CKPT_CACHE_MAX = 2
+
     def __init__(self, device: str = "cuda", dtype_str: str = "float16"):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.dtype = getattr(torch, dtype_str)
@@ -231,6 +245,7 @@ class Engine:
         self._tf32 = False
         self._last_seed: int = -1
         self._anima_defaults_applied: bool = False
+        self._ckpt_cache: "OrderedDict[str, LoadedModel]" = OrderedDict()
 
     # ── state queries ──────────────────────────────────────────────
 
@@ -374,14 +389,34 @@ class Engine:
             # — it's the optional speed feature; fitting in VRAM is not.
             compile = False
             cuda_graphs = False  # cuda_graphs needs compile, so it goes too
-            print("[load] compile disabled: incompatible with offload='stream' "
-                  "(backbone is block-streamed to fit VRAM)", flush=True)
+            log.warning("compile disabled: incompatible with offload='stream' "
+                         "(backbone is block-streamed to fit VRAM)")
         if (self._loaded and self._loaded.name == model_name
                 and self._settings_match(offload, vae_tile, compile,
                                          cuda_graphs, channels_last, tf32)):
             return f"Model already loaded: {model_name}"
 
-        self._unload()
+        # X/Y/Z Checkpoint LRU cache (#10): try to restore a recently-swept
+        # checkpoint from CPU before re-reading it from disk. Restore first, then
+        # stash the *previous* model (so an alternating A/B axis doesn't drop B
+        # when restoring A). _stash_loaded detaches self._loaded on success; on
+        # failure it leaves the previous model for _unload to drop.
+        restored = self._try_cache_restore(model_name, offload, vae_tile,
+                                           compile, cuda_graphs, channels_last, tf32)
+        stashed = self._stash_loaded()
+        if restored is not None:
+            self._offload = offload
+            self._vae_tile = vae_tile
+            self._compile = compile
+            self._cuda_graphs = cuda_graphs
+            self._channels_last = channels_last
+            self._tf32 = tf32
+            self._loaded = restored
+            self._reclaim_memory()
+            log.info("[load] %s (%s) restored from ckpt cache", model_name, restored.family)
+            return f"Loaded {model_name} ({restored.family}) (from cache)"
+        if not stashed:
+            self._unload()
         self._offload = offload
         self._vae_tile = vae_tile
         self._compile = compile
@@ -451,14 +486,31 @@ class Engine:
             # — it's the optional speed feature; fitting in VRAM is not.
             compile = False
             cuda_graphs = False  # cuda_graphs needs compile, so it goes too
-            print("[load] compile disabled: incompatible with offload='stream' "
-                  "(backbone is block-streamed to fit VRAM)", flush=True)
+            log.warning("compile disabled: incompatible with offload='stream' "
+                         "(backbone is block-streamed to fit VRAM)")
         if (self._loaded and self._loaded.name == label
                 and self._settings_match(offload, vae_tile, compile,
                                          cuda_graphs, False, False)):
             return f"Model already loaded: {label}"
 
-        self._unload()
+        # X/Y/Z Checkpoint LRU cache (#10): restore a recently-swept Anima DiT
+        # from CPU before re-reading it. Keyed on the Anima label (DiT name).
+        restored = self._try_cache_restore(label, offload, vae_tile,
+                                           compile, cuda_graphs, False, False)
+        stashed = self._stash_loaded()
+        if restored is not None:
+            self._offload = offload
+            self._vae_tile = vae_tile
+            self._compile = compile
+            self._cuda_graphs = cuda_graphs
+            self._channels_last = False
+            self._tf32 = False
+            self._loaded = restored
+            self._reclaim_memory()
+            log.info("[load] %s restored from ckpt cache", label)
+            return f"Loaded Anima (from cache)  (DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})"
+        if not stashed:
+            self._unload()
         self._offload = offload
         self._vae_tile = vae_tile
         self._compile = compile
@@ -479,8 +531,8 @@ class Engine:
             compile=compile, cuda_graphs=cuda_graphs,
         )
 
-        print(f"[load] Anima: DiT={dit_name} VAE={vae_name} TE={te_name} "
-              f"offload={offload} compile={compile}", flush=True)
+        log.info("[load] Anima: DiT=%s VAE=%s TE=%s offload=%s compile=%s",
+                 dit_name, vae_name, te_name, offload, compile)
         t0 = time.time()
         model = load_anima_checkpoint(
             str(dit_path), str(vae_file), str(te_file), policy=policy,
@@ -516,8 +568,8 @@ class Engine:
             # — it's the optional speed feature; fitting in VRAM is not.
             compile = False
             cuda_graphs = False  # cuda_graphs needs compile, so it goes too
-            print("[load] compile disabled: incompatible with offload='stream' "
-                  "(backbone is block-streamed to fit VRAM)", flush=True)
+            log.warning("compile disabled: incompatible with offload='stream' "
+                         "(backbone is block-streamed to fit VRAM)")
         if (self._loaded and self._loaded.name == label
                 and self._settings_match(offload, vae_tile, compile,
                                          cuda_graphs, False, False)):
@@ -605,6 +657,74 @@ class Engine:
             del self._loaded.model
             self._loaded = None
         self._reclaim_memory()
+
+    # ── X/Y/Z Checkpoint LRU cache (#10) ───────────────────────────
+    def _cacheable_for_stash(self) -> bool:
+        """True iff the current model is safe to park in the cache.
+
+        Only fully-resident (``offload="none"``) non-FLUX models: offloaded
+        models use a streaming/staging proxy whose placement ``.to()`` would
+        break, and FLUX is too large to cache a second copy of. The cache is
+        opportunistic, so a ``False`` here just means "reload from disk"."""
+        if self._loaded is None or self._offload != "none":
+            return False
+        if self._loaded.family in _FLUX_FAMILIES:
+            return False
+        return True
+
+    def _stash_loaded(self) -> bool:
+        """Park ``self._loaded`` in the LRU cache (moved to CPU) for a later
+        re-sweep. On success detaches it (caller must **not** then ``_unload``).
+        On failure (not cacheable, or ``.to("cpu")`` raises on a proxy) leaves
+        ``self._loaded`` in place for ``_unload`` to drop. Returns whether it
+        stashed. Evicts the least-recently-used entry on overflow."""
+        if not self._cacheable_for_stash():
+            return False
+        lm = self._loaded
+        try:
+            lm.model.to("cpu")
+        except Exception as e:  # noqa: BLE001 — proxy/wrapper can't be moved wholesale
+            log.debug("ckpt cache: can't move %s to CPU (%s); dropping", lm.name, e)
+            return False
+        cache = self._ckpt_cache
+        cache.pop(lm.name, None)
+        cache[lm.name] = lm
+        while len(cache) > self.CKPT_CACHE_MAX:
+            _key, evicted = cache.popitem(last=False)
+            try: del evicted.model
+            except Exception: pass  # noqa: BLE001
+            log.debug("ckpt cache: evicted %s (max %d)", _key, self.CKPT_CACHE_MAX)
+        self._loaded = None  # detached — owned by the cache now
+        self._reclaim_memory()
+        return True
+
+    def _try_cache_restore(self, key: str,
+                           offload, vae_tile, compile, cuda_graphs,
+                           channels_last, tf32) -> Optional[LoadedModel]:
+        """Pop a cached model for ``key`` and move it back to the device, but
+        only if the requested staging settings match the model's (a settings
+        change invalidates the cached placement). Returns the restored
+        ``LoadedModel`` or ``None`` (miss / settings mismatch / restore error)."""
+        lm = self._ckpt_cache.get(key)
+        if lm is None:
+            return None
+        if not (self._offload == offload and self._vae_tile == vae_tile
+                and self._compile == compile and self._cuda_graphs == cuda_graphs
+                and self._channels_last == channels_last and self._tf32 == tf32):
+            # Settings changed since this was cached — placement is stale. Drop it.
+            self._ckpt_cache.pop(key, None)
+            try: del lm.model
+            except Exception: pass  # noqa: BLE001
+            return None
+        self._ckpt_cache.pop(key, None)
+        try:
+            lm.model.to(self.device)
+        except Exception as e:  # noqa: BLE001
+            log.debug("ckpt cache: can't restore %s (%s); reloading", key, e)
+            try: del lm.model
+            except Exception: pass  # noqa: BLE001
+            return None
+        return lm
 
     def _reclaim_memory(self) -> None:
         """Drop dead refs and hand free heap pages back to the OS. Called after

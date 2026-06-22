@@ -11,11 +11,14 @@ a second device — or a refresh — stays in sync without reloading the model.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import base64
 import io
 import itertools
 import json
+import logging
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -44,6 +47,8 @@ from auth import AuthGate, COOKIE_NAME, load_or_create_token, origin_ok, read_lo
 from extensions import (
     ExtensionLoader, InstallPayload, TogglePayload, UninstallPayload,
 )
+
+log = logging.getLogger("diffucore.server")
 
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024  # 64 MB cap for metadata-parse uploads
 MAX_BODY_BYTES = 128 * 1024 * 1024   # global cap: base64 of a 4K PNG fits, GBs don't
@@ -141,6 +146,31 @@ def _render_index() -> str:
     ).replace("__EXT_SCRIPTS__", _ext_script_tags())
 _THUMBS_DIR = _ROOT / ".cache" / "thumbs"  # lazily-built gallery-grid thumbnails
 THUMB_MAX = 384  # long-edge px; the grid uses these instead of the full PNGs
+
+# ── gallery soft-delete (#3) ──────────────────────────────────────────
+# DELETE /api/gallery moves files here instead of unlink()-ing them, so a
+# fat-fingered double-click (the two-click confirm is racy on a slow link) can
+# be recovered by hand from outputs/.trash/ until the purge runs. Files are
+# purged after TRASH_RETENTION_DAYS; the purge runs once at startup and on each
+# delete (cheap: one iterdir + mtime check).
+_TRASH_DIR = OUTPUTS_DIR / ".trash"
+TRASH_RETENTION_DAYS = 7
+
+
+def _purge_trash(max_age_days: int = TRASH_RETENTION_DAYS) -> int:
+    """Delete trash entries older than ``max_age_days``. Returns the count purged."""
+    if not _TRASH_DIR.is_dir():
+        return 0
+    cutoff = time.time() - max_age_days * 86400
+    purged = 0
+    for f in _TRASH_DIR.iterdir():
+        try:
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink()
+                purged += 1
+        except OSError:
+            pass
+    return purged
 
 class _Cancelled(BaseException):
     """Raised from the progress callback to unwind a running generation.
@@ -313,9 +343,49 @@ class ParseTextPayload(BaseModel):
 # ── helpers ─────────────────────────────────────────────────────────
 
 def _decode_image(data: str) -> Image.Image:
+    """Decode a base64 / data-URL image to RGB.
+
+    An RGBA / LA / PA source is composited onto **white** before dropping the
+    alpha channel — ``convert("RGB")`` alone leaves the stored RGB values where
+    pixels were transparent, which renders transparent regions as black (a
+    silent "composite-black"). Compositing onto white makes the loss explicit
+    and predictable, and a warning is logged so an inpaint input that lost its
+    transparency is traceable in the log.
+    """
     if data.strip().startswith("data:") and "," in data:
         data = data.split(",", 1)[1]
-    return Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
+    img = Image.open(io.BytesIO(base64.b64decode(data)))
+    if img.mode in ("RGBA", "LA", "PA") or (
+        "A" in img.getbands() and img.mode not in ("RGB", "L", "P")
+    ):
+        log.warning("input image had an alpha channel; composited onto white "
+                    "(transparency is not preserved) — mode=%s", img.mode)
+        bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+        bg.paste(img, mask=img.split()[-1])
+        return bg.convert("RGB")
+    return img.convert("RGB")
+
+
+def _decode_mask(data: str) -> Image.Image:
+    """Decode a base64 / data-URL mask to a single-channel ``L`` image.
+
+    Masks often travel as the alpha channel of an RGBA PNG (transparent = don't
+    paint, opaque = paint). ``convert("L")`` from RGBA takes the *luminance* of
+    the RGB channels and silently ignores the alpha — so an alpha-mask would be
+    misread as a blank or wrong mask. If an alpha channel is present, extract it
+    via ``split()`` (``convert("A")`` isn't a supported PIL transform) and use
+    that band as the mask; otherwise fall back to luminance. The engine's
+    ``_fit_inpaint`` re-converts to ``L`` anyway, so returning ``L`` here is
+    lossless.
+    """
+    if data.strip().startswith("data:") and "," in data:
+        data = data.split(",", 1)[1]
+    img = Image.open(io.BytesIO(base64.b64decode(data)))
+    if img.mode in ("RGBA", "LA", "PA") or "A" in img.getbands():
+        # Alpha is the mask intent: opaque = paint here. split() returns the
+        # bands as single-channel "L" images; the last is alpha.
+        return img.split()[-1]
+    return img.convert("L")
 
 
 def _output_url(path: Path) -> str:
@@ -403,7 +473,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                 raise RuntimeError("Provide both an input image and a mask")
             gen_kwargs = dict(
                 prompt=clean_prompt, input_image=_decode_image(p.input_image),
-                mask_image=_decode_image(p.mask_image),
+                mask_image=_decode_mask(p.mask_image),
                 width=int(p.width), height=int(p.height),
                 strength=float(p.strength), **common,
             )
@@ -609,15 +679,18 @@ _job_ids = itertools.count(1)
 
 
 class Job:
-    def __init__(self, kind: str, label: str, run: Callable[["Job"], dict]):
+    def __init__(self, kind: str, label: str, run: Callable[["Job"], dict],
+                 *, priority: int = 0):
         self.id = next(_job_ids)
-        self.kind = kind            # generate | xyz | calibrate | load
+        self.kind = kind            # generate | xyz | calibrate | load | install
         self.label = label          # short human description for the queue list
         self.run = run              # run(job) -> result dict; may raise _Cancelled
         self.status = "queued"      # queued | running | done | error | cancelled
         self.cancel = threading.Event()
         self.step = 0               # live progress, for snapshots on (re)connect
         self.total = 0
+        self.priority = int(priority)  # higher runs sooner; load jobs jump the queue
+        self.last_preview: Optional[Image.Image] = None  # last streamed preview, for shutdown partial-save
 
 
 QUEUE: "deque[Job]" = deque()
@@ -780,10 +853,16 @@ def _make_callbacks(job: Job):
         # Cap resolution + encode lossy WebP on the worker thread so the data-URL
         # broadcast/serialized per client stays small.
         if max(image.size) > PREVIEW_MAX_SIDE:
-            image = image.copy()
-            image.thumbnail((PREVIEW_MAX_SIDE, PREVIEW_MAX_SIDE))
+            thumb = image.copy()
+            thumb.thumbnail((PREVIEW_MAX_SIDE, PREVIEW_MAX_SIDE))
+        else:
+            thumb = image
+        # Stash the last emitted preview so a shutdown mid-job can still save a
+        # partial result (the daemon worker is killed on exit; without this the
+        # running generation is lost with nothing on disk).
+        job.last_preview = thumb
         buf = io.BytesIO()
-        image.save(buf, format="WEBP", quality=80)
+        thumb.save(buf, format="WEBP", quality=80)
         data = "data:image/webp;base64," + base64.b64encode(buf.getvalue()).decode()
         _push({"type": "preview", "job": job.id, "image": data})
 
@@ -791,8 +870,19 @@ def _make_callbacks(job: Job):
 
 
 def _enqueue(job: Job) -> None:
+    # Priority insert: a higher-priority job runs before any lower-priority
+    # queued job, while preserving FIFO order among equal priorities. Used so a
+    # model ``load`` (priority 10) submitted behind a stack of generations runs
+    # next instead of stalling the user who just switched models. It only jumps
+    # the *queue* — the currently-running job still finishes (the GPU can't be
+    # preempted mid-sampling); see IMPROVE.md #6.
     with QUEUE_LOCK:
-        QUEUE.append(job)
+        idx = len(QUEUE)
+        for i, j in enumerate(QUEUE):
+            if job.priority > j.priority:
+                idx = i
+                break
+        QUEUE.insert(idx, job)
     QUEUE_WAKE.set()
     _broadcast_queue()
 
@@ -871,11 +961,60 @@ def _friendly_error(e: Exception) -> str:
     return str(e)
 
 
+# ── shutdown: save a partial result for the in-flight job (#4) ────────
+# The worker is a daemon thread, so a Ctrl+C mid-sampling kills it abruptly and
+# the running generation is lost — temp LoRAs un-applied, no file on disk. We
+# can't preempt torch cleanly, but the last streamed latent→RGB preview is a PIL
+# image in memory and safe to write from the exit path. atexit runs while daemon
+# threads are still alive, so CURRENT + job.last_preview are readable. Best
+# effort: a downscaled preview is far better than nothing for a 20-minute run
+# that got Ctrl+C'd at step 28/30.
+
+def _save_partial_preview(job: Optional[Job]) -> Optional[Path]:
+    """Write ``job.last_preview`` to outputs/ tagged as a shutdown partial.
+
+    Returns the saved path (so callers/tests can assert) or ``None`` if there's
+    nothing to save. The file carries a ``parameters`` line that flags it as a
+    partial so the gallery / metadata reader can distinguish it from a real
+    generation (and so the user isn't confused by a low-res WebP-quality PNG
+    that looks like a finished image)."""
+    if job is None or job.last_preview is None:
+        return None
+    try:
+        out = next_output_path(ENGINE.last_seed)
+        meta = PngInfo()
+        info = md.format_metadata(
+            {"prompt": "", "sampler": "", "scheduler": "", "steps": 0,
+             "cfg_scale": 0.0, "seed": ENGINE.last_seed},
+            ENGINE,
+        )
+        meta.add_text("parameters", f"PARTIAL — interrupted by shutdown. {info}")
+        job.last_preview.save(out, pnginfo=meta)
+        _invalidate_gallery_index()
+        try:
+            rel = str(out.relative_to(OUTPUTS_DIR))
+        except ValueError:
+            rel = str(out)
+        log.warning("shutdown: saved partial preview for job %s to %s",
+                    job.id, rel)
+        return out
+    except Exception as e:  # noqa: BLE001 — never let the exit path raise
+        log.warning("shutdown: could not save partial preview: %s", e)
+        return None
+
+
+def _on_shutdown_save_partial() -> None:
+    _save_partial_preview(CURRENT)
+
+
+atexit.register(_on_shutdown_save_partial)
+
+
 # ── app ─────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Diffucore")
-print(f"[startup] offload default '{ENGINE.recommended_offload()}' "
-      f"(device: {ENGINE.device})")
+log.info("[startup] offload default '%s' (device: %s)",
+         ENGINE.recommended_offload(), ENGINE.device)
 
 
 # ── request guard: body-size cap, CSRF/Origin check, auth gate ──────
@@ -927,8 +1066,39 @@ async def _startup():
     EXTENSIONS.load_all()
     EXTENSIONS.mount_into(app)
     n = sum(1 for e in EXTENSIONS.extensions.values() if e.module is not None)
-    print(f"[startup] extensions: {n} loaded, "
-          f"{len(EXTENSIONS.extensions)} total", flush=True)
+    log.info("[startup] extensions: %d loaded, %d total", n,
+             len(EXTENSIONS.extensions))
+    # Purge aged gallery trash on boot (cheap; runs again on each delete).
+    try:
+        purged = _purge_trash()
+        if purged:
+            log.info("[startup] purged %d trash entries older than %d days",
+                     purged, TRASH_RETENTION_DAYS)
+    except Exception as e:  # noqa: BLE001
+        log.warning("[startup] trash purge failed: %s", e)
+    # Stamp the runtime environment into the log once so a "it broke" report
+    # carries the engine/torch/CUDA context without the user having to dig.
+    _log_runtime_env()
+
+
+def _log_runtime_env() -> None:
+    """Log torch / CUDA / GPU + engine version info for triage (IMPROVE.md #9)."""
+    parts = [f"ui={md.UI_ID}", f"diff={md.DIFF_ID}"]
+    try:
+        import torch  # noqa: local import — heavy and optional in test envs
+        parts.append(f"torch={torch.__version__}")
+        if torch.cuda.is_available():
+            try:
+                p = torch.cuda.get_device_properties(0)
+                parts.append(f"cuda={torch.version.cuda}")
+                parts.append(f"gpu={p.name} ({p.total_memory / 1024**3:.1f} GiB)")
+            except Exception as e:  # noqa: BLE001
+                parts.append(f"cuda=available (props failed: {e})")
+        else:
+            parts.append("cuda=unavailable (CPU)")
+    except Exception as e:  # noqa: BLE001 — torch missing
+        parts.append(f"torch=missing ({e})")
+    log.info("[startup] runtime: %s", "  ".join(parts))
 
 
 @app.get("/")
@@ -1136,7 +1306,7 @@ async def api_load(p: LoadPayload):
         _push({"type": "status", **_state_payload()})
         return {"status": status, "loaded": bool(ENGINE.loaded_name)}
 
-    job = Job("load", f"load {p.model_type}", run)
+    job = Job("load", f"load {p.model_type}", run, priority=10)
     _enqueue(job)
     return {"job": job.id}
 
@@ -1265,15 +1435,28 @@ def api_extensions_web():
 
 @app.post("/api/extensions/install")
 def api_extensions_install(p: InstallPayload):
-    """Install an extension from a git URL or a .zip archive URL. Clones /
-    extracts into extensions/, runs its requirements.txt if present, then loads
-    it. Returns the new extension's record."""
+    """Install an extension from a git URL or a .zip archive URL.
+
+    Runs on the shared job worker (not the request threadpool) so a slow clone /
+    pip doesn't tie up a request worker, the install is visible + cancellable in
+    the queue panel, and it serializes with generation / loads (it imports
+    Python modules and may pip install — racing the GPU worker is bad). Returns
+    a job id; the terminal ``done`` event carries the new extension's record so
+    the frontend can refresh the panel. See IMPROVE.md #8."""
+    # Fast-fail scheme/SSRF validation up front so a malformed URL returns 400
+    # immediately instead of enqueueing a job that errors a moment later.
+    from extensions import _validate_install_url
     try:
-        ext = EXTENSIONS.install(p.url)
-    except Exception as e:  # noqa: BLE001 — surface install failures to the UI
+        _validate_install_url(p.url)
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    EXTENSIONS.mount_into(app)  # attach the new extension's routes/statics now
-    return {"extension": ext.to_dict()}
+    def run(job: Job) -> dict:
+        ext = EXTENSIONS.install(p.url, install_pip_deps=p.install_pip_deps)
+        EXTENSIONS.mount_into(app)  # attach the new extension's routes/statics
+        return {"extension": ext.to_dict()}
+    job = Job("install", f"install {p.url}", run)
+    _enqueue(job)
+    return {"job": job.id}
 
 
 @app.post("/api/extensions/toggle")
@@ -1480,17 +1663,24 @@ def api_thumb(path: str):
 
 @app.delete("/api/gallery")
 def api_gallery_delete(path: str):
-    """Delete a gallery image and its cached thumbnail.
+    """Soft-delete a gallery image: move it to ``outputs/.trash/`` (recoverable
+    by hand) and drop its cached thumbnail.
 
-    Path is scoped under ``outputs/``; the same traversal guard as ``/api/thumb``
-    keeps a malicious path from escaping the directory. On success the cached
-    search index is invalidated so the next search reflects the deletion."""
+    A hard ``unlink()`` is racy with the two-click confirm on a slow connection —
+    a double-click costs the user real work. The trash is purged of entries
+    older than ``TRASH_RETENTION_DAYS`` on each call (cheap). Path is scoped
+    under ``outputs/`` with the same traversal guard as ``/api/thumb``; the
+    trashed name is prefixed with a timestamp so repeated deletes of same-named
+    files don't clobber each other. On success the cached search index is
+    invalidated so the next search reflects the deletion."""
     target = (OUTPUTS_DIR / path).resolve()
     outputs_root = OUTPUTS_DIR.resolve()
     if outputs_root not in target.parents or not target.is_file():
         raise HTTPException(status_code=404, detail="Image not found")
+    _TRASH_DIR.mkdir(parents=True, exist_ok=True)
+    trashed = _TRASH_DIR / f"{int(time.time())}_{target.name}"
     try:
-        target.unlink()
+        shutil.move(str(target), str(trashed))
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Could not delete: {e}")
     # Drop the cached thumbnail (may not exist if never viewed).
@@ -1502,7 +1692,12 @@ def api_gallery_delete(path: str):
     # deletion. Rebuilding is cheap (50 ms for ~1k images) and only happens
     # when search is actually used next.
     _invalidate_gallery_index()
-    return {"deleted": path}
+    # Purge aged trash entries on the way out — one iterdir + mtime check.
+    try:
+        _purge_trash()
+    except Exception as e:  # noqa: BLE001 — never let cleanup fail the delete
+        log.warning("trash purge failed: %s", e)
+    return {"deleted": path, "trashed": trashed.name}
 
 
 @app.get("/api/metadata")
