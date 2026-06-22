@@ -18,17 +18,20 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import os
 import random
 import shutil
 import string
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -38,6 +41,44 @@ log = logging.getLogger("diffucore.extensions")
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS_DIR = ROOT / "extensions"
 STATE_PATH = EXTENSIONS_DIR / "state.json"
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically (temp file + os.replace) so a crash
+    mid-write leaves the previous state intact instead of a truncated file."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix="." + path.name + "-", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(tmp, path)
+        except Exception:
+            try: os.unlink(tmp)
+            except OSError: pass
+            raise
+    except OSError:
+        pass
+
+
+# Schemes permitted for ``/api/extensions/install``. Restricting to HTTPS closes
+# the SSRF / local-file-read vector (``file://``, ``http://localhost``, the
+# ``169.254.169.254`` metadata service, ``gopher://``, ``ftp://``) and the SSH
+# agent exfil vector (``git@host:``, ``ssh://``). Users with private repos can
+# clone manually into extensions/ or use an https URL with an embed token.
+_BLOCKED_HOSTS = {"169.254.169.254", "metadata.google.internal"}
+
+
+def _validate_install_url(url: str) -> None:
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme != "https":
+        raise ValueError(
+            f"install URL must use https:// (got {scheme or 'no scheme'!r}); "
+            "file://, http://, ssh, git@, ftp://, gopher:// are blocked")
+    host = (parsed.hostname or "").lower()
+    if host in _BLOCKED_HOSTS:
+        raise ValueError(f"install URL host {host!r} is blocked (metadata service)")
 
 
 def _random_suffix() -> str:
@@ -202,6 +243,9 @@ class ExtensionLoader:
         self._hooks: Dict[str, List[Tuple[str, Callable]]] = {}
         self._routers: List[Tuple[str, APIRouter, str]] = []
         self._statics: List[Tuple[str, str, Path]] = []
+        # Keys of what mount_into has already attached to the app, so it can be
+        # re-called after a runtime install/enable/reload without double-mounting.
+        self._mounted: set = set()
         self._state: Dict[str, Any] = self._read_state()
         EXTENSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -214,10 +258,7 @@ class ExtensionLoader:
             return {"enabled": {}, "ext_settings": {}}
 
     def _write_state(self) -> None:
-        try:
-            STATE_PATH.write_text(json.dumps(self._state, indent=2))
-        except OSError:
-            pass
+        _atomic_write_text(STATE_PATH, json.dumps(self._state, indent=2))
 
     def _ext_settings(self, name: str) -> dict:
         return self._state.setdefault("ext_settings", {}).setdefault(name, {})
@@ -382,6 +423,7 @@ class ExtensionLoader:
         """
         import re as _re
         EXTENSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        _validate_install_url(url)
         scratch = EXTENSIONS_DIR / ("__installing__" + _random_suffix())
         try:
             if url.lower().endswith(".zip"):
@@ -414,7 +456,6 @@ class ExtensionLoader:
             # it wasn't already moved into place.
             if scratch.exists() and scratch.name.startswith("__installing__"):
                 shutil.rmtree(scratch, ignore_errors=True)
-        self._pip_install_requirements(target)
         ext = self._parse_manifest(target)
         if ext is None:
             raise ValueError("invalid manifest after install")
@@ -426,6 +467,13 @@ class ExtensionLoader:
         self._set_enabled(ext.name, True)
         self.extensions[ext.name] = ext
         self._load_one(ext)
+        # Install deps after the module load attempt so a missing dependency
+        # (the common failure) shows up as the extension's own load_error, and a
+        # pip failure that leaves an importable-but-broken extension is still
+        # surfaced on the record instead of silently "succeeding".
+        pip_err = self._pip_install_requirements(target)
+        if pip_err and ext.load_error is None:
+            ext.load_error = pip_err
         self._write_state()
         return ext
 
@@ -440,19 +488,38 @@ class ExtensionLoader:
 
     @staticmethod
     def _install_git(url: str, target: Path) -> None:
-        subprocess.run(
-            ["git", "clone", "--depth", "1", url, str(target)],
-            check=True, capture_output=True,
-        )
+        _validate_install_url(url)
+        # Abort if the clone stalls for 30s of <1KB/s (e.g. a tarpit host), and
+        # cap the whole clone at 5 minutes so a slow/malicious server can't hang
+        # the install request forever.
+        env = {
+            **os.environ,
+            "GIT_HTTP_LOW_SPEED_TIME": "30",
+            "GIT_HTTP_LOW_SPEED_LIMIT": "1024",
+        }
+        try:
+            subprocess.run(
+                ["git", "clone", "--depth", "1", url, str(target)],
+                check=True, capture_output=True, timeout=300, env=env,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise ValueError("git clone timed out (5 min cap reached)") from e
 
     @staticmethod
     def _install_zip(url: str, target: Path) -> None:
+        _validate_install_url(url)
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
             tmp_path = Path(tmp.name)
         try:
-            urllib.request.urlretrieve(url, tmp_path)
+            # 60s connect/read timeout: same stall protection as the git path,
+            # since urlretrieve has no per-host timeout of its own.
+            with urllib.request.urlopen(url, timeout=60) as resp, \
+                    open(tmp_path, "wb") as out:
+                shutil.copyfileobj(resp, out)
             with zipfile.ZipFile(tmp_path) as zf:
                 zf.extractall(target)
+        except urllib.error.URLError as e:
+            raise ValueError(f"could not download zip: {e}") from e
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -466,17 +533,35 @@ class ExtensionLoader:
         return None
 
     @staticmethod
-    def _pip_install_requirements(ext_path: Path) -> None:
+    def _pip_install_requirements(ext_path: Path) -> Optional[str]:
+        """Run ``pip install -r requirements.txt`` if present.
+
+        Returns ``None`` on success (or no requirements.txt); returns the pip
+        stderr on failure so ``install()`` can surface it on the extension
+        record instead of silently reporting a successful install of an
+        extension that won't load. Does not raise — the extension is already on
+        disk, so we register it and let the user retry a reload after fixing the
+        dependency."""
         req = ext_path / "requirements.txt"
         if not req.is_file():
-            return
+            return None
         try:
-            subprocess.run(
+            result = subprocess.run(
                 [sys.executable, "-m", "pip", "install", "-r", str(req)],
-                check=False, capture_output=True,
+                capture_output=True, text=True, timeout=600,
             )
+        except subprocess.TimeoutExpired:
+            return "pip install timed out (10 min cap reached)"
         except Exception as e:  # noqa: BLE001
             log.warning("pip install for extension failed: %s", e)
+            return f"pip install failed: {e}"
+        if result.returncode != 0:
+            tail = (result.stderr or result.stdout or "").strip().splitlines()
+            tail = "\n".join(tail[-8:]) if tail else "(no output)"
+            log.warning("pip install for %s failed (rc=%d):\n%s",
+                        ext_path.name, result.returncode, tail)
+            return f"pip install failed (rc={result.returncode}):\n{tail}"
+        return None
 
     def uninstall(self, name: str) -> None:
         self._unload_one(name)
@@ -529,33 +614,50 @@ class ExtensionLoader:
         return out
 
     def mount_into(self, app) -> None:
-        """Attach every loaded extension's routers and static mounts to the
-        FastAPI app. Called after load_all(). Idempotent — call once."""
+        """Attach loaded extensions' routers and static mounts to the FastAPI app.
+
+        Safe to call repeatedly: each router/static is mounted at most once
+        (tracked in ``self._mounted``), so re-calling it after a runtime install,
+        enable, or reload attaches a newly-loaded extension's routes without
+        doubling up the ones already there. Starlette has no unmount, so the
+        routes/statics of a *disabled* or *uninstalled* extension keep serving
+        until the server restarts (documented in docs/EXTENSIONS.md)."""
         from fastapi.staticfiles import StaticFiles
         for _name, router, prefix in self._routers:
+            if ("router", prefix) in self._mounted:
+                continue
             try:
                 app.include_router(router, prefix=prefix)
+                self._mounted.add(("router", prefix))
             except Exception as e:  # noqa: BLE001
                 log.warning("mounting router %s failed: %s", prefix, e)
         for name, path, directory in self._statics:
+            mount = f"/ext-static/{name}/{path}"
+            if ("static", mount) in self._mounted:
+                continue
             try:
-                app.mount(f"/ext-static/{name}/{path}", StaticFiles(directory=str(directory)))
+                app.mount(mount, StaticFiles(directory=str(directory)))
+                self._mounted.add(("static", mount))
             except Exception as e:  # noqa: BLE001
-                log.warning("mounting static /ext-static/%s/%s failed: %s", name, path, e)
+                log.warning("mounting static %s failed: %s", mount, e)
         # Always serve each extension's own web/ dir under the canonical URL so
         # the injected script tags resolve even if the extension didn't call
         # serve_static for it.
         for ext in self.extensions.values():
+            if ("web", ext.name) in self._mounted:
+                continue
             web = ext.path / ext.web
-            if web.is_dir():
-                try:
-                    app.mount(
-                        f"/ext-static/{ext.name}",
-                        StaticFiles(directory=str(web)),
-                        name=f"ext_web_{ext.name}",
-                    )
-                except Exception as e:  # noqa: BLE001
-                    log.warning("mounting web dir for %s failed: %s", ext.name, e)
+            if not web.is_dir():
+                continue
+            try:
+                app.mount(
+                    f"/ext-static/{ext.name}",
+                    StaticFiles(directory=str(web)),
+                    name=f"ext_web_{ext.name}",
+                )
+                self._mounted.add(("web", ext.name))
+            except Exception as e:  # noqa: BLE001
+                log.warning("mounting web dir for %s failed: %s", ext.name, e)
 
 
 # ── request / response models for the management API ────────────────

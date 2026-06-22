@@ -7,6 +7,7 @@ __pycache__/
 outputs/
 last_load.json
 settings.json
+.auth_token
 # Local A/B / verification harnesses — not part of the shipped product
 scripts/
 # Model files: ignore everything under models/ except the directory skeleton,

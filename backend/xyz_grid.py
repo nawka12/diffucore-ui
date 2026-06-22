@@ -14,6 +14,12 @@ from engine import ENGINE
 
 PARAM_TYPES = ["None", "Seed", "Sampler", "Scheduler", "Steps", "CFG Scale", "Prompt S/R", "Checkpoint"]
 
+# Hard cap on |x|·|y|·|z|. Above this a sweep is almost certainly a mistake
+# (a "50,50,50" entry is 125k generations) and would fill the disk with PNGs —
+# and reload models per cell on a Checkpoint axis. The grid fails fast with a
+# clear message before generating anything rather than running for hours.
+MAX_XYZ_CELLS = 1000
+
 _PARAM_MAP: dict[str, str] = {
     "Seed": "seed",
     "Sampler": "sampler",
@@ -262,6 +268,11 @@ def generate_xyz_grid(
     )
 
     total_cells = len(z_vals) * len(y_vals) * len(x_vals)
+    if total_cells > MAX_XYZ_CELLS:
+        raise ValueError(
+            f"X/Y/Z grid is {total_cells} cells "
+            f"({len(x_vals)}×{len(y_vals)}×{len(z_vals)}), over the "
+            f"{MAX_XYZ_CELLS}-cell cap. Narrow an axis and try again.")
     done = 0
 
     # Cumulative sampling steps across every cell — drives a single progress bar

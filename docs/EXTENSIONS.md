@@ -287,8 +287,12 @@ The loader drops the old hooks/routes/statics first so nothing doubles up.
 ## Enable / disable / uninstall
 
 - **Enable/disable** toggles whether the extension's module is imported and its
-  hooks/routes fire. Disabling unloads everything; re-enabling reloads it. The
-  frontend script tags refresh on the next page load.
+  hooks fire. Disabling stops its hooks and stops injecting its scripts; the
+  frontend script tags refresh on the next page load. Note that an extension's
+  API routes and static mounts cannot be removed without a server **restart**
+  (Starlette has no unmount), so a disabled extension's endpoints keep serving
+  until you restart. Installing, enabling, or reloading attaches new routes
+  live — no restart needed.
 - **Uninstall** deletes the extension's folder and drops its hooks, routes, and
   persisted state.
 - A **broken extension** (one whose `setup()` raises, or whose manifest is

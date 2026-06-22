@@ -73,11 +73,13 @@ def _binary() -> Path:
     return target
 
 
-def start(port: int) -> None:
+def start(port: int, token: str | None = None) -> None:
     """Launch a quick tunnel to 127.0.0.1:<port> and print the public URL.
 
     Returns immediately; the URL is printed from a background thread once
-    cloudflared registers with the Cloudflare edge.
+    cloudflared registers with the Cloudflare edge. When ``token`` is given the
+    printed URL carries ``?token=…`` so the auth gate (enabled for --share) lets
+    the first visit straight through to the app.
     """
     try:
         binary = _binary()
@@ -101,9 +103,12 @@ def start(port: int) -> None:
             if not printed:
                 match = _URL_RE.search(line)
                 if match:
+                    url = match.group(0)
+                    suffix = f"?token={token}" if token else ""
                     print(
-                        f"\n=== Public share URL ===\n  {match.group(0)}\n"
-                        "  (anyone with this link can reach your UI; Ctrl+C to stop)\n",
+                        f"\n=== Public share URL ===\n  {url}{suffix}\n"
+                        "  (anyone with this link can reach your UI; Ctrl+C to "
+                        "stop)\n",
                         flush=True,
                     )
                     printed = True

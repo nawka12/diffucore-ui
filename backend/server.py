@@ -16,6 +16,7 @@ import io
 import itertools
 import json
 import os
+import tempfile
 import threading
 import time
 from collections import deque
@@ -24,25 +25,28 @@ from typing import Callable, List, Optional
 
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Request, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
 from engine import ENGINE, SAMPLERS_SD, SAMPLERS_ANIMA, SAMPLERS_FLUX, SCHEDULERS_SD, SCHEDULERS_ANIMA, SCHEDULERS_FLUX
 from utils import (
-    OUTPUTS_DIR, detector_path,
+    OUTPUTS_DIR, MODELS_DIR, CHECKPOINTS_DIR, DIFFUSION_DIR, VAE_DIR, TE_DIR,
+    detector_path,
     scan_checkpoints, scan_loras, scan_diffusion_models,
     scan_vae, scan_text_encoders, scan_detectors, scan_upscalers, scan_outputs, next_output_path,
 )
 from xyz_grid import generate_xyz_grid, PARAM_TYPES as XYZ_PARAM_TYPES
 import metadata as md
+from auth import AuthGate, COOKIE_NAME, load_or_create_token, origin_ok, read_login_token
 from extensions import (
     ExtensionLoader, InstallPayload, TogglePayload, UninstallPayload,
 )
 
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024  # 64 MB cap for metadata-parse uploads
+MAX_BODY_BYTES = 128 * 1024 * 1024   # global cap: base64 of a 4K PNG fits, GBs don't
 
 _ROOT = Path(__file__).resolve().parent.parent
 _STATIC = _ROOT / "static"
@@ -70,6 +74,52 @@ _INDEX_HTML = (_STATIC / "index.html").read_text(encoding="utf-8").replace(
 # change and the browser refetches the new JS/CSS. Production stays on the
 # startup snapshot — a single read, no per-request stat calls.
 _DEV_MODE = os.environ.get("DIFFUCORE_DEV") in ("1", "true", "yes")
+
+
+# ── auth + CSRF guard ───────────────────────────────────────────────
+# Disabled by default (localhost is private). ``app.py`` enables it for
+# ``--share`` (auto-generated token) and ``--auth-token`` (explicit), or it can
+# be turned on by setting DIFFUCORE_AUTH_TOKEN in the environment. The middleware
+# below gates every non-public path on a valid cookie / bearer token, and blocks
+# cross-origin state-changing requests (CSRF) regardless of auth.
+AUTH = AuthGate(token="", enabled=False)
+
+
+def configure_auth(*, token: str, enabled: bool, secure: bool = False) -> None:
+    """Turn the auth gate on (called from app.py once args are parsed, before
+    uvicorn.run). The middleware reads ``AUTH`` at request time, so configuring
+    here is in time for the first request."""
+    AUTH.token = token
+    AUTH.enabled = enabled
+    AUTH.secure_cookie = secure
+
+
+if os.environ.get("DIFFUCORE_AUTH_TOKEN"):
+    configure_auth(
+        token=os.environ["DIFFUCORE_AUTH_TOKEN"],
+        enabled=True,
+        secure=os.environ.get("DIFFUCORE_AUTH_SECURE", "") in ("1", "true", "yes"),
+    )
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically: write a temp file in the same
+    directory, then ``os.replace`` it over the target. A crash or kill mid-write
+    leaves the previous file intact instead of a truncated one — so settings,
+    last-load, and extension state don't silently fall back to defaults."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix="." + path.name + "-", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(tmp, path)
+        except Exception:
+            try: os.unlink(tmp)
+            except OSError: pass
+            raise
+    except OSError:
+        pass
 
 
 def _ext_script_tags() -> str:
@@ -128,16 +178,16 @@ class GeneratePayload(BaseModel):
     neg: str = ""
     sampler: str = "dpmpp_2m"
     scheduler: str = "karras"
-    steps: int = 25
-    cfg: float = 6.0
-    seed: int = -1
-    width: int = 1024
-    height: int = 1024
-    strength: float = 0.6
-    shift: float = 3.0
-    teacache: float = 0.0                # TeaCache rel-L1 threshold (0 = off; Anima only)
+    steps: int = Field(25, ge=1, le=200)
+    cfg: float = Field(6.0, ge=0.0, le=50.0)
+    seed: int = Field(-1, ge=-1, le=2**63 - 1)
+    width: int = Field(1024, ge=64, le=8192)
+    height: int = Field(1024, ge=64, le=8192)
+    strength: float = Field(0.6, ge=0.0, le=1.0)
+    shift: float = Field(3.0, ge=0.0, le=30.0)
+    teacache: float = Field(0.0, ge=0.0, le=1.0)           # TeaCache rel-L1 threshold (0 = off; Anima only)
     teacache_calibrated: bool = True     # use the fitted rescale polynomial vs the raw identity path
-    deepcache: int = 1                   # DeepCache reuse interval (1 = off; SD/SDXL UNet only)
+    deepcache: int = Field(1, ge=1, le=64)                # DeepCache reuse interval (1 = off; SD/SDXL UNet only)
     input_image: Optional[str] = None   # base64 / data-URL
     mask_image: Optional[str] = None
     preview: bool = True                 # stream live latent previews while sampling
@@ -147,41 +197,41 @@ class GeneratePayload(BaseModel):
     detail_enabled: bool = False
     detail_models: List[DetailerModel] = []
     detail_neg: str = ""
-    detail_confidence: float = 0.3
-    detail_strength: float = 0.4
-    detail_dilation: int = 4
-    detail_padding: int = 32
-    detail_blur: int = 4
-    detail_max: int = 0                  # 0 = all detections
+    detail_confidence: float = Field(0.3, ge=0.0, le=1.0)
+    detail_strength: float = Field(0.4, ge=0.0, le=1.0)
+    detail_dilation: int = Field(4, ge=0, le=128)
+    detail_padding: int = Field(32, ge=0, le=512)
+    detail_blur: int = Field(4, ge=0, le=64)
+    detail_max: int = Field(0, ge=0, le=1000)              # 0 = all detections
     detail_teacache: bool = False        # apply the main TeaCache threshold to detailer passes (Anima)
 
     # ── upscaler (tiled, post-gen) ─────────────────────────────────
     upscale_enabled: bool = False
-    upscale_scale: float = 2.0
-    upscale_denoise: float = 0.35
-    upscale_tile: int = 1024
-    upscale_overlap: int = 128
+    upscale_scale: float = Field(2.0, ge=1.0, le=8.0)
+    upscale_denoise: float = Field(0.35, ge=0.0, le=1.0)
+    upscale_tile: int = Field(1024, ge=128, le=4096)
+    upscale_overlap: int = Field(128, ge=0, le=2048)
     upscale_prompt: str = ""
-    upscale_teacache: float = 0.0        # TeaCache for the refine pass (0 = off); independent of main gen
+    upscale_teacache: float = Field(0.0, ge=0.0, le=1.0)   # TeaCache for the refine pass (0 = off); independent of main gen
     upscale_base: str = ""               # ESRGAN model in models/upscalers/ (blank = Lanczos)
 
 
 class UpscalePayload(BaseModel):
     """Standalone upscale — input image + all params the tiled upscaler needs."""
     input_image: str = ""
-    scale: float = 2.0
-    tile: int = 1024
-    overlap: int = 128
-    denoise: float = 0.35
+    scale: float = Field(2.0, ge=1.0, le=8.0)
+    tile: int = Field(1024, ge=128, le=4096)
+    overlap: int = Field(128, ge=0, le=2048)
+    denoise: float = Field(0.35, ge=0.0, le=1.0)
     base: str = ""                       # ESRGAN model in models/upscalers/ (blank = Lanczos)
     prompt: str = ""
     neg: str = ""
-    steps: int = 25
-    cfg: float = 6.0
+    steps: int = Field(25, ge=1, le=200)
+    cfg: float = Field(6.0, ge=0.0, le=50.0)
     sampler: str = "dpmpp_2m"
     scheduler: str = "karras"
-    seed: int = -1
-    teacache: float = 0.0
+    seed: int = Field(-1, ge=-1, le=2**63 - 1)
+    teacache: float = Field(0.0, ge=0.0, le=1.0)
     teacache_calibrated: bool = True
     preview: bool = True
 
@@ -189,13 +239,13 @@ class UpscalePayload(BaseModel):
 class CalibratePayload(BaseModel):
     prompt: str = ""
     neg: str = ""
-    steps: int = 12
-    cfg: float = 4.0
-    seed: int = 0
-    width: int = 1024
-    height: int = 1024
-    shift: float = 3.0
-    grid: int = 80                    # dense teacher-trajectory candidate count (K)
+    steps: int = Field(12, ge=1, le=200)
+    cfg: float = Field(4.0, ge=0.0, le=50.0)
+    seed: int = Field(0, ge=0, le=2**63 - 1)
+    width: int = Field(1024, ge=64, le=8192)
+    height: int = Field(1024, ge=64, le=8192)
+    shift: float = Field(3.0, ge=0.0, le=30.0)
+    grid: int = Field(80, ge=1, le=500)    # dense teacher-trajectory candidate count (K)
 
 
 class GenDefaults(BaseModel):
@@ -235,14 +285,14 @@ class Settings(BaseModel):
 class XYZPayload(BaseModel):
     prompt: str = ""
     neg: str = ""
-    width: int = 1024
-    height: int = 1024
-    steps: int = 25
-    cfg: float = 6.0
+    width: int = Field(1024, ge=64, le=8192)
+    height: int = Field(1024, ge=64, le=8192)
+    steps: int = Field(25, ge=1, le=200)
+    cfg: float = Field(6.0, ge=0.0, le=50.0)
     sampler: str = "dpmpp_2m"
     scheduler: str = "karras"
-    seed: int = -1
-    shift: float = 3.0
+    seed: int = Field(-1, ge=-1, le=2**63 - 1)
+    shift: float = Field(3.0, ge=0.0, le=30.0)
     x_type: str = "None"
     x_vals: str = ""
     y_type: str = "None"
@@ -286,6 +336,10 @@ def _save_output(image: Image.Image, gen_kwargs: dict,
     meta_kwargs = {k: v for k, v in gen_kwargs.items() if k != "progress_callback"}
     meta.add_text("parameters", md.format_metadata(meta_kwargs, ENGINE, detailer=detailer, upscale=upscale))
     image.save(out, pnginfo=meta)
+    # Invalidate the gallery search index so the new image is visible to the next
+    # search without waiting for the day-folder mtime to advance (covers
+    # same-second saves on 1s-mtime filesystems, and standalone upscale saves).
+    _invalidate_gallery_index()
     return out
 
 
@@ -572,6 +626,10 @@ QUEUE_WAKE = threading.Event()
 CURRENT: Optional[Job] = None
 
 # One asyncio.Queue per connected SSE client; the worker fans events out to all.
+# Capped so a slow client (or a runaway SSE reconnector swarm on a flaky network)
+# can't grow RSS unbounded: on overflow we drop the oldest event — the newest
+# state (progress, preview, queue) is what the UI wants anyway.
+SSE_QUEUE_MAX = 256
 SUBSCRIBERS: "set[asyncio.Queue]" = set()
 APP_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
@@ -586,7 +644,21 @@ SHUTDOWN = asyncio.Event()
 def _wake_for_shutdown() -> None:
     SHUTDOWN.set()
     for q in list(SUBSCRIBERS):
-        q.put_nowait(None)
+        _force_put(q, None)
+
+
+def _force_put(q: "asyncio.Queue", ev) -> None:
+    """Put on a capped queue, popping oldest until it fits. Used for the
+    shutdown sentinel (must land) and for broadcasts (drop-oldest on overflow)."""
+    while True:
+        try:
+            q.put_nowait(ev)
+            return
+        except asyncio.QueueFull:
+            try:
+                q.get_nowait()
+            except asyncio.QueueEmpty:
+                return  # can't happen under QueueFull, but guard the race
 
 
 _uvicorn_handle_exit = uvicorn.Server.handle_exit
@@ -615,10 +687,7 @@ def _read_last_load() -> Optional[dict]:
 
 
 def _write_last_load(form: dict) -> None:
-    try:
-        _LAST_LOAD_PATH.write_text(json.dumps(form))
-    except OSError:
-        pass
+    _atomic_write_text(_LAST_LOAD_PATH, json.dumps(form))
 
 
 LAST_LOAD_FORM: Optional[dict] = _read_last_load()
@@ -637,10 +706,7 @@ def _read_settings() -> dict:
 
 
 def _write_settings(s: Settings) -> None:
-    try:
-        _SETTINGS_PATH.write_text(json.dumps(s.model_dump()))
-    except OSError:
-        pass
+    _atomic_write_text(_SETTINGS_PATH, json.dumps(s.model_dump()))
 
 
 SETTINGS: dict = _read_settings()
@@ -648,13 +714,14 @@ SETTINGS: dict = _read_settings()
 
 def _push(ev: dict) -> None:
     """Fan one event out to every connected SSE client. Thread-safe: callable
-    from the worker thread or a request handler."""
+    from the worker thread or a request handler. On a full subscriber queue we
+    drop the oldest event (newest state wins) rather than block the worker."""
     loop = APP_LOOP
     if loop is None:
         return
     def deliver():
         for q in list(SUBSCRIBERS):
-            q.put_nowait(ev)
+            _force_put(q, ev)
     loop.call_soon_threadsafe(deliver)
 
 
@@ -755,11 +822,31 @@ def _worker() -> None:
             _push({"type": "cancelled", "job": job.id})
         except Exception as e:  # noqa: BLE001 — surface any engine error to the UI
             job.status = "error"
-            _push({"type": "error", "job": job.id, "message": str(e)})
+            _push({"type": "error", "job": job.id, "message": _friendly_error(e)})
         finally:
             with QUEUE_LOCK:
                 CURRENT = None
             _broadcast_queue()
+
+
+def _friendly_error(e: Exception) -> str:
+    """Map a raw engine exception to a user-actionable message.
+
+    CUDA OOM is the common one and surfaces verbatim from torch otherwise —
+    ``"CUDA out of memory. Tried to allocate …"`` with no guidance. Catch it
+    specifically, free the cache so the next job isn't starved, and append a hint.
+    """
+    try:
+        import torch  # local import — torch is heavy and optional for the tests
+        if isinstance(e, torch.cuda.OutOfMemoryError):
+            try: torch.cuda.empty_cache()
+            except Exception: pass  # noqa: BLE001 — best-effort cleanup
+            return (f"{e}  →  out of VRAM. Try offload=stream (Settings or the "
+                    f"Load panel), a smaller width/height, fewer steps, or a "
+                    f"smaller detailer/upscale tile.")
+    except Exception:  # noqa: BLE001 — torch not available (e.g. CPU-only test env)
+        pass
+    return str(e)
 
 
 # ── app ─────────────────────────────────────────────────────────────
@@ -767,6 +854,42 @@ def _worker() -> None:
 app = FastAPI(title="Diffucore")
 print(f"[startup] offload default '{ENGINE.recommended_offload()}' "
       f"(device: {ENGINE.device})")
+
+
+# ── request guard: body-size cap, CSRF/Origin check, auth gate ──────
+# Runs before route handlers for every request. Order: cheap header checks
+# first (Content-Length, Origin), then the auth gate which may read a cookie.
+_PUBLIC_AUTH = {("GET", "/"), ("POST", "/api/auth/login"),
+                ("GET", "/api/auth/status"), ("POST", "/api/auth/logout")}
+
+
+@app.middleware("http")
+async def _request_guard(request: Request, call_next):
+    # 1. Global body-size cap (#5): /api/metadata/parse keeps its tighter
+    #    MAX_UPLOAD_BYTES check inside the handler; this is the backstop for
+    #    /api/generate, /api/upscale, etc. so a client can't stream GBs of
+    #    base64 into the queue and OOM the process.
+    cl = request.headers.get("content-length")
+    if cl:
+        try:
+            if int(cl) > MAX_BODY_BYTES:
+                return JSONResponse({"error": "request body too large"},
+                                    status_code=413)
+        except ValueError:
+            pass
+    # 2. CSRF / Origin allowlist (#2): block cross-origin state-changing
+    #    requests. Same-origin fetches carry a matching Origin; curl sends none.
+    if not origin_ok(request):
+        return JSONResponse({"error": "cross-origin request blocked"},
+                            status_code=403)
+    # 3. Auth gate (#1): when enabled, every non-public path needs a valid
+    #    cookie / bearer token / ?token=. Public paths are served so the user
+    #    can reach the login page and submit the token.
+    if AUTH.enabled and (request.method, request.url.path) not in _PUBLIC_AUTH:
+        denied = AUTH.gate_response(request)
+        if denied is not None:
+            return denied
+    return await call_next(request)
 
 
 @app.on_event("startup")
@@ -787,8 +910,44 @@ async def _startup():
 
 
 @app.get("/")
-def index():
+def index(request: Request):
+    # Auth on + a ``?token=…`` query → validate, set the cookie, redirect to bare
+    # "/" (so the token isn't left in browser history). Auth on + no cookie →
+    # serve the login page (the app JS isn't exposed until the token is supplied).
+    # Auth on + valid cookie → fall through to the app index. Auth off → index.
+    if AUTH.enabled:
+        qp_token = request.query_params.get("token")
+        if qp_token is not None:
+            resp = AUTH.accept(qp_token)
+            if resp is None:
+                return JSONResponse({"error": "invalid token"}, status_code=401)
+            return resp
+        if not AUTH.has_access(request):
+            return AUTH.login_page()
     return HTMLResponse(_render_index(), headers={"Cache-Control": "no-cache"})
+
+
+# ── auth endpoints (only meaningful when the gate is enabled) ───────
+
+@app.get("/api/auth/status")
+def api_auth_status():
+    return {"auth": AUTH.enabled, "secure": AUTH.secure_cookie}
+
+
+@app.post("/api/auth/login")
+async def api_auth_login(request: Request):
+    token = await read_login_token(request)
+    resp = AUTH.accept(token)
+    if resp is None:
+        return JSONResponse({"error": "invalid token"}, status_code=401)
+    return resp
+
+
+@app.post("/api/auth/logout")
+def api_auth_logout():
+    resp = JSONResponse({"ok": True})
+    AUTH.clear_cookie(resp)
+    return resp
 
 
 @app.get("/api/models")
@@ -831,6 +990,51 @@ def _do_load(p: LoadPayload) -> str:
     # on success, or "Model already loaded"; anything else is an error message).
     EXTENSIONS.run_hook("post_load", payload=p, status=status)
     return status
+
+
+def _validate_load(p: LoadPayload) -> Optional[str]:
+    """Fail-fast: return an error string if a named file isn't on disk, else None.
+
+    A misspelled checkpoint would otherwise wait its turn in the queue (behind
+    any running generation) before failing inside ``ENGINE.load_*``. Checking at
+    submit time lets ``/api/load`` return a 400 immediately. Mirrors the
+    "Select …" guards in ``_do_load_impl`` so the error message stays consistent.
+    """
+    def _missing(label: str, name: str, d: Path) -> Optional[str]:
+        if not (d / name).is_file():
+            return f"{label} not found: {name}"
+        return None
+
+    if p.model_type == "Anima":
+        for label, name, d in (("DiT", p.dit, DIFFUSION_DIR),
+                               ("VAE", p.vae, VAE_DIR),
+                               ("Text encoder", p.te, TE_DIR)):
+            if not name or name.startswith("("):
+                return "Select all three Anima files"
+            err = _missing(label, name, d)
+            if err:
+                return err
+        return None
+    if p.model_type == "FLUX":
+        if p.checkpoint and not p.checkpoint.startswith("("):
+            return _missing("Checkpoint", p.checkpoint, CHECKPOINTS_DIR)
+        for label, name, d in (("DiT", p.dit, DIFFUSION_DIR),
+                               ("VAE", p.vae, VAE_DIR),
+                               ("Text encoder", p.te, TE_DIR)):
+            if not name or name.startswith("("):
+                return "Select an all-in-one checkpoint, or DiT + VAE + Text encoder"
+            err = _missing(label, name, d)
+            if err:
+                return err
+        if p.clip and not p.clip.startswith("("):
+            err = _missing("CLIP", p.clip, TE_DIR)
+            if err:
+                return err
+        return None
+    # SD/SDXL
+    if not p.checkpoint or p.checkpoint.startswith("("):
+        return "Select a model"
+    return _missing("Checkpoint", p.checkpoint, CHECKPOINTS_DIR)
 
 
 def _do_load_impl(p: LoadPayload) -> str:
@@ -894,7 +1098,13 @@ def _do_load_impl(p: LoadPayload) -> str:
 async def api_load(p: LoadPayload):
     """Queue a model load. Loading swaps the single in-memory model, so it runs
     on the same worker as generation — it simply waits its turn instead of being
-    refused. On success the new load state is broadcast to every device."""
+    refused. On success the new load state is broadcast to every device.
+
+    File existence is validated up front so a misspelled checkpoint returns a 400
+    immediately instead of failing after waiting its turn in the queue."""
+    err = _validate_load(p)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     def run(job: Job) -> dict:
         global LAST_LOAD_FORM
         status = _do_load(p)
@@ -1040,6 +1250,7 @@ def api_extensions_install(p: InstallPayload):
         ext = EXTENSIONS.install(p.url)
     except Exception as e:  # noqa: BLE001 — surface install failures to the UI
         raise HTTPException(status_code=400, detail=str(e))
+    EXTENSIONS.mount_into(app)  # attach the new extension's routes/statics now
     return {"extension": ext.to_dict()}
 
 
@@ -1049,6 +1260,8 @@ def api_extensions_toggle(p: TogglePayload):
     stop firing until re-enabled (no server restart needed for the backend; the
     frontend script tags refresh on the next page load)."""
     ext = EXTENSIONS.set_enabled(p.name, p.enabled)
+    if p.enabled:
+        EXTENSIONS.mount_into(app)  # a just-enabled extension's routes need attaching
     return {"extension": ext.to_dict()}
 
 
@@ -1057,6 +1270,7 @@ def api_extensions_reload(name: str):
     """Re-import an extension's entry module — handy while developing one. Drops
     its old hooks/routes/statics first so nothing doubles up."""
     EXTENSIONS.reload_one(name)
+    EXTENSIONS.mount_into(app)  # attach any routes/statics the reload re-added
     ext = EXTENSIONS.extensions.get(name)
     if ext is None:
         raise HTTPException(status_code=404, detail="extension not found")
@@ -1100,7 +1314,7 @@ def api_cancel(p: CancelPayload):
 async def api_events(request: Request):
     """Shared SSE stream: queue changes, progress, previews, and model status
     are broadcast here to every connected device."""
-    q: asyncio.Queue = asyncio.Queue()
+    q: asyncio.Queue = asyncio.Queue(maxsize=SSE_QUEUE_MAX)
     SUBSCRIBERS.add(q)
     snapshot = {"type": "snapshot", **_state_payload(),
                 "jobs": _queue_list(), "running": CURRENT.id if CURRENT else None}
@@ -1157,9 +1371,20 @@ def api_gallery(q: str = ""):
 # One pass opens every output PNG to parse its AUTO1111 metadata — too costly to
 # repeat per keystroke, so the result is cached and only rebuilt when the outputs
 # dir's newest folder mtime advances (a saved image bumps its date folder's
-# mtime, invalidating the cache).
+# mtime, invalidating the cache). The rebuild is guarded by a lock so two
+# concurrent searches don't each re-open every PNG and race to assign the index
+# (last writer wins, wasted work). Saves and deletes invalidate explicitly so a
+# same-second save on a 1s-mtime filesystem (ext4 default) still shows up.
 _GALLERY_INDEX: Optional[list] = None
 _GALLERY_INDEX_KEY: float = 0.0
+_GALLERY_INDEX_LOCK = threading.Lock()
+
+
+def _invalidate_gallery_index() -> None:
+    global _GALLERY_INDEX, _GALLERY_INDEX_KEY
+    with _GALLERY_INDEX_LOCK:
+        _GALLERY_INDEX = None
+        _GALLERY_INDEX_KEY = 0.0
 
 
 def _gallery_index() -> list:
@@ -1171,25 +1396,26 @@ def _gallery_index() -> list:
         )
     except OSError:
         newest = 0.0
-    if _GALLERY_INDEX is not None and newest <= _GALLERY_INDEX_KEY:
-        return _GALLERY_INDEX
-    index: list = []
-    for f in scan_outputs():
-        raw = md.read_png_metadata(str(f))
-        fields = md.parse_metadata(raw) if raw else {}
-        index.append({
-            "path": f.relative_to(OUTPUTS_DIR).as_posix(),
-            "name": f.name,
-            "date": f.parent.name,
-            "prompt": str(fields.get("prompt", "")),
-            "neg": str(fields.get("negative_prompt", "")),
-            "model": str(fields.get("model", "")),
-            "sampler": str(fields.get("sampler", "")),
-            "scheduler": str(fields.get("scheduler", "")),
-        })
-    _GALLERY_INDEX = index
-    _GALLERY_INDEX_KEY = newest
-    return index
+    with _GALLERY_INDEX_LOCK:
+        if _GALLERY_INDEX is not None and newest <= _GALLERY_INDEX_KEY:
+            return _GALLERY_INDEX
+        index: list = []
+        for f in scan_outputs():
+            raw = md.read_png_metadata(str(f))
+            fields = md.parse_metadata(raw) if raw else {}
+            index.append({
+                "path": f.relative_to(OUTPUTS_DIR).as_posix(),
+                "name": f.name,
+                "date": f.parent.name,
+                "prompt": str(fields.get("prompt", "")),
+                "neg": str(fields.get("negative_prompt", "")),
+                "model": str(fields.get("model", "")),
+                "sampler": str(fields.get("sampler", "")),
+                "scheduler": str(fields.get("scheduler", "")),
+            })
+        _GALLERY_INDEX = index
+        _GALLERY_INDEX_KEY = newest
+        return index
 
 
 def _gallery_search(query: str) -> list:
@@ -1253,9 +1479,7 @@ def api_gallery_delete(path: str):
     # Invalidate the search index so the next /api/gallery?q= reflects the
     # deletion. Rebuilding is cheap (50 ms for ~1k images) and only happens
     # when search is actually used next.
-    global _GALLERY_INDEX, _GALLERY_INDEX_KEY
-    _GALLERY_INDEX = None
-    _GALLERY_INDEX_KEY = 0.0
+    _invalidate_gallery_index()
     return {"deleted": path}
 
 
