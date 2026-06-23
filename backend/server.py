@@ -40,6 +40,7 @@ from utils import (
     detector_path,
     scan_checkpoints, scan_loras, scan_diffusion_models,
     scan_vae, scan_text_encoders, scan_detectors, scan_upscalers, scan_outputs, next_output_path,
+    invalidate_outputs_cache,
 )
 from xyz_grid import generate_xyz_grid, PARAM_TYPES as XYZ_PARAM_TYPES
 import metadata as md
@@ -409,7 +410,10 @@ def _save_output(image: Image.Image, gen_kwargs: dict,
     # Invalidate the gallery search index so the new image is visible to the next
     # search without waiting for the day-folder mtime to advance (covers
     # same-second saves on 1s-mtime filesystems, and standalone upscale saves).
+    # Also drop the outputs listing cache so the plain /api/gallery (no query)
+    # sees the new file on the next open without re-walking the tree.
     _invalidate_gallery_index()
+    invalidate_outputs_cache()
     return out
 
 
@@ -991,6 +995,7 @@ def _save_partial_preview(job: Optional[Job]) -> Optional[Path]:
         meta.add_text("parameters", f"PARTIAL — interrupted by shutdown. {info}")
         job.last_preview.save(out, pnginfo=meta)
         _invalidate_gallery_index()
+        invalidate_outputs_cache()
         try:
             rel = str(out.relative_to(OUTPUTS_DIR))
         except ValueError:
@@ -1641,23 +1646,69 @@ def _gallery_search(query: str) -> list:
     return out
 
 
+def _thumb_cache_path(target: Path) -> Path:
+    """Cache path for ``target``'s thumbnail, keyed by source mtime+size
+    (IMPROVE.md #12).
+
+    The key encodes ``{stem}_{mtime_ns}_{size}`` so an overwritten source image
+    (re-saved externally, or via any future in-place save) busts the stale webp:
+    a new write changes the mtime (ext4 stores ns resolution) and usually the
+    size, so the cache filename changes and a fresh thumbnail is generated
+    instead of serving one that no longer matches the image. The date-folder
+    structure is preserved under ``_THUMBS_DIR`` for cleanliness.
+    """
+    rel = target.relative_to(OUTPUTS_DIR.resolve())
+    try:
+        st = target.stat()
+        key = f"{target.stem}_{st.st_mtime_ns}_{st.st_size}"
+    except OSError:
+        key = target.stem
+    return _THUMBS_DIR / rel.parent / f"{key}.webp"
+
+
+def _purge_thumb_cache(target: Path, keep: Optional[Path] = None) -> None:
+    """Remove cached thumbnails for ``target`` (all mtime/size versions).
+
+    Used by the gallery delete (drop every version — the source is gone) and by
+    ``api_thumb`` after generating a fresh thumbnail (drop older versions of the
+    same source so at most one cache file lingers per image). Best-effort: a
+    missing thumbs dir or a vanished file is silently skipped."""
+    try:
+        rel = target.relative_to(OUTPUTS_DIR.resolve())
+    except ValueError:
+        return
+    thumb_dir = _THUMBS_DIR / rel.parent
+    if not thumb_dir.is_dir():
+        return
+    for f in thumb_dir.glob(f"{target.stem}_*.webp"):
+        if f != keep:
+            try: f.unlink()
+            except OSError: pass
+
+
 @app.get("/api/thumb")
 def api_thumb(path: str):
     """Serve a small cached thumbnail for a gallery image (path under outputs/).
 
     The grid loads hundreds of these instead of the full ~1 MB PNGs. Resized on
     the first request and cached under .cache/thumbs/ (outside outputs/, so
-    ``scan_outputs`` never lists them); every later request is served from disk."""
+    ``scan_outputs`` never lists them); every later request is served from disk.
+    The cache file is keyed by the source's mtime+size, so an overwritten source
+    (re-saved externally or via an in-place save) busts the stale webp instead of
+    serving a thumbnail that no longer matches the image — older versions for the
+    same source are purged when a fresh one is generated."""
     target = (OUTPUTS_DIR / path).resolve()
-    if OUTPUTS_DIR.resolve() not in target.parents or not target.is_file():
+    outputs_root = OUTPUTS_DIR.resolve()
+    if outputs_root not in target.parents or not target.is_file():
         raise HTTPException(status_code=404)
-    cache = (_THUMBS_DIR / target.relative_to(OUTPUTS_DIR.resolve())).with_suffix(".webp")
+    cache = _thumb_cache_path(target)
     if not cache.is_file():
         cache.parent.mkdir(parents=True, exist_ok=True)
         with Image.open(target) as im:
             im = im.convert("RGB")
             im.thumbnail((THUMB_MAX, THUMB_MAX))
             im.save(cache, "WEBP", quality=80)
+        _purge_thumb_cache(target, keep=cache)  # drop older mtime/size versions of this source
     return FileResponse(cache, media_type="image/webp")
 
 
@@ -1683,15 +1734,15 @@ def api_gallery_delete(path: str):
         shutil.move(str(target), str(trashed))
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Could not delete: {e}")
-    # Drop the cached thumbnail (may not exist if never viewed).
-    cache = (_THUMBS_DIR / target.relative_to(outputs_root)).with_suffix(".webp")
-    if cache.is_file():
-        try: cache.unlink()
-        except OSError: pass
+    # Drop any cached thumbnails for this source (every mtime/size version; may
+    # not exist if the image was never viewed in the grid).
+    _purge_thumb_cache(target)
     # Invalidate the search index so the next /api/gallery?q= reflects the
     # deletion. Rebuilding is cheap (50 ms for ~1k images) and only happens
-    # when search is actually used next.
+    # when search is actually used next. Also drop the outputs listing cache
+    # so the plain /api/gallery (no query) doesn't list the trashed file.
     _invalidate_gallery_index()
+    invalidate_outputs_cache()
     # Purge aged trash entries on the way out — one iterdir + mtime check.
     try:
         _purge_trash()

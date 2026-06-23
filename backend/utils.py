@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import date
 from pathlib import Path
-from typing import List, Set
+from typing import List, Optional, Set
 
 ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = ROOT / "models"
@@ -129,13 +130,78 @@ def _output_sort_key(f: Path) -> tuple:
 
 
 def scan_outputs() -> List[Path]:
+    """List output PNGs newest-first, cached in memory (IMPROVE.md #11).
+
+    Walking every date folder + every file on each gallery open gets costly
+    after a year of daily use (hundreds of dirs, tens of thousands of files).
+    The result is cached and rebuilt only when the outputs dir's newest date
+    folder mtime advances (catches external changes). The cache key also
+    includes ``str(OUTPUTS_DIR)``, so a repointed outputs dir (tests, a future
+    ``DIFFUCORE_DATA_DIR``) always misses instead of serving a stale list.
+
+    Server saves/deletes call ``invalidate_outputs_cache`` to cover same-second
+    changes on 1s-mtime filesystems (ext4 default) — the mtime guard alone would
+    miss those. Cold start: built lazily on the first request.
+    """
+    global _OUTPUTS_CACHE, _OUTPUTS_CACHE_KEY
+    newest = _outputs_newest_mtime()
+    key = (str(OUTPUTS_DIR), newest)
+    with _OUTPUTS_CACHE_LOCK:
+        if _OUTPUTS_CACHE is not None and key == _OUTPUTS_CACHE_KEY:
+            return list(_OUTPUTS_CACHE)  # defensive copy: preserve the old "fresh list" contract
+        _ensure_dirs()
+        cache = _scan_outputs_uncached()
+        _OUTPUTS_CACHE = cache
+        _OUTPUTS_CACHE_KEY = key
+        return list(cache)
+
+
+# ── outputs listing cache (IMPROVE.md #11) ───────────────────────────
+# In-memory cache of scan_outputs()'s result so a gallery open doesn't re-walk
+# the whole outputs tree every time. Rebuilt on the first request after a cold
+# start, and refreshed when the newest date-folder mtime advances (external
+# change) or when the server invalidates it after a save/delete (covers
+# same-second changes on 1s-mtime filesystems). Keyed by the outputs dir path
+# too so monkeypatching OUTPUTS_DIR (tests) always misses.
+_OUTPUTS_CACHE: Optional[List[Path]] = None
+_OUTPUTS_CACHE_KEY: tuple = ()  # (str(OUTPUTS_DIR), newest date-folder mtime)
+_OUTPUTS_CACHE_LOCK = threading.Lock()
+
+
+def invalidate_outputs_cache() -> None:
+    """Clear the in-memory outputs listing cache.
+
+    Called by the server after a save or a gallery delete so a same-second
+    change on a 1s-mtime filesystem (ext4 default) is reflected — the mtime
+    guard in ``scan_outputs`` alone would miss it."""
+    global _OUTPUTS_CACHE, _OUTPUTS_CACHE_KEY
+    with _OUTPUTS_CACHE_LOCK:
+        _OUTPUTS_CACHE = None
+        _OUTPUTS_CACHE_KEY = ()
+
+
+def _outputs_newest_mtime() -> float:
+    """Newest mtime among the date folders in OUTPUTS_DIR (0.0 if empty/missing).
+
+    A saved image bumps its date folder's mtime, so this is a cheap staleness
+    signal — one iterdir of the date folders only, not the files inside them."""
+    try:
+        return max(
+            (d.stat().st_mtime for d in OUTPUTS_DIR.iterdir() if d.is_dir()),
+            default=0.0,
+        )
+    except OSError:
+        return 0.0
+
+
+def _scan_outputs_uncached() -> List[Path]:
     _ensure_dirs()
-    files = []
     # Skip dot-dirs (notably ``.trash/`` — the gallery's soft-delete holding pen)
     # so trashed images don't reappear in the gallery list. Real date folders are
     # ``DD-MM-YYYY`` and never start with a dot.
     dirs = [d for d in OUTPUTS_DIR.iterdir() if d.is_dir() and not d.name.startswith(".")]
     dirs.sort(key=lambda d: _parse_date_dir(d.name), reverse=True)
+    files: List[Path] = []
     for d in dirs:
         pngs = [f for f in d.iterdir() if f.suffix.lower() == ".png"]
         pngs.sort(key=_output_sort_key, reverse=True)

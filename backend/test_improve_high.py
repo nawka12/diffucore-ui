@@ -247,6 +247,115 @@ def test_scan_outputs_skips_dot_trash(tmp_path, monkeypatch):
     assert "trashed.png" not in names
 
 
+# ── #11: scan_outputs in-memory cache ────────────────────────────────
+
+def test_scan_outputs_cache_avoids_rewalk_and_invalidates(tmp_path, monkeypatch):
+    import utils
+    out = tmp_path / "outputs"
+    out.mkdir()
+    day = out / "01-01-2026"
+    day.mkdir()
+    (day / "01-1.png").write_bytes(b"x")
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
+    utils.invalidate_outputs_cache()  # clean slate: a prior test may have cached
+
+    calls = {"n": 0}
+    real = utils._scan_outputs_uncached
+
+    def counting():
+        calls["n"] += 1
+        return real()
+
+    monkeypatch.setattr(utils, "_scan_outputs_uncached", counting)
+
+    first = utils.scan_outputs()
+    assert calls["n"] == 1                       # cold start: walked once
+    assert [f.name for f in first] == ["01-1.png"]
+
+    second = utils.scan_outputs()
+    assert calls["n"] == 1                       # cache hit: no re-walk
+    assert [f.name for f in second] == ["01-1.png"]
+
+    # A new file appears only after the save/delete invalidation hook fires.
+    (day / "02-2.png").write_bytes(b"x")
+    utils.invalidate_outputs_cache()
+    third = utils.scan_outputs()
+    assert calls["n"] == 2                       # rebuilt after invalidation
+    names = [f.name for f in third]
+    assert "01-1.png" in names and "02-2.png" in names
+
+
+def test_scan_outputs_cache_misses_when_outputs_dir_repointed(tmp_path, monkeypatch):
+    """A repointed OUTPUTS_DIR (tests, a future DIFFUCORE_DATA_DIR) must always
+    miss — the cache key includes the dir path so a stale list from another dir
+    is never served."""
+    import utils
+    utils.invalidate_outputs_cache()
+
+    out_a = tmp_path / "a" / "outputs"
+    out_a.mkdir(parents=True)
+    (out_a / "01-01-2026").mkdir()
+    (out_a / "01-01-2026" / "01-a.png").write_bytes(b"x")
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out_a)
+    assert [f.name for f in utils.scan_outputs()] == ["01-a.png"]
+
+    out_b = tmp_path / "b" / "outputs"
+    out_b.mkdir(parents=True)
+    (out_b / "02-02-2026").mkdir()
+    (out_b / "02-02-2026" / "02-b.png").write_bytes(b"x")
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out_b)
+    # No explicit invalidate — the dir change alone must force a fresh walk.
+    assert [f.name for f in utils.scan_outputs()] == ["02-b.png"]
+
+
+# ── #12: /api/thumb cache keyed by source mtime+size ─────────────────
+
+def test_thumb_cache_busts_on_source_overwrite(monkeypatch, tmp_path):
+    _setup_outputs(tmp_path, monkeypatch)  # outputs/01-01-2026/01-123.png (8x8)
+    target = server.OUTPUTS_DIR / "01-01-2026" / "01-123.png"
+    assert target.is_file()
+
+    # First request generates and caches the thumbnail.
+    server.api_thumb(path="01-01-2026/01-123.png")
+    cache1 = server._thumb_cache_path(target)
+    assert cache1.is_file()                       # thumbnail generated on first hit
+
+    # Overwrite the source with different content + a clearly newer mtime.
+    Image.new("RGB", (16, 16), (200, 100, 50)).save(target)
+    now = time.time()
+    os.utime(target, (now + 5, now + 5))           # guarantee an mtime advance
+
+    cache2 = server._thumb_cache_path(target)
+    assert cache2 != cache1                        # mtime+size key changed → fresh cache file
+    server.api_thumb(path="01-01-2026/01-123.png")
+    assert cache2.is_file()                        # new thumbnail generated
+    assert not cache1.exists()                     # stale version purged
+
+
+def test_thumb_cache_hit_serves_existing_without_regen(monkeypatch, tmp_path):
+    _setup_outputs(tmp_path, monkeypatch)
+    target = server.OUTPUTS_DIR / "01-01-2026" / "01-123.png"
+    server.api_thumb(path="01-01-2026/01-123.png")
+    cache = server._thumb_cache_path(target)
+    assert cache.is_file()
+    mtime_before = cache.stat().st_mtime_ns
+    # A second hit must not regenerate the webp (the cache file is untouched).
+    server.api_thumb(path="01-01-2026/01-123.png")
+    assert cache.stat().st_mtime_ns == mtime_before
+
+
+def test_gallery_delete_purges_thumb_cache(monkeypatch, tmp_path):
+    _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(server, "_invalidate_gallery_index", lambda: None)
+    monkeypatch.setattr(server, "_purge_trash", lambda *a, **k: 0)
+    target = server.OUTPUTS_DIR / "01-01-2026" / "01-123.png"
+    server.api_thumb(path="01-01-2026/01-123.png")
+    cache = server._thumb_cache_path(target)
+    assert cache.is_file()
+    server.api_gallery_delete(path="01-01-2026/01-123.png")
+    assert not cache.exists()                      # thumbnail dropped with the image
+
+
 # ── #4: shutdown partial-preview save ─────────────────────────────────
 
 def test_save_partial_preview_writes_file(monkeypatch, tmp_path):
