@@ -165,6 +165,9 @@ class Extension:
             "load_error": self.load_error,
             "web_scripts": self.web_scripts,
             "has_ui": bool(self.web_scripts),
+            # A git checkout can be pulled to its latest version; a zip install
+            # has no remote we recorded, so the UI offers Update only when True.
+            "updatable": (self.path / ".git").is_dir(),
         }
 
 
@@ -498,6 +501,84 @@ class ExtensionLoader:
         self._write_state()
         return ext
 
+    def update(self, name: str, *, install_pip_deps: bool = False) -> Extension:
+        """Pull the latest version of a git-installed extension and reload it.
+
+        Only works for an extension whose folder is a git checkout (installed
+        from a git URL). A zip install has no remote we recorded, so it can't be
+        updated — re-install it instead. Local edits in the folder are discarded
+        (hard reset to the fetched upstream), matching the "fetch the published
+        version" intent and keeping the result deterministic regardless of a
+        force-pushed or rebased upstream.
+
+        Like :meth:`install`, a changed ``requirements.txt`` is **not**
+        auto-``pip install``'d unless ``install_pip_deps`` is True — running
+        ``pip install -r`` is RCE on an untrusted file.
+        """
+        ext = self.extensions.get(name)
+        if ext is None:
+            raise ValueError(f"extension {name!r} not found")
+        path = EXTENSIONS_DIR / name
+        if not (path / ".git").is_dir():
+            raise ValueError(
+                f"extension {name!r} is not a git checkout; update is git-only "
+                "(re-install a zip extension to update it)")
+        self._git_update(path)
+        # Re-parse the manifest and re-import the entry module so a new version /
+        # new code takes effect; reload_one drops the old hooks/routes/statics.
+        self.reload_one(name)
+        ext = self.extensions.get(name)
+        if ext is None:
+            raise ValueError(f"extension {name!r} vanished after update")
+        req = path / "requirements.txt"
+        if req.is_file() and install_pip_deps:
+            pip_err = self._pip_install_requirements(path)
+            if pip_err and ext.load_error is None:
+                ext.load_error = pip_err
+        self._write_state()
+        return ext
+
+    @staticmethod
+    def _git_update(path: Path) -> None:
+        """Shallow-fetch the configured remote and hard-reset onto it.
+
+        Re-validates the remote URL first so a tampered ``.git/config`` can't
+        turn update into the SSRF / local-file fetch that install's HTTPS-only
+        guard blocks. Uses ``fetch --depth 1`` + ``reset --hard FETCH_HEAD`` so a
+        force-pushed or rebased upstream still lands cleanly (a plain
+        ``git pull --ff-only`` would fail there), mirroring the ``--depth 1``
+        clone the install used.
+        """
+        try:
+            remote = subprocess.run(
+                ["git", "-C", str(path), "remote", "get-url", "origin"],
+                check=True, capture_output=True, text=True, timeout=30,
+            ).stdout.strip()
+        except subprocess.CalledProcessError as e:
+            raise ValueError("no 'origin' remote to update from") from e
+        except subprocess.TimeoutExpired as e:
+            raise ValueError("git remote lookup timed out") from e
+        _validate_install_url(remote)
+        env = {
+            **os.environ,
+            "GIT_HTTP_LOW_SPEED_TIME": "30",
+            "GIT_HTTP_LOW_SPEED_LIMIT": "1024",
+        }
+        try:
+            subprocess.run(
+                ["git", "-C", str(path), "fetch", "--depth", "1", "origin"],
+                check=True, capture_output=True, text=True, timeout=300, env=env,
+            )
+            subprocess.run(
+                ["git", "-C", str(path), "reset", "--hard", "FETCH_HEAD"],
+                check=True, capture_output=True, text=True, timeout=60,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise ValueError("git update timed out (5 min cap reached)") from e
+        except subprocess.CalledProcessError as e:
+            tail = (e.stderr or e.stdout or "").strip()
+            raise ValueError(f"git update failed: {tail[-300:]}") from e
+
     @staticmethod
     def _derive_name(url: str) -> str:
         tail = url.rstrip("/").split("/")[-1]
@@ -694,6 +775,13 @@ class InstallPayload(BaseModel):
 class TogglePayload(BaseModel):
     name: str
     enabled: bool
+
+
+class UpdatePayload(BaseModel):
+    name: str
+    # Same opt-in as install: an update may change requirements.txt, but
+    # pip install -r against an untrusted file is RCE, so it defaults off.
+    install_pip_deps: bool = False
 
 
 class UninstallPayload(BaseModel):

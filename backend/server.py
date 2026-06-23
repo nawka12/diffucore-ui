@@ -46,7 +46,7 @@ from xyz_grid import generate_xyz_grid, PARAM_TYPES as XYZ_PARAM_TYPES
 import metadata as md
 from auth import AuthGate, COOKIE_NAME, load_or_create_token, origin_ok, read_login_token
 from extensions import (
-    ExtensionLoader, InstallPayload, TogglePayload, UninstallPayload,
+    ExtensionLoader, InstallPayload, TogglePayload, UninstallPayload, UpdatePayload,
 )
 
 log = logging.getLogger("diffucore.server")
@@ -686,7 +686,7 @@ class Job:
     def __init__(self, kind: str, label: str, run: Callable[["Job"], dict],
                  *, priority: int = 0):
         self.id = next(_job_ids)
-        self.kind = kind            # generate | xyz | calibrate | load | install
+        self.kind = kind            # generate | xyz | calibrate | load | install | update
         self.label = label          # short human description for the queue list
         self.run = run              # run(job) -> result dict; may raise _Cancelled
         self.status = "queued"      # queued | running | done | error | cancelled
@@ -1473,6 +1473,25 @@ def api_extensions_toggle(p: TogglePayload):
     if p.enabled:
         EXTENSIONS.mount_into(app)  # a just-enabled extension's routes need attaching
     return {"extension": ext.to_dict()}
+
+
+@app.post("/api/extensions/update")
+def api_extensions_update(p: UpdatePayload):
+    """Pull the latest version of a git-installed extension and reload it.
+
+    Runs on the shared job worker (like install): a git fetch + optional pip can
+    be slow, must serialize with generation, and should be visible/cancellable in
+    the queue panel. Returns a job id; the terminal event carries the updated
+    record so the frontend can refresh the panel."""
+    if p.name not in EXTENSIONS.extensions:
+        raise HTTPException(status_code=404, detail="extension not found")
+    def run(job: Job) -> dict:
+        ext = EXTENSIONS.update(p.name, install_pip_deps=p.install_pip_deps)
+        EXTENSIONS.mount_into(app)  # attach any routes/statics a new version added
+        return {"extension": ext.to_dict()}
+    job = Job("update", f"update {p.name}", run)
+    _enqueue(job)
+    return {"job": job.id}
 
 
 @app.post("/api/extensions/reload")

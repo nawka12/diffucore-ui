@@ -1802,6 +1802,32 @@ document.addEventListener('alpine:init', () => {
       }
     },
 
+    async updateExtension(name) {
+      this.extBusy = true;
+      try {
+        // Like install, update runs on the shared job worker and returns a job
+        // id; the terminal SSE event resolves with the updated record.
+        const r = await fetchJSON('/api/extensions/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, install_pip_deps: this.extInstallPip }),
+        });
+        if (!r.job) throw new Error('update did not return a job id');
+        const ev = await new Promise((resolve) => { this._jobWaiters[r.job] = resolve; });
+        if (ev.type === 'error') throw new Error(ev.message || 'update failed');
+        if (ev.type === 'cancelled') { this.flash('Update cancelled'); return; }
+        const ext = ev.extension || {};
+        this.flash('Updated ' + name + (ext.version ? ' to v' + ext.version : ''));
+        await this.refreshExtensions();
+        if (ext.has_ui) this.flash('Reload the page to load the updated extension UI');
+        if (ext.load_error) this.flash('Note: ' + ext.load_error);
+      } catch (e) {
+        this.flash('Update failed: ' + e.message);
+      } finally {
+        this.extBusy = false;
+      }
+    },
+
     async toggleExtension(name, enabled) {
       this.extBusy = true;
       try {

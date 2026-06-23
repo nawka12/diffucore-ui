@@ -886,6 +886,9 @@ This executes arbitrary code — only enable it for sources you trust.">
                     <div class="ext-card-foot">
                       <p class="ext-desc" x-show="e.description" x-text="e.description" :title="e.description"></p>
                       <div class="ext-card-actions">
+                        <button class="btn small" @click="updateExtension(e.name)"
+                                x-show="e.updatable" :disabled="extBusy"
+                                title="Pull the latest version from its git remote and reload">Update</button>
                         <button class="btn small" @click="reloadExtension(e.name)"
                                 title="Re-import the entry module (for development)">Reload</button>
                         <button class="btn small" @click="uninstallExtension(e.name)"

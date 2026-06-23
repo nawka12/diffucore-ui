@@ -103,6 +103,52 @@ def test_install_endpoint_defaults_pip_off(client, monkeypatch):
     assert captured["pip"] is False
 
 
+def test_update_endpoint_enqueues_update_job_and_passes_pip_flag(client, monkeypatch):
+    # Update mirrors install: 404 for an unknown name, otherwise routed through
+    # the job queue with the opt-in pip flag propagated.
+    server.EXTENSIONS.extensions["fake"] = object()
+    captured = {}
+
+    class _FakeExt:
+        def to_dict(self):
+            return {"name": "fake", "version": "1.2.0", "loaded": True, "has_ui": False}
+
+    def fake_update(name, *, install_pip_deps=False):
+        captured["name"] = name
+        captured["install_pip_deps"] = install_pip_deps
+        return _FakeExt()
+
+    monkeypatch.setattr(server.EXTENSIONS, "update", fake_update)
+    monkeypatch.setattr(server.EXTENSIONS, "mount_into", lambda app: None)
+    held = {}
+    monkeypatch.setattr(server, "_enqueue", lambda job: held.__setitem__("job", job))
+
+    # Unknown extension → 404 before any job is enqueued.
+    assert client.post("/api/extensions/update", json={"name": "nope"}).status_code == 404
+
+    r = client.post("/api/extensions/update",
+                    json={"name": "fake", "install_pip_deps": True})
+    assert r.status_code == 200
+    job = held["job"]
+    assert job.kind == "update"  # serialized through the queue, not the request thread
+    result = job.run(job)
+    assert captured == {"name": "fake", "install_pip_deps": True}
+    assert result["extension"]["version"] == "1.2.0"
+    server.EXTENSIONS.extensions.pop("fake", None)
+
+
+def test_update_rejects_non_git_checkout(monkeypatch, tmp_path):
+    # A zip install (no .git dir) has no remote to update from.
+    import extensions as extmod
+    loader = extmod.ExtensionLoader.__new__(extmod.ExtensionLoader)
+    loader.extensions = {"z": extmod.Extension(name="z", title="z", version="1",
+                                               path=tmp_path / "z")}
+    (tmp_path / "z").mkdir()
+    monkeypatch.setattr(extmod, "EXTENSIONS_DIR", tmp_path)
+    with pytest.raises(ValueError, match="git-only"):
+        loader.update("z")
+
+
 def test_install_skips_pip_by_default_and_notes_requirements(monkeypatch, tmp_path):
     # Drive ExtensionLoader.install() with a fake clone so we can observe the
     # pip-skip note without network. We bypass _install_git/_install_zip by

@@ -324,6 +324,11 @@ The loader drops the old hooks/routes/statics first so nothing doubles up.
   (Starlette has no unmount), so a disabled extension's endpoints keep serving
   until you restart. Installing, enabling, or reloading attaches new routes
   live — no restart needed.
+- **Update** pulls the latest version of a **git-installed** extension (shallow
+  `git fetch` + hard reset to the upstream branch) and reloads it. Local edits in
+  the folder are discarded. It's git-only — a zip install has no remote we
+  recorded, so update isn't offered for it; re-install instead. Like install, a
+  changed `requirements.txt` is **not** `pip install`'d unless you opt in.
 - **Uninstall** deletes the extension's folder and drops its hooks, routes, and
   persisted state.
 - A **broken extension** (one whose `setup()` raises, or whose manifest is
@@ -337,6 +342,7 @@ The loader drops the old hooks/routes/statics first so nothing doubles up.
 | `/api/extensions` | GET | — | List every discovered extension with load state. |
 | `/api/extensions/web` | GET | — | Script URLs injected into the index page. |
 | `/api/extensions/install` | POST | `{"url": "..."}` | Install from a git/zip URL. |
+| `/api/extensions/update` | POST | `{"name": "..."}` | Pull + reload a git-installed extension. |
 | `/api/extensions/toggle` | POST | `{"name": "...", "enabled": bool}` | Enable/disable. |
 | `/api/extensions/reload` | POST | `?name=...` | Re-import one extension. |
 | `/api/extensions/uninstall` | POST | `{"name": "..."}` | Delete the folder + state. |
