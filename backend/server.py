@@ -324,6 +324,8 @@ class XYZPayload(BaseModel):
     scheduler: str = "karras"
     seed: int = Field(-1, ge=-1, le=2**63 - 1)
     shift: float = Field(3.0, ge=0.0, le=30.0)
+    teacache: float = Field(0.0, ge=0.0, le=1.0)           # TeaCache rel-L1 threshold (0 = off; Anima only)
+    teacache_calibrated: bool = True     # use the fitted rescale polynomial vs the raw identity path
     x_type: str = "None"
     x_vals: str = ""
     y_type: str = "None"
@@ -620,6 +622,8 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
         steps=int(p.steps), cfg_scale=float(p.cfg),
         sampler=p.sampler, scheduler=p.scheduler,
         seed=int(p.seed), shift=float(p.shift),
+        teacache_thresh=float(p.teacache),
+        teacache_use_coeffs=bool(p.teacache_calibrated),
     )
     # A "Checkpoint" axis swaps the in-memory model per cell, leaving the last
     # swept checkpoint loaded. Restore the model the user actually had loaded so

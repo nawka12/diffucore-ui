@@ -1077,6 +1077,8 @@ document.addEventListener('alpine:init', () => {
         steps: this.form.steps, cfg: this.form.cfg,
         sampler: this.form.sampler, scheduler: this.form.scheduler,
         seed: this.form.seed, shift: this.form.shift,
+        teacache: this.form.teacacheOn ? this.form.teacache : 0,
+        teacache_calibrated: this.form.teacacheCalibrated,
         x_type: this.axes.x.type, x_vals: this.axisValues(this.axes.x),
         y_type: this.axes.y.type, y_vals: this.axisValues(this.axes.y),
         z_type: this.axes.z.type, z_vals: this.axisValues(this.axes.z),
