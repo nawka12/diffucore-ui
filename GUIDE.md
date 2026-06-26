@@ -222,6 +222,16 @@ bugs, just how the model responds:
   natural language, not just keywords. This matters most in img2img and inpaint,
   where the prompt has to carry more of the image.
 
+- **Experimental: Qwen3.5 text encoder.** Anima ships with a Qwen3-0.6B semantic
+  encoder, but the newer `cosmos-qwen3.5` hybrid (Mamba2-SSM + gated-attention)
+  encoders are also supported: the Anima-packaged **4B** (`qwen35_4b.safetensors`)
+  and the raw **0.8B base** (`qwen_3_5_08b_base.safetensors`). Drop either into
+  `models/text-encoders/` and select it as the Anima text encoder — the right
+  architecture and vocab are auto-detected (no other setting changes). The 0.8B
+  is the lighter pick (≈0.8 B params, BF16 — closer to the stock 0.6 B); the 4B
+  is heavier (fp8, higher VRAM/RAM, slower encoding). Treat output quality as
+  experimental and uncalibrated for both.
+
 - **img2img strength is more aggressive than the number suggests.** The
   `shift = 3` schedule front-loads noise, so a given strength injects far more
   than the same value on SD/SDXL — around `0.6` already noises away most of the

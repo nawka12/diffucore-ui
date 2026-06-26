@@ -216,10 +216,12 @@ class LoadedModel:
     model: object
     native_res: int
     applied_loras: List[str] = field(default_factory=list)
-    # Anima's companion files, kept so an X/Y/Z "Checkpoint" sweep can reload a
-    # new DiT while holding the VAE + text encoder fixed.
+    # Split-file companion components (Anima DiT + VAE + TE; FLUX adds CLIP-L),
+    # kept so a reload triggers when one is swapped while the DiT is unchanged,
+    # and so an X/Y/Z "Checkpoint" sweep can reload a new DiT with the rest fixed.
     vae_name: Optional[str] = None
     te_name: Optional[str] = None
+    clip_name: Optional[str] = None
 
 
 class Engine:
@@ -376,6 +378,20 @@ class Engine:
             and self._tf32 == tf32
         )
 
+    def _components_match(
+        self, vae_name: str, te_name: str, clip_name: Optional[str] = None,
+    ) -> bool:
+        """Whether the loaded split-file model's companion components equal those
+        requested. A same-DiT reload that swaps the VAE or text encoder (or, for
+        FLUX.1, the CLIP) must *not* be skipped as "already loaded" — the new
+        component would otherwise be silently ignored. Assumes ``self._loaded``."""
+        lm = self._loaded
+        return (
+            lm.vae_name == vae_name
+            and lm.te_name == te_name
+            and lm.clip_name == clip_name
+        )
+
     def load_model(
         self, model_name: str, offload: bool | str = True, vae_tile: bool = True,
         compile: bool = False, cuda_graphs: bool = False,
@@ -489,12 +505,20 @@ class Engine:
             log.warning("compile disabled: incompatible with offload='stream' "
                          "(backbone is block-streamed to fit VRAM)")
         if (self._loaded and self._loaded.name == label
+                and self._components_match(vae_name, te_name)
                 and self._settings_match(offload, vae_tile, compile,
                                          cuda_graphs, False, False)):
             return f"Model already loaded: {label}"
 
         # X/Y/Z Checkpoint LRU cache (#10): restore a recently-swept Anima DiT
-        # from CPU before re-reading it. Keyed on the Anima label (DiT name).
+        # from CPU before re-reading it. Keyed on the Anima label (DiT name), so a
+        # cached entry for this DiT but with a different VAE/TE is stale — drop it
+        # rather than restore the wrong companion components.
+        cached = self._ckpt_cache.get(label)
+        if cached is not None and (cached.vae_name != vae_name or cached.te_name != te_name):
+            self._ckpt_cache.pop(label, None)
+            try: del cached.model
+            except Exception: pass  # noqa: BLE001
         restored = self._try_cache_restore(label, offload, vae_tile,
                                            compile, cuda_graphs, False, False)
         stashed = self._stash_loaded()
@@ -571,6 +595,7 @@ class Engine:
             log.warning("compile disabled: incompatible with offload='stream' "
                          "(backbone is block-streamed to fit VRAM)")
         if (self._loaded and self._loaded.name == label
+                and self._components_match(vae_name, te_name, clip_name)
                 and self._settings_match(offload, vae_tile, compile,
                                          cuda_graphs, False, False)):
             return f"Model already loaded: {label}"
@@ -615,6 +640,7 @@ class Engine:
         family = model.spec.architecture
         self._loaded = LoadedModel(
             name=label, family=family, model=model, native_res=1024,
+            vae_name=vae_name, te_name=te_name, clip_name=clip_name,
         )
         flags = self._perf_flag_summary()
         return f"Loaded {family} in {elapsed:.1f}s{flags}  (DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})"
