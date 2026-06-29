@@ -212,6 +212,7 @@ document.addEventListener('alpine:init', () => {
     xyzInfo: '',
 
     toast: '',
+    toastKind: 'info',     // info | success | error — drives the toast border colour
 
     // ── computed ────────────────────────────────────────────────
     get samplers() {
@@ -728,7 +729,37 @@ document.addEventListener('alpine:init', () => {
       } else if (c._painting) {
         this.paintSeg(c, c._last, p);
         c._last = p;
+        this.strokeBrushRing(c, p);
+      } else if (this.maskTool !== 'rect' && c._mask) {
+        // Hover preview: repaint, then draw the ring on top so the user sees
+        // the brush footprint at the current size before committing a stroke.
+        this.redrawMask(c);
+        this.strokeBrushRing(c, p);
       }
+    },
+    // Clear the hover ring when the pointer leaves the canvas (unless a stroke
+    // or rectangle drag is in progress — those manage their own repaint).
+    maskLeave(e) {
+      const c = e.currentTarget;
+      if (c._mask && !c._painting && !c._dragging) this.redrawMask(c);
+    },
+    // Draw the brush footprint as a ring in canvas coordinates, so it scales
+    // with the CSS-displayed canvas automatically. A dark halo under a light
+    // ring keeps it visible over both the image and the orange mask tint.
+    strokeBrushRing(c, p) {
+      const rect = c.getBoundingClientRect();
+      const scale = rect.width ? c.width / rect.width : 1; // canvas px per display px
+      const ctx = c.getContext('2d');
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, this.maskBrush / 2, 0, Math.PI * 2);
+      ctx.lineWidth = 2 * scale;
+      ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+      ctx.stroke();
+      ctx.lineWidth = 1 * scale;
+      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      ctx.stroke();
+      ctx.restore();
     },
     maskUp(e) {
       const c = e.currentTarget;
@@ -1648,23 +1679,58 @@ document.addEventListener('alpine:init', () => {
       }
     },
 
+    // Arrow-key navigation for a segmented control / tablist. Moves focus
+    // between the sibling <button>s of the group the event fired on. Radio
+    // groups activate on move (selection follows focus, per the radio
+    // pattern); tablists pass activate=false so arrows only move focus and
+    // Enter/Space (native button) activates — avoids firing expensive tab
+    // handlers on every keypress.
+    navGroup(e, activate = true) {
+      const keys = ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'];
+      if (!keys.includes(e.key)) return;
+      const btns = [...e.currentTarget.querySelectorAll('button')]
+        .filter(b => !b.disabled && b.offsetParent !== null);
+      if (!btns.length) return;
+      let i = btns.indexOf(document.activeElement);
+      if (i < 0) i = 0;
+      let n;
+      if (e.key === 'Home') n = 0;
+      else if (e.key === 'End') n = btns.length - 1;
+      else {
+        const fwd = e.key === 'ArrowRight' || e.key === 'ArrowDown';
+        n = (i + (fwd ? 1 : -1) + btns.length) % btns.length;
+      }
+      e.preventDefault();
+      btns[n].focus();
+      if (activate) btns[n].click();
+    },
+
     // ── toast ───────────────────────────────────────────────────
     // A small FIFO queue so a burst of messages (e.g. several batch errors)
     // each get a turn instead of the last overwriting the rest instantly.
     // Capped at 4 pending so a runaway loop can't pile up dozens.
-    flash(msg) {
+    flash(msg, kind) {
       if (!msg) return;
-      this._toastQueue.push(msg);
+      this._toastQueue.push({ msg, kind: kind || this._toastKind(msg) });
       if (this._toastQueue.length > 4) this._toastQueue.length = 4;
       if (!this._toastShowing) this._toastNext();
+    },
+    // Infer severity from the message when the caller didn't pass one, so
+    // failures read red and completions read green without tagging every
+    // callsite. An explicit `kind` always wins.
+    _toastKind(msg) {
+      if (/fail|error|could ?n.t|could not|cannot|unable/i.test(msg)) return 'error';
+      if (/saved|done|copied|loaded|imported|installed|updated|deleted|sent|calibrated/i.test(msg)) return 'success';
+      return 'info';
     },
     _toastQueue: [],
     _toastShowing: false,
     _toastNext() {
-      const msg = this._toastQueue.shift();
-      if (msg == null) { this._toastShowing = false; this.toast = ''; return; }
+      const item = this._toastQueue.shift();
+      if (item == null) { this._toastShowing = false; this.toast = ''; return; }
       this._toastShowing = true;
-      this.toast = msg;
+      this.toast = item.msg;
+      this.toastKind = item.kind;
       clearTimeout(this._toastTimer);
       this._toastTimer = setTimeout(() => {
         this.toast = '';

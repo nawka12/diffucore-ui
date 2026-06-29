@@ -45,6 +45,23 @@ body {
   padding: 0 24px 56px;
 }
 
+/* Skip link — visually offscreen until focused, then drops into view so a
+   keyboard user can jump past the model rack and tabs straight to content. */
+.skip-link {
+  position: fixed;
+  left: 8px;
+  top: -48px;
+  z-index: 200;
+  padding: 8px 14px;
+  background: var(--surface-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--r);
+  color: var(--txt);
+  font-size: 13px;
+  transition: top 0.15s ease;
+}
+.skip-link:focus { top: 8px; }
+
 /* ── header ───────────────────────────────────────────────────── */
 .topbar {
   display: flex;
@@ -280,8 +297,26 @@ textarea { resize: vertical; line-height: 1.5; }
 textarea.autosize { resize: none; overflow: hidden; min-height: 56px; }
 textarea:focus, input:focus, select:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(232,160,101,0.12);
+  box-shadow: 0 0 0 2px rgba(232,160,101,0.4);
   outline: none;
+}
+
+/* Keyboard focus ring. :focus-visible fires for keyboard nav but not mouse
+   clicks, so mouse users don't see a ring while keyboard users always do. */
+.btn:focus-visible,
+.chip:focus-visible,
+.gear:focus-visible,
+.seg button:focus-visible,
+.tabs button:focus-visible,
+.settings-nav button:focus-visible,
+.ms-btn:focus-visible,
+.queue-x:focus-visible,
+.lb-close:focus-visible,
+.lb-nav:focus-visible,
+.thumb:focus-visible,
+.drop:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 textarea::placeholder, input::placeholder { color: var(--txt-3); }
 select { appearance: none; cursor: pointer;
@@ -1055,6 +1090,8 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   box-shadow: 0 8px 24px rgba(0,0,0,0.4);
   z-index: 100;
 }
+.toast--error   { border-color: var(--danger); }
+.toast--success { border-color: var(--teal); }
 
 /* ── responsive ───────────────────────────────────────────────── */
 @media (max-width: 1100px) {

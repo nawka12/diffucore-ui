@@ -14,6 +14,8 @@
 </head>
 <body x-data="app">
 
+  <a class="skip-link" href="#maincontent">Skip to content</a>
+
   <div class="shell" x-cloak>
 
     <!-- ── header ──────────────────────────────────────────────── -->
@@ -26,7 +28,7 @@
     <!-- ── SSE connection banner (#7): a stalled stream freezes the queue
          panel silently; this surfaces "lost connection" so the user knows the
          UI is no longer live and the queue panel may be stale. -->
-    <div class="conn-banner reconnecting"
+    <div class="conn-banner reconnecting" role="status" aria-live="polite"
          x-show="connState === 'reconnecting'"
          x-transition>
       Reconnecting… <span class="conn-sub">the live queue may be briefly stale.</span>
@@ -42,10 +44,10 @@
     <!-- ── model rack ─────────────────────────────────────────── -->
     <section class="rack">
       <div class="rack-row">
-        <div class="seg type-seg" role="radiogroup" aria-label="Model type">
-          <button :class="{active: modelType==='SD/SDXL'}" @click="setModelType('SD/SDXL')">SD / SDXL</button>
-          <button :class="{active: modelType==='Anima'}" @click="setModelType('Anima')">Anima</button>
-          <button :class="{active: modelType==='FLUX'}" @click="setModelType('FLUX')">FLUX</button>
+        <div class="seg type-seg" role="radiogroup" aria-label="Model type" @keydown="navGroup($event)">
+          <button role="radio" :aria-checked="modelType==='SD/SDXL'" :tabindex="modelType==='SD/SDXL' ? 0 : -1" :class="{active: modelType==='SD/SDXL'}" @click="setModelType('SD/SDXL')">SD / SDXL</button>
+          <button role="radio" :aria-checked="modelType==='Anima'" :tabindex="modelType==='Anima' ? 0 : -1" :class="{active: modelType==='Anima'}" @click="setModelType('Anima')">Anima</button>
+          <button role="radio" :aria-checked="modelType==='FLUX'" :tabindex="modelType==='FLUX' ? 0 : -1" :class="{active: modelType==='FLUX'}" @click="setModelType('FLUX')">FLUX</button>
         </div>
 
         <div class="rack-models">
@@ -128,24 +130,26 @@
     </section>
 
     <!-- ── nav ────────────────────────────────────────────────── -->
-    <nav class="tabs">
-      <button :class="{active: tab==='generate'}" @click="tab='generate'">Generate</button>
-      <button :class="{active: tab==='gallery'}" @click="openGallery()">Gallery</button>
-      <button :class="{active: tab==='metadata'}" @click="tab='metadata'">Metadata</button>
+    <nav class="tabs" role="tablist" aria-label="Main" @keydown="navGroup($event, false)">
+      <button role="tab" :aria-selected="tab==='generate'" :tabindex="tab==='generate' ? 0 : -1" :class="{active: tab==='generate'}" @click="tab='generate'">Generate</button>
+      <button role="tab" :aria-selected="tab==='gallery'" :tabindex="tab==='gallery' ? 0 : -1" :class="{active: tab==='gallery'}" @click="openGallery()">Gallery</button>
+      <button role="tab" :aria-selected="tab==='metadata'" :tabindex="tab==='metadata' ? 0 : -1" :class="{active: tab==='metadata'}" @click="tab='metadata'">Metadata</button>
       <template x-for="t in extTabs" :key="t.id">
-        <button :class="{active: tab===t.id}" @click="switchExtTab(t)" x-text="t.title"></button>
+        <button role="tab" :aria-selected="tab===t.id" :tabindex="tab===t.id ? 0 : -1" :class="{active: tab===t.id}" @click="switchExtTab(t)" x-text="t.title"></button>
       </template>
     </nav>
+
+    <main id="maincontent" tabindex="-1">
 
     <!-- ── GENERATE ───────────────────────────────────────────── -->
     <section class="page gen-layout" x-show="tab==='generate'">
 
       <!-- controls -->
       <div class="controls">
-        <div class="seg modes" role="radiogroup" aria-label="Mode">
-          <button :class="{active: mode==='t2i'}" @click="mode='t2i'">txt2img</button>
-          <button :class="{active: mode==='i2i'}" @click="mode='i2i'">img2img</button>
-          <button :class="{active: mode==='inpaint'}" @click="mode='inpaint'">inpaint</button>
+        <div class="seg modes" role="radiogroup" aria-label="Mode" @keydown="navGroup($event)">
+          <button role="radio" :aria-checked="mode==='t2i'" :tabindex="mode==='t2i' ? 0 : -1" :class="{active: mode==='t2i'}" @click="mode='t2i'">txt2img</button>
+          <button role="radio" :aria-checked="mode==='i2i'" :tabindex="mode==='i2i' ? 0 : -1" :class="{active: mode==='i2i'}" @click="mode='i2i'">img2img</button>
+          <button role="radio" :aria-checked="mode==='inpaint'" :tabindex="mode==='inpaint' ? 0 : -1" :class="{active: mode==='inpaint'}" @click="mode='inpaint'">inpaint</button>
         </div>
 
         <label class="field lora-ac-wrap" @click.outside="loraAC.open=false">
@@ -178,6 +182,8 @@
         <fieldset x-show="mode==='i2i'">
           <legend>Input image</legend>
           <div class="drop" :class="{dragging: dragKey==='i2i'}" @click="$refs.i2iFile.click()"
+               tabindex="0" role="button" aria-label="Upload input image"
+               @keydown.enter="$refs.i2iFile.click()" @keydown.space.prevent="$refs.i2iFile.click()"
                @dragover.prevent="dragKey='i2i'" @dragleave="dragKey=null"
                @drop.prevent="onDrop($event,'inputImage')">
             <template x-if="inputImage"><img :src="inputImage" alt="input"></template>
@@ -191,6 +197,8 @@
           <legend>Input &amp; mask</legend>
           <template x-if="!inputImage">
             <div class="drop" :class="{dragging: dragKey==='inpaint'}" @click="$refs.inpFile.click()"
+                 tabindex="0" role="button" aria-label="Upload image to inpaint"
+                 @keydown.enter="$refs.inpFile.click()" @keydown.space.prevent="$refs.inpFile.click()"
                  @dragover.prevent="dragKey='inpaint'" @dragleave="dragKey=null"
                  @drop.prevent="onDrop($event,'inputImage')">
               <span>Click or drop an image</span>
@@ -202,13 +210,13 @@
               <div class="mask-stage">
                 <canvas x-ref="maskCanvas" class="mask-canvas" x-effect="initMask($el)"
                         @pointerdown="maskDown($event)" @pointermove="maskMove($event)"
-                        @pointerup="maskUp($event)"></canvas>
+                        @pointerup="maskUp($event)" @pointerleave="maskLeave($event)"></canvas>
               </div>
               <div class="mask-tools">
-                <div class="seg" role="radiogroup" aria-label="Mask tool">
-                  <button :class="{active: maskTool==='brush'}" @click="maskTool='brush'">Brush</button>
-                  <button :class="{active: maskTool==='eraser'}" @click="maskTool='eraser'">Eraser</button>
-                  <button :class="{active: maskTool==='rect'}" @click="maskTool='rect'">Rectangle</button>
+                <div class="seg" role="radiogroup" aria-label="Mask tool" @keydown="navGroup($event)">
+                  <button role="radio" :aria-checked="maskTool==='brush'" :tabindex="maskTool==='brush' ? 0 : -1" :class="{active: maskTool==='brush'}" @click="maskTool='brush'">Brush</button>
+                  <button role="radio" :aria-checked="maskTool==='eraser'" :tabindex="maskTool==='eraser' ? 0 : -1" :class="{active: maskTool==='eraser'}" @click="maskTool='eraser'">Eraser</button>
+                  <button role="radio" :aria-checked="maskTool==='rect'" :tabindex="maskTool==='rect' ? 0 : -1" :class="{active: maskTool==='rect'}" @click="maskTool='rect'">Rectangle</button>
                 </div>
                 <div class="slider" x-show="maskTool!=='rect'">
                   <div class="slider-head"><span>Brush size</span>
@@ -443,8 +451,8 @@
           <legend>Seed</legend>
           <div class="seed-row">
             <input type="number" class="seed-input" x-model.number="form.seed" step="1">
-            <button class="btn icon" title="Recycle last seed" @click="form.seed = lastSeed >= 0 ? lastSeed : -1">♻</button>
-            <button class="btn icon" title="Randomize" @click="form.seed = -1">🎲</button>
+            <button class="btn icon" title="Recycle last seed" aria-label="Recycle last seed" @click="form.seed = lastSeed >= 0 ? lastSeed : -1">♻</button>
+            <button class="btn icon" title="Randomize" aria-label="Randomize seed" @click="form.seed = -1">🎲</button>
           </div>
           <p class="sub">-1 = random</p>
           <div class="slider" style="margin-top:10px">
@@ -569,7 +577,7 @@
               <span class="queue-label" x-text="j.label"></span>
               <span class="queue-prog" x-show="j.status==='running' && runProg.total"
                     x-text="runProg.step + '/' + runProg.total"></span>
-              <button class="queue-x" @click="cancel(j.id)" title="Cancel">✕</button>
+              <button class="queue-x" @click="cancel(j.id)" title="Cancel" aria-label="Cancel job">✕</button>
             </div>
           </template>
         </div>
@@ -597,7 +605,7 @@
         <div class="upscale-card">
           <div class="upscale-head">
             <span>Upscale image</span>
-            <button class="btn small" @click="closeUpscale()">✕</button>
+            <button class="btn small" @click="closeUpscale()" aria-label="Close">✕</button>
           </div>
           <div class="slider">
             <div class="slider-head"><span>Scale</span>
@@ -651,7 +659,9 @@
           <h2 class="gallery-date" x-text="g.label"></h2>
           <div class="gallery-grid">
             <template x-for="item in g.images" :key="item.img.url">
-              <div class="thumb" :class="{sel: selected && selected.url===item.img.url}" @click="openLightbox(item.index)">
+              <div class="thumb" :class="{sel: selected && selected.url===item.img.url}" @click="openLightbox(item.index)"
+                   tabindex="0" role="button" :aria-label="'Open ' + item.img.name"
+                   @keydown.enter="openLightbox(item.index)" @keydown.space.prevent="openLightbox(item.index)">
                 <img :src="'/api/thumb?path=' + encodeURIComponent(item.img.path)" :alt="item.img.name" loading="lazy">
               </div>
             </template>
@@ -668,6 +678,8 @@
     <section class="page" x-show="tab==='metadata'">
       <div class="meta-layout">
         <div class="drop big" :class="{dragging: dragKey==='meta'}" @click="$refs.metaFile.click()"
+             tabindex="0" role="button" aria-label="Upload a PNG to read its metadata"
+             @keydown.enter="$refs.metaFile.click()" @keydown.space.prevent="$refs.metaFile.click()"
              @dragover.prevent="dragKey='meta'" @dragleave="dragKey=null"
              @drop.prevent="onMetaDrop($event)">
           <template x-if="metaPreview"><img :src="metaPreview" alt="upload"></template>
@@ -689,12 +701,14 @@
       </div>
     </section>
 
+    </main>
+
     <!-- ── GALLERY LIGHTBOX ───────────────────────────────────── -->
     <div class="lightbox" x-show="lightbox.open" @keydown.window="lightboxKey($event)">
       <div class="lb-backdrop" @click="closeLightbox()"></div>
-      <button class="lb-close" @click="closeLightbox()">✕</button>
-      <button class="lb-nav prev" x-show="gallery.length>1" @click="lbPrev()">‹</button>
-      <button class="lb-nav next" x-show="gallery.length>1" @click="lbNext()">›</button>
+      <button class="lb-close" @click="closeLightbox()" aria-label="Close">✕</button>
+      <button class="lb-nav prev" x-show="gallery.length>1" @click="lbPrev()" aria-label="Previous image">‹</button>
+      <button class="lb-nav next" x-show="gallery.length>1" @click="lbNext()" aria-label="Next image">›</button>
       <div class="lb-stage" @touchstart="lbTouchStart($event)" @touchend="lbTouchEnd($event)">
         <img class="lb-img" :src="selected ? selected.url : ''" alt="">
       </div>
@@ -910,7 +924,8 @@ This executes arbitrary code — only enable it for sources you trust.">
 
   </div>
 
-  <div class="toast" x-show="toast" x-transition x-text="toast"></div>
+  <div class="toast" :class="'toast--' + toastKind" x-show="toast" x-transition x-text="toast"
+       role="status" aria-live="polite" aria-atomic="true"></div>
 
 </body>
 </html>
