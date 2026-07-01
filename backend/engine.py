@@ -449,6 +449,9 @@ class Engine:
             offload=offload, vae_tile=vae_tile,
             compile=compile, cuda_graphs=cuda_graphs,
             channels_last=channels_last, tf32=tf32,
+            # Overlap block-streaming copies with compute (see DevicePolicy). Only
+            # active in "stream" mode, where the backbone already lives in CPU RAM.
+            stream_prefetch=(offload == "stream"),
         )
 
         t0 = time.time()
@@ -553,6 +556,9 @@ class Engine:
             device=self.device, compute_dtype=self.dtype,
             offload=offload, vae_tile=vae_tile,
             compile=compile, cuda_graphs=cuda_graphs,
+            # Overlap block-streaming copies with compute (see DevicePolicy). Only
+            # active in "stream" mode, where the backbone already lives in CPU RAM.
+            stream_prefetch=(offload == "stream"),
         )
 
         log.info("[load] Anima: DiT=%s VAE=%s TE=%s offload=%s compile=%s",
@@ -624,6 +630,9 @@ class Engine:
             device=self.device, compute_dtype=self.dtype,
             offload=offload, vae_tile=vae_tile,
             compile=compile, cuda_graphs=cuda_graphs,
+            # Overlap block-streaming copies with compute (see DevicePolicy). Only
+            # active in "stream" mode, where the backbone already lives in CPU RAM.
+            stream_prefetch=(offload == "stream"),
         )
 
         t0 = time.time()
