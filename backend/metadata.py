@@ -118,6 +118,11 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     fields.append(f"Sampler: {gen_kwargs.get('sampler', 'euler')}")
     fields.append(f"Scheduler: {gen_kwargs.get('scheduler', 'karras')}")
     fields.append(f"CFG scale: {gen_kwargs.get('cfg_scale', 7.0)}")
+    # Guidance interval — only injected (and only written) when it actually
+    # restricted CFG, so older metadata stays byte-identical.
+    if "cfg_interval_start" in gen_kwargs:
+        fields.append(f"CFG interval: {gen_kwargs['cfg_interval_start']}-"
+                      f"{gen_kwargs.get('cfg_interval_end', 1.0)}")
     fields.append(f"Seed: {engine.last_seed}")
     if "width" in gen_kwargs and "height" in gen_kwargs:
         fields.append(f"Size: {gen_kwargs['width']}x{gen_kwargs['height']}")

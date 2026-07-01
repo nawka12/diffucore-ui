@@ -52,7 +52,7 @@ document.addEventListener('alpine:init', () => {
     modelType: 'SD/SDXL',
     checkpoints: [], dits: [], vaes: [], tes: [], loras: [], detailers: [], upscalers: [],
     checkpoint: '', dit: '', vae: '', te: '', clip: '', fluxCheckpoint: '',
-    perf: { compile: false, cudaGraphs: false, channelsLast: true, offload: 'full' },
+    perf: { compile: false, cudaGraphs: false, channelsLast: true, tf32: false, fp16Acc: false, offload: 'full' },
     recommendedOffload: 'full',   // GPU-VRAM-based default from the backend (set on init)
     status: 'No model loaded',
     modelLoaded: false,
@@ -165,7 +165,7 @@ document.addEventListener('alpine:init', () => {
     // ── settings panel (global, non-per-image knobs) ────────────
     settingsOpen: false,
     settingsTab: 'teacache',
-    settings: { curvature: 0.25, eta_max: 1.0, beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, vae_tiling: 'auto', gen_defaults: null },
+    settings: { curvature: 0.25, eta_max: 1.0, beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, cfg_interval_start: 0.0, cfg_interval_end: 1.0, vae_tiling: 'auto', gen_defaults: null },
     teacacheStatus: { loaded: false, calibratable: false, family: null, coefficients: null },
     calibratingTea: false,
 
@@ -491,6 +491,8 @@ document.addEventListener('alpine:init', () => {
       this.perf.compile = !!f.compile;
       this.perf.cudaGraphs = !!f.cuda_graphs;
       this.perf.channelsLast = !!f.channels_last;
+      this.perf.tf32 = !!f.tf32;
+      this.perf.fp16Acc = !!f.fp16_accumulation;
       this.syncSampler();
       this.syncScheduler();
     },
@@ -577,6 +579,8 @@ document.addEventListener('alpine:init', () => {
           compile: this.perf.compile,
           cuda_graphs: this.perf.cudaGraphs,
           channels_last: this.perf.channelsLast,
+          tf32: this.perf.tf32,
+          fp16_accumulation: this.perf.fp16Acc,
         };
         // Load is queued like any job; it waits for a running generation to
         // finish. The server also broadcasts the new state to every device.

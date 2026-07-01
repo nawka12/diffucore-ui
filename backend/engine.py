@@ -176,6 +176,17 @@ def teacache_override_path(name: str) -> Path:
 MODEL_FAMILY_SD15 = "sd15"
 MODEL_FAMILY_SDXL = "sdxl"
 MODEL_FAMILY_ANIMA = "anima"
+
+# TeaCache keeps tensors produced inside the compiled forward (the block-0
+# modulated input, the Taylor residuals) alive across steps; with CUDA Graphs
+# those are views of the graph's static buffer that every replay overwrites —
+# there is no call-site clone that fixes state stored *inside* the graph, so
+# the combination is rejected with a clear message instead.
+_TEACACHE_CUDA_GRAPHS_ERROR = (
+    "TeaCache is incompatible with CUDA Graphs (its cached tensors are "
+    "overwritten by each graph replay). Disable TeaCache, or reload the "
+    "model without the CUDA Graphs flag."
+)
 MODEL_FAMILY_FLUX1 = "flux1"
 MODEL_FAMILY_FLUX2 = "flux2"
 _FLUX_FAMILIES = (MODEL_FAMILY_FLUX1, MODEL_FAMILY_FLUX2)
@@ -245,6 +256,7 @@ class Engine:
         self._cuda_graphs = False
         self._channels_last = False
         self._tf32 = False
+        self._fp16_accumulation = False
         self._last_seed: int = -1
         self._anima_defaults_applied: bool = False
         self._ckpt_cache: "OrderedDict[str, LoadedModel]" = OrderedDict()
@@ -258,6 +270,13 @@ class Engine:
     @property
     def loaded_family(self) -> Optional[str]:
         return self._loaded.family if self._loaded else None
+
+    @property
+    def cuda_graphs_enabled(self) -> bool:
+        """Whether the current load baked CUDA Graphs into the backbone — lets
+        the server fail TeaCache requests at submit time (see
+        ``_TEACACHE_CUDA_GRAPHS_ERROR``) instead of after queueing."""
+        return self._cuda_graphs
 
     @property
     def applied_loras(self) -> List[str]:
@@ -364,6 +383,7 @@ class Engine:
     def _settings_match(
         self, offload: bool | str, vae_tile: bool, compile: bool,
         cuda_graphs: bool, channels_last: bool, tf32: bool,
+        fp16_accumulation: bool,
     ) -> bool:
         """Whether the requested load-time staging settings equal those of the
         currently loaded model. Offload and the perf flags are baked in at load
@@ -376,6 +396,7 @@ class Engine:
             and self._cuda_graphs == cuda_graphs
             and self._channels_last == channels_last
             and self._tf32 == tf32
+            and self._fp16_accumulation == fp16_accumulation
         )
 
     def _components_match(
@@ -396,6 +417,7 @@ class Engine:
         self, model_name: str, offload: bool | str = True, vae_tile: bool = True,
         compile: bool = False, cuda_graphs: bool = False,
         channels_last: bool = False, tf32: bool = False,
+        fp16_accumulation: bool = False,
     ) -> str:
         if compile and offload is True:
             offload = "encoders"
@@ -409,7 +431,8 @@ class Engine:
                          "(backbone is block-streamed to fit VRAM)")
         if (self._loaded and self._loaded.name == model_name
                 and self._settings_match(offload, vae_tile, compile,
-                                         cuda_graphs, channels_last, tf32)):
+                                         cuda_graphs, channels_last, tf32,
+                                         fp16_accumulation)):
             return f"Model already loaded: {model_name}"
 
         # X/Y/Z Checkpoint LRU cache (#10): try to restore a recently-swept
@@ -418,7 +441,8 @@ class Engine:
         # when restoring A). _stash_loaded detaches self._loaded on success; on
         # failure it leaves the previous model for _unload to drop.
         restored = self._try_cache_restore(model_name, offload, vae_tile,
-                                           compile, cuda_graphs, channels_last, tf32)
+                                           compile, cuda_graphs, channels_last, tf32,
+                                           fp16_accumulation)
         stashed = self._stash_loaded()
         if restored is not None:
             self._offload = offload
@@ -427,6 +451,7 @@ class Engine:
             self._cuda_graphs = cuda_graphs
             self._channels_last = channels_last
             self._tf32 = tf32
+            self._fp16_accumulation = fp16_accumulation
             self._loaded = restored
             self._reclaim_memory()
             log.info("[load] %s (%s) restored from ckpt cache", model_name, restored.family)
@@ -439,6 +464,7 @@ class Engine:
         self._cuda_graphs = cuda_graphs
         self._channels_last = channels_last
         self._tf32 = tf32
+        self._fp16_accumulation = fp16_accumulation
 
         path = checkpoint_path(model_name)
         if not path.exists():
@@ -449,6 +475,7 @@ class Engine:
             offload=offload, vae_tile=vae_tile,
             compile=compile, cuda_graphs=cuda_graphs,
             channels_last=channels_last, tf32=tf32,
+            fp16_accumulation=fp16_accumulation,
             # Overlap block-streaming copies with compute (see DevicePolicy). Only
             # active in "stream" mode, where the backbone already lives in CPU RAM.
             stream_prefetch=(offload == "stream"),
@@ -483,18 +510,21 @@ class Engine:
                 name, lm.vae_name, lm.te_name,
                 offload=self._offload, vae_tile=self._vae_tile,
                 compile=self._compile, cuda_graphs=self._cuda_graphs,
+                fp16_accumulation=self._fp16_accumulation,
             )
         return self.load_model(
             name,
             offload=self._offload, vae_tile=self._vae_tile,
             compile=self._compile, cuda_graphs=self._cuda_graphs,
             channels_last=self._channels_last, tf32=self._tf32,
+            fp16_accumulation=self._fp16_accumulation,
         )
 
     def load_anima(
         self, dit_name: str, vae_name: str, te_name: str,
         offload: bool | str = True, vae_tile: bool = True,
         compile: bool = False, cuda_graphs: bool = False,
+        fp16_accumulation: bool = False,
     ) -> str:
         label = f"Anima({dit_name})"
         if compile and offload is True:
@@ -510,7 +540,8 @@ class Engine:
         if (self._loaded and self._loaded.name == label
                 and self._components_match(vae_name, te_name)
                 and self._settings_match(offload, vae_tile, compile,
-                                         cuda_graphs, False, False)):
+                                         cuda_graphs, False, False,
+                                         fp16_accumulation)):
             return f"Model already loaded: {label}"
 
         # X/Y/Z Checkpoint LRU cache (#10): restore a recently-swept Anima DiT
@@ -523,7 +554,8 @@ class Engine:
             try: del cached.model
             except Exception: pass  # noqa: BLE001
         restored = self._try_cache_restore(label, offload, vae_tile,
-                                           compile, cuda_graphs, False, False)
+                                           compile, cuda_graphs, False, False,
+                                           fp16_accumulation)
         stashed = self._stash_loaded()
         if restored is not None:
             self._offload = offload
@@ -532,6 +564,7 @@ class Engine:
             self._cuda_graphs = cuda_graphs
             self._channels_last = False
             self._tf32 = False
+            self._fp16_accumulation = fp16_accumulation
             self._loaded = restored
             self._reclaim_memory()
             log.info("[load] %s restored from ckpt cache", label)
@@ -544,6 +577,7 @@ class Engine:
         self._cuda_graphs = cuda_graphs
         self._channels_last = False
         self._tf32 = False
+        self._fp16_accumulation = fp16_accumulation
 
         dit_path = diffusion_model_path(dit_name)
         vae_file = vae_path(vae_name)
@@ -556,6 +590,7 @@ class Engine:
             device=self.device, compute_dtype=self.dtype,
             offload=offload, vae_tile=vae_tile,
             compile=compile, cuda_graphs=cuda_graphs,
+            fp16_accumulation=fp16_accumulation,
             # Overlap block-streaming copies with compute (see DevicePolicy). Only
             # active in "stream" mode, where the backbone already lives in CPU RAM.
             stream_prefetch=(offload == "stream"),
@@ -584,6 +619,7 @@ class Engine:
         self, dit_name: str, vae_name: str, te_name: str, clip_name: str | None = None,
         offload: bool | str = True, vae_tile: bool = True,
         compile: bool = False, cuda_graphs: bool = False,
+        fp16_accumulation: bool = False,
     ) -> str:
         """Load a split-file FLUX model. ``te_name`` is the primary text encoder
         (T5-XXL for FLUX.1, Mistral-3 for FLUX.2); ``clip_name`` is the CLIP-L
@@ -603,7 +639,8 @@ class Engine:
         if (self._loaded and self._loaded.name == label
                 and self._components_match(vae_name, te_name, clip_name)
                 and self._settings_match(offload, vae_tile, compile,
-                                         cuda_graphs, False, False)):
+                                         cuda_graphs, False, False,
+                                         fp16_accumulation)):
             return f"Model already loaded: {label}"
 
         self._unload()
@@ -613,6 +650,7 @@ class Engine:
         self._cuda_graphs = cuda_graphs
         self._channels_last = False
         self._tf32 = False
+        self._fp16_accumulation = fp16_accumulation
 
         dit_path = diffusion_model_path(dit_name)
         vae_file = vae_path(vae_name)
@@ -630,6 +668,7 @@ class Engine:
             device=self.device, compute_dtype=self.dtype,
             offload=offload, vae_tile=vae_tile,
             compile=compile, cuda_graphs=cuda_graphs,
+            fp16_accumulation=fp16_accumulation,
             # Overlap block-streaming copies with compute (see DevicePolicy). Only
             # active in "stream" mode, where the backbone already lives in CPU RAM.
             stream_prefetch=(offload == "stream"),
@@ -664,6 +703,8 @@ class Engine:
             flags.append("channels_last")
         if self._tf32:
             flags.append("tf32")
+        if self._fp16_accumulation:
+            flags.append("fp16_acc")
         if self._offload is True:
             flags.append("offload=full")
         elif self._offload == "encoders":
@@ -685,6 +726,8 @@ class Engine:
             parts.append("channels_last")
         if self._tf32:
             parts.append("tf32")
+        if self._fp16_accumulation:
+            parts.append("fp16_acc")
         return ", ".join(parts) if parts else "default"
 
     def _unload(self) -> None:
@@ -735,7 +778,7 @@ class Engine:
 
     def _try_cache_restore(self, key: str,
                            offload, vae_tile, compile, cuda_graphs,
-                           channels_last, tf32) -> Optional[LoadedModel]:
+                           channels_last, tf32, fp16_accumulation) -> Optional[LoadedModel]:
         """Pop a cached model for ``key`` and move it back to the device, but
         only if the requested staging settings match the model's (a settings
         change invalidates the cached placement). Returns the restored
@@ -745,7 +788,8 @@ class Engine:
             return None
         if not (self._offload == offload and self._vae_tile == vae_tile
                 and self._compile == compile and self._cuda_graphs == cuda_graphs
-                and self._channels_last == channels_last and self._tf32 == tf32):
+                and self._channels_last == channels_last and self._tf32 == tf32
+                and self._fp16_accumulation == fp16_accumulation):
             # Settings changed since this was cached — placement is stale. Drop it.
             self._ckpt_cache.pop(key, None)
             try: del lm.model
@@ -891,6 +935,10 @@ class Engine:
         checkpoint misbehaves (then it gets its own override file)."""
         if not self._loaded or self._loaded.family != MODEL_FAMILY_ANIMA:
             raise RuntimeError("Load an Anima model first")
+        if self._cuda_graphs:
+            # The calibration probe *is* TeaCache's recording stream — it keeps
+            # the same inside-the-graph tensors alive across steps.
+            raise RuntimeError(_TEACACHE_CUDA_GRAPHS_ERROR)
         try:
             coeffs = anima_calibrate_teacache(
                 self._loaded.model, prompt, negative_prompt,
@@ -984,6 +1032,8 @@ class Engine:
         height: int = 1024,
         steps: int = 25,
         cfg_scale: float = 6.0,
+        cfg_interval_start: float = 0.0,
+        cfg_interval_end: float = 1.0,
         sampler: str = "dpmpp_2m",
         scheduler: str = "karras",
         seed: int = -1,
@@ -1004,6 +1054,9 @@ class Engine:
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
+        if (teacache_thresh > 0 and self._cuda_graphs
+                and self._loaded.family == MODEL_FAMILY_ANIMA):
+            raise RuntimeError(_TEACACHE_CUDA_GRAPHS_ERROR)
         seed = self._resolve_seed(seed)
         gen = TextToImage(self._loaded.model)
         kwargs: dict = dict(
@@ -1011,6 +1064,8 @@ class Engine:
             negative_prompt=negative_prompt,
             steps=steps,
             cfg_scale=cfg_scale,
+            cfg_interval_start=cfg_interval_start,
+            cfg_interval_end=cfg_interval_end,
             width=width,
             height=height,
             sampler=sampler,
@@ -1046,6 +1101,8 @@ class Engine:
         strength: float = 0.6,
         steps: int = 25,
         cfg_scale: float = 6.0,
+        cfg_interval_start: float = 0.0,
+        cfg_interval_end: float = 1.0,
         sampler: str = "dpmpp_2m",
         scheduler: str = "karras",
         seed: int = -1,
@@ -1067,6 +1124,9 @@ class Engine:
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
+        if (teacache_thresh > 0 and self._cuda_graphs
+                and self._loaded.family == MODEL_FAMILY_ANIMA):
+            raise RuntimeError(_TEACACHE_CUDA_GRAPHS_ERROR)
         seed = self._resolve_seed(seed)
         gen_w, gen_h, snapped = self._anima_gen_size(width, height)
         gen = ImageToImage(self._loaded.model)
@@ -1077,6 +1137,8 @@ class Engine:
             strength=strength,
             steps=steps,
             cfg_scale=cfg_scale,
+            cfg_interval_start=cfg_interval_start,
+            cfg_interval_end=cfg_interval_end,
             sampler=sampler,
             scheduler=scheduler,
             seed=seed,
@@ -1112,6 +1174,8 @@ class Engine:
         strength: float = 0.6,
         steps: int = 25,
         cfg_scale: float = 6.0,
+        cfg_interval_start: float = 0.0,
+        cfg_interval_end: float = 1.0,
         sampler: str = "dpmpp_2m",
         scheduler: str = "karras",
         seed: int = -1,
@@ -1133,6 +1197,9 @@ class Engine:
     ) -> Tuple[Image.Image, str]:
         if not self._loaded:
             raise RuntimeError("No model loaded")
+        if (teacache_thresh > 0 and self._cuda_graphs
+                and self._loaded.family == MODEL_FAMILY_ANIMA):
+            raise RuntimeError(_TEACACHE_CUDA_GRAPHS_ERROR)
         seed = self._resolve_seed(seed)
         gen_w, gen_h, snapped = self._anima_gen_size(width, height)
         gen = Inpaint(self._loaded.model)
@@ -1144,6 +1211,8 @@ class Engine:
             strength=strength,
             steps=steps,
             cfg_scale=cfg_scale,
+            cfg_interval_start=cfg_interval_start,
+            cfg_interval_end=cfg_interval_end,
             sampler=sampler,
             scheduler=scheduler,
             seed=seed,
@@ -1205,6 +1274,9 @@ class Engine:
             raise RuntimeError("No model loaded")
         if not self.can_inpaint:
             raise RuntimeError("Detailer needs inpaint, unavailable for this model")
+        if (teacache_thresh > 0 and self._cuda_graphs
+                and self._loaded.family == MODEL_FAMILY_ANIMA):
+            raise RuntimeError(_TEACACHE_CUDA_GRAPHS_ERROR)
 
         # OSS is a full-trajectory t2i schedule (calibrated, not usable mid-denoise);
         # fall back to a plain scheduler for the masked inpaint passes.
@@ -1300,6 +1372,9 @@ class Engine:
         preserved for output naming/metadata."""
         if not self._loaded:
             raise RuntimeError("No model loaded")
+        if (teacache_thresh > 0 and self._cuda_graphs
+                and self._loaded.family == MODEL_FAMILY_ANIMA):
+            raise RuntimeError(_TEACACHE_CUDA_GRAPHS_ERROR)
 
         # OSS is a full-trajectory t2i schedule — not usable mid-denoise.
         if scheduler == "oss":

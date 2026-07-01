@@ -30,7 +30,7 @@ import uvicorn
 from fastapi import FastAPI, UploadFile, File, Request, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
@@ -195,6 +195,8 @@ class LoadPayload(BaseModel):
     compile: bool = False
     cuda_graphs: bool = False
     channels_last: bool = False
+    tf32: bool = False                  # SD/SDXL only (fp32 VAE path; Ampere+)
+    fp16_accumulation: bool = False     # fp16-accumulate matmuls; all families
 
 
 class DetailerModel(BaseModel):
@@ -306,6 +308,18 @@ class Settings(BaseModel):
     beta_alpha: float = 0.6       # beta scheduler Beta(α, β) — low-t (σ→0) density
     beta_beta: float = 0.6        # beta scheduler — high-t (σ→1) density
     lq_threshold: float = 0.025   # linear_quadratic threshold_noise (linear/quad knee)
+    # CFG guidance interval (Anima + SD/SDXL; FLUX has no CFG pass): apply CFG
+    # only in this fraction of the sampling run — the uncond forward is skipped
+    # outside the band, saving a full backbone pass per skipped step
+    # (Kynkäänniemi et al., 2024). (0, 1) = guide every step (off).
+    cfg_interval_start: float = Field(0.0, ge=0.0, lt=1.0)
+    cfg_interval_end: float = Field(1.0, gt=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _cfg_interval_ordered(self):
+        if self.cfg_interval_start >= self.cfg_interval_end:
+            raise ValueError("cfg_interval_start must be < cfg_interval_end")
+        return self
     # VAE decode: "auto" tiles only when a full decode won't fit free VRAM;
     # "always" forces tiled decode. Applies to Anima + SD/SDXL (FLUX always tiles).
     vae_tiling: str = "auto"      # "auto" | "always"
@@ -464,6 +478,17 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                 common["beta_beta"] = float(SETTINGS["beta_beta"])
             if p.scheduler == "linear_quadratic":
                 common["lq_threshold"] = float(SETTINGS["lq_threshold"])
+
+        # CFG guidance interval (settings panel): skip the uncond forward outside
+        # the [start, end) step-fraction band. Applies wherever a real CFG pass
+        # runs (Anima + SD/SDXL); FLUX is guidance-distilled, so it's skipped.
+        # Injected only when non-default so metadata stays clean.
+        if ENGINE.loaded_family not in ("flux1", "flux2"):
+            ivl_start = float(SETTINGS["cfg_interval_start"])
+            ivl_end = float(SETTINGS["cfg_interval_end"])
+            if (ivl_start, ivl_end) != (0.0, 1.0) and ivl_start < ivl_end:
+                common["cfg_interval_start"] = ivl_start
+                common["cfg_interval_end"] = ivl_end
 
         if p.mode == "i2i":
             if not p.input_image:
@@ -1267,6 +1292,7 @@ def _do_load_impl(p: LoadPayload) -> str:
             # per decode via can_decode_untiled; "always" forces tiled (even at 1024²).
             offload=offload, vae_tile=vae_tile_pref,
             compile=p.compile, cuda_graphs=p.cuda_graphs,
+            fp16_accumulation=p.fp16_accumulation,
         )
     if p.model_type == "FLUX":
         # All-in-one checkpoint takes precedence; otherwise load split files.
@@ -1274,6 +1300,7 @@ def _do_load_impl(p: LoadPayload) -> str:
             return ENGINE.load_model(
                 p.checkpoint, offload=offload, vae_tile=True,
                 compile=p.compile, cuda_graphs=p.cuda_graphs,
+                fp16_accumulation=p.fp16_accumulation,
             )
         for name in (p.dit, p.vae, p.te):
             if not name or name.startswith("("):
@@ -1282,6 +1309,7 @@ def _do_load_impl(p: LoadPayload) -> str:
             p.dit, p.vae, p.te, clip_name=p.clip,
             offload=offload, vae_tile=True,
             compile=p.compile, cuda_graphs=p.cuda_graphs,
+            fp16_accumulation=p.fp16_accumulation,
         )
     if not p.checkpoint or p.checkpoint.startswith("("):
         return "Select a model"
@@ -1291,7 +1319,8 @@ def _do_load_impl(p: LoadPayload) -> str:
         # via can_decode_untiled, "always" → force tiled.
         offload=offload, vae_tile=vae_tile_pref,
         compile=p.compile, cuda_graphs=p.cuda_graphs,
-        channels_last=p.channels_last,
+        channels_last=p.channels_last, tf32=p.tf32,
+        fp16_accumulation=p.fp16_accumulation,
     )
 
 
@@ -1320,8 +1349,24 @@ async def api_load(p: LoadPayload):
     return {"job": job.id}
 
 
+def _teacache_cuda_graphs_conflict(*thresholds: float) -> Optional[str]:
+    """Submit-time guard: TeaCache can't run on a CUDA-Graphs-compiled Anima
+    backbone (see ``engine._TEACACHE_CUDA_GRAPHS_ERROR``). Returns the error
+    string when any requested threshold is active on such a load, else None.
+    The engine re-checks at run time (the model can change while queued)."""
+    if (ENGINE.cuda_graphs_enabled and ENGINE.loaded_family == "anima"
+            and any(t > 0 for t in thresholds)):
+        return ("TeaCache is incompatible with CUDA Graphs — disable TeaCache "
+                "or reload the model without the CUDA Graphs flag")
+    return None
+
+
 @app.post("/api/generate")
 async def api_generate(p: GeneratePayload):
+    err = _teacache_cuda_graphs_conflict(
+        p.teacache, p.upscale_teacache if p.upscale_enabled else 0.0)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     def run(job: Job) -> dict:
         on_progress, on_preview = _make_callbacks(job)
         return _run_generation(p, on_progress, on_preview)
@@ -1332,6 +1377,9 @@ async def api_generate(p: GeneratePayload):
 
 @app.post("/api/upscale")
 async def api_upscale(p: UpscalePayload):
+    err = _teacache_cuda_graphs_conflict(p.teacache)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     def run(job: Job) -> dict:
         if not ENGINE.loaded_name:
             raise RuntimeError("Load a model first")

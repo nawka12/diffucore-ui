@@ -586,7 +586,7 @@ def test_ckpt_cache_stash_and_restore():
     assert eng._stash_loaded() is True
     assert eng._loaded is None
     assert "A" in eng._ckpt_cache
-    restored = eng._try_cache_restore("A", "none", True, False, False, False, False)
+    restored = eng._try_cache_restore("A", "none", True, False, False, False, False, False)
     assert restored is not None and restored.name == "A"
     assert "A" not in eng._ckpt_cache  # popped on restore
 
@@ -611,12 +611,31 @@ def test_ckpt_cache_skips_flux_and_offloaded():
     assert eng._stash_loaded() is False
 
 
+def test_teacache_rejected_on_cuda_graphs_anima():
+    """TeaCache keeps tensors from inside the compiled forward alive across
+    steps; CUDA Graphs replays overwrite them — the engine must refuse the
+    combination up front instead of crashing mid-generation."""
+    eng = _cache_engine()
+    eng._loaded = _fake_loaded("A", family="anima")
+    eng._cuda_graphs = True
+    with pytest.raises(RuntimeError, match="incompatible with CUDA Graphs"):
+        eng.generate_t2i(prompt="x", teacache_thresh=0.4)
+    with pytest.raises(RuntimeError, match="incompatible with CUDA Graphs"):
+        eng.calibrate_teacache(prompt="x")
+    # TeaCache off passes the guard — it then fails later on the fake model,
+    # which is fine; just assert the guard isn't what trips.
+    try:
+        eng.generate_t2i(prompt="x", teacache_thresh=0.0)
+    except Exception as e:  # noqa: BLE001
+        assert "incompatible with CUDA Graphs" not in str(e)
+
+
 def test_ckpt_cache_restore_rejects_settings_mismatch():
     eng = _cache_engine()
     eng._loaded = _fake_loaded("A")
     eng._stash_loaded()
     # Request a different offload than the cached "none" → miss, entry dropped.
-    restored = eng._try_cache_restore("A", "stream", True, False, False, False, False)
+    restored = eng._try_cache_restore("A", "stream", True, False, False, False, False, False)
     assert restored is None
     assert "A" not in eng._ckpt_cache
 

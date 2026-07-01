@@ -33,6 +33,12 @@ network/share flags, architecture, and status.
   in the Generate view. SD/SDXL and Anima.
 - **TeaCache** — opt-in sampling speedup for Anima: reuses the DiT's output on
   low-change steps, with a fidelity/speed threshold and optional calibration.
+- **CFG guidance interval** — opt-in speedup for Anima and SD/SDXL: apply CFG
+  only in a middle fraction of the sampling run and skip the negative-prompt
+  model pass outside it (Settings → Sampler defaults).
+- **fp16 accumulation** — opt-in per-load perf flag: fp16-accumulated matmuls
+  run at 2× the tensor-core rate on consumer GPUs (measured ~1.17× end-to-end
+  on Anima on an RTX 2060, slight precision trade-off). All families.
 - **11 samplers, multiple schedulers** — Euler, Heun, DPM++ family, ER-SDE,
   SECANT; Karras, exponential, sgm_uniform, flow, and more.
 - **Gallery with metadata round-trip** — every generated image saves its full
@@ -289,6 +295,12 @@ bugs, just how the model responds:
 where its output barely changes, reusing the cached result instead — a large
 speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
 
+- **Incompatible with CUDA Graphs.** TeaCache's cached tensors live inside the
+  compiled forward, and each graph replay overwrites them — the request is
+  rejected with a clear error at submit. Pick one: TeaCache (with plain
+  `torch.compile` or no compile) for stochastic/varied work, or CUDA Graphs for
+  maximum raw throughput at a fixed resolution.
+
 - **Threshold is the speed/fidelity knob.** TeaCache accumulates how much the
   step input drifts and forces a real recompute once that crosses the threshold;
   higher = more skipping = faster but lower fidelity. There is no universal sweet
@@ -327,6 +339,25 @@ speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
   uncalibrated, that's the mismatch: turn calibration off for that sampler and
   tune the raw threshold directly. Re-calibrating won't fix it — the calibration
   loop is deterministic and can't reproduce an ancestral sampler's dynamics.
+
+### CFG guidance interval — skip the negative-prompt pass
+
+Every CFG step normally runs the model twice (positive + negative prompt).
+Research on guidance ([Kynkäänniemi et al., 2024](https://arxiv.org/abs/2404.07724))
+shows CFG only earns its keep in a middle band of noise levels — so the **CFG
+start / CFG end** knobs (Settings → Sampler & scheduler defaults) let you apply
+it only between those fractions of the run. Outside the band the negative-prompt
+pass is skipped entirely: each skipped step costs half as much.
+
+- `0 / 1` (the defaults) guide every step — behavior is unchanged.
+- `0 / 0.75` is a good first try: full guidance while composition and palette
+  form, conditioned-only for the final quarter, where CFG mostly sharpens what's
+  already decided. At 12 steps on Anima that measured ~1.12× end-to-end.
+- The paper's headline result is raising **start** above 0 (skip guidance at the
+  *highest* noise), which can improve quality as well as speed — worth an A/B.
+- Applies to Anima and SD/SDXL (t2i, img2img, inpaint) and composes with
+  TeaCache. FLUX is guidance-distilled (no CFG pass), so it's unaffected. When
+  active it's recorded in PNG metadata as `CFG interval: start-end`.
 
 ### Detailer (after generate)
 
