@@ -29,7 +29,7 @@ def _git_short(cwd: Path) -> str:
         return ""
 
 
-_UI_VERSION = "0.1.6"
+_UI_VERSION = "0.1.7"
 _UI_COMMIT = _git_short(_ROOT)
 _DIFF_COMMIT = _git_short(_ROOT / "diffucore")
 
