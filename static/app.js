@@ -511,14 +511,29 @@ document.addEventListener('alpine:init', () => {
       this.schedulersFlux = m.schedulers_flux;
       this.paramTypes = m.xyz_param_types;
       this.recommendedOffload = m.recommended_offload || 'full';
-      this.perf.offload = this.recommendedOffload;
       this.uiId = m.ui_id; this.diffId = m.diff_id;
-      this.checkpoint = this.checkpointChoices[0];
-      this.dit = this.ditChoices[0];
-      this.vae = this.vaeChoices[0];
-      this.te = this.teChoices[0];
-      this.clip = this.teChoices[0];
-      this.detail.models[0].model = this.detailerChoices[0];
+      // First fetch seeds every selector; a later Refresh (picking up newly
+      // dropped files) must NOT clobber selections the user already made —
+      // only replace ones whose file vanished from the new list.
+      if (!this._modelsFetched) {
+        this._modelsFetched = true;
+        this.perf.offload = this.recommendedOffload;
+        this.checkpoint = this.checkpointChoices[0];
+        this.dit = this.ditChoices[0];
+        this.vae = this.vaeChoices[0];
+        this.te = this.teChoices[0];
+        this.clip = this.teChoices[0];
+        this.detail.models[0].model = this.detailerChoices[0];
+      } else {
+        const keep = (cur, list) => (list.includes(cur) ? cur : list[0]);
+        this.checkpoint = keep(this.checkpoint, this.checkpointChoices);
+        this.dit = keep(this.dit, this.ditChoices);
+        this.vae = keep(this.vae, this.vaeChoices);
+        this.te = keep(this.te, this.teChoices);
+        // '' is a valid CLIP pick ("— none —", FLUX.2); a gone file falls to none.
+        if (this.clip !== '' && !this.teChoices.includes(this.clip)) this.clip = '';
+        for (const dm of this.detail.models) dm.model = keep(dm.model, this.detailerChoices);
+      }
       this.syncSampler();
       this.syncScheduler();
       // Hydrate from server-side load state last, so a model already loaded by
@@ -610,6 +625,9 @@ document.addEventListener('alpine:init', () => {
     onDrop(evt, key) { this.dragKey = null; this.readImage(evt.dataTransfer.files[0], key); },
     readImage(f, key) {
       if (!f) return;
+      // Drops bypass the file input's accept filter; refuse non-images loudly
+      // instead of silently doing nothing.
+      if (f.type && !f.type.startsWith('image/')) { this.flash('Not an image file'); return; }
       const r = new FileReader();
       r.onload = () => {
         this[key] = r.result;
@@ -1606,14 +1624,23 @@ document.addEventListener('alpine:init', () => {
     onMetaDrop(evt) { this.dragKey = null; this.readMeta(evt.dataTransfer.files[0]); },
     async readMeta(f) {
       if (!f) return;
+      // Drops bypass the input's accept="image/png"; only PNGs carry the
+      // parameters text chunk, so refuse other types with feedback.
+      if (f.type && f.type !== 'image/png') { this.flash('Metadata lives in PNGs — drop a PNG file'); return; }
       const pre = new FileReader();
       pre.onload = () => { this.metaPreview = pre.result; };
       pre.readAsDataURL(f);
       const fd = new FormData();
       fd.append('file', f);
-      const r = await fetchJSON('/api/metadata/parse', { method: 'POST', body: fd });
-      this.metaText = r.text;
-      this.metaFields = Object.keys(r.fields).length ? r.fields : null;
+      try {
+        const r = await fetchJSON('/api/metadata/parse', { method: 'POST', body: fd });
+        this.metaText = r.text;
+        this.metaFields = Object.keys(r.fields).length ? r.fields : null;
+      } catch (e) {
+        this.metaText = '';
+        this.metaFields = null;
+        this.flash('Could not read metadata: ' + e.message);
+      }
     },
 
     sendMetaToGenerate() {

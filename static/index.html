@@ -657,7 +657,9 @@
                @input.debounce.300ms="searchGallery()"
                placeholder="Search prompts, models, samplers…"
                aria-label="Search gallery">
-        <button class="btn" @click="openGallery()" :disabled="gallerySearching"
+        <!-- Refresh re-runs the current query (empty query = full list);
+             openGallery() would silently wipe an active search. -->
+        <button class="btn" @click="searchGallery()" :disabled="gallerySearching"
                 x-text="gallerySearching ? 'Indexing…' : 'Refresh'"></button>
       </div>
       <template x-for="g in galleryGroups" :key="g.date">
@@ -938,7 +940,7 @@ This executes arbitrary code — only enable it for sources you trust.">
 
   </div>
 
-  <div class="toast" :class="'toast--' + toastKind" x-show="toast" x-transition x-text="toast"
+  <div class="toast" :class="'toast--' + toastKind" x-show="toast" x-cloak x-transition x-text="toast"
        role="status" aria-live="polite" aria-atomic="true"></div>
 
 </body>

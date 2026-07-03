@@ -766,6 +766,8 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   z-index: 1;
   width: 100%;
   max-width: 420px;
+  max-height: 86vh;   /* short viewports: scroll inside rather than clip the Start button */
+  overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--line-hi);
   border-radius: 10px;
@@ -1088,7 +1090,9 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   color: var(--txt);
   font-size: 13px;
   box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-  z-index: 100;
+  /* Above every overlay (lightbox/settings/upscale at 200, maximized mask
+     editor at 500) — toasts fired from inside them must stay visible. */
+  z-index: 600;
 }
 .toast--error   { border-color: var(--danger); }
 .toast--success { border-color: var(--teal); }
