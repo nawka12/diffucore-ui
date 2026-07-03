@@ -1474,9 +1474,10 @@ document.addEventListener('alpine:init', () => {
     },
 
     dateLabel(d) {
-      const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(d || '');
+      // ISO YYYY-MM-DD folder names (legacy dirs are migrated server-side).
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d || '');
       if (!m) return d || 'Unknown date';
-      const dt = new Date(+m[3], +m[2] - 1, +m[1]);
+      const dt = new Date(+m[1], +m[2] - 1, +m[3]);
       const today = new Date(); today.setHours(0, 0, 0, 0);
       const diff = Math.round((today - dt) / 86400000);
       if (diff === 0) return 'Today';

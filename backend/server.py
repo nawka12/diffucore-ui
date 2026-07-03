@@ -18,11 +18,13 @@ import itertools
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import threading
 import time
 from collections import deque
+from datetime import date
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -172,6 +174,59 @@ def _purge_trash(max_age_days: int = TRASH_RETENTION_DAYS) -> int:
         except OSError:
             pass
     return purged
+
+
+# ── output folder naming migration (v0.1.7) ──────────────────────────
+# Date folders were ``DD-MM-YYYY`` through v0.1.6; ISO ``YYYY-MM-DD`` sorts
+# chronologically in file managers / ls / rsync, so new saves use ISO
+# (utils.next_output_path) and legacy folders are renamed once at startup.
+_LEGACY_DATE_RE = re.compile(r"^(\d{2})-(\d{2})-(\d{4})$")
+
+
+def _migrate_output_dirs() -> int:
+    """Rename legacy ``DD-MM-YYYY`` date folders under outputs/ to ISO
+    ``YYYY-MM-DD``. Returns the number of folders migrated.
+
+    Runs at startup, before any request touches the gallery. The mirrored
+    thumb-cache folder is renamed too — its keys are stem+mtime+size, which a
+    rename preserves, so existing thumbnails stay valid. A folder whose ISO
+    twin already exists (created by this build, then a downgrade ran, then an
+    upgrade again) is merged into it file-by-file. Date-shaped names that
+    aren't real dates are left alone — they aren't ours."""
+    if not OUTPUTS_DIR.is_dir():
+        return 0
+    migrated = 0
+    for d in sorted(OUTPUTS_DIR.iterdir()):
+        m = _LEGACY_DATE_RE.match(d.name)
+        if not m or not d.is_dir():
+            continue
+        dd, mm, yyyy = m.groups()
+        try:
+            iso = date(int(yyyy), int(mm), int(dd)).isoformat()
+        except ValueError:
+            continue
+        target = OUTPUTS_DIR / iso
+        try:
+            if target.exists():
+                for f in d.iterdir():
+                    if not (target / f.name).exists():
+                        f.rename(target / f.name)
+                d.rmdir()  # raises if a name collision was left behind
+            else:
+                d.rename(target)
+        except OSError as e:
+            log.warning("[startup] could not migrate outputs/%s: %s", d.name, e)
+            continue
+        old_thumbs = _THUMBS_DIR / d.name
+        if old_thumbs.is_dir() and not (_THUMBS_DIR / iso).exists():
+            try:
+                old_thumbs.rename(_THUMBS_DIR / iso)
+            except OSError:
+                pass  # cache only — thumbnails regenerate on demand
+        migrated += 1
+    if migrated:
+        invalidate_outputs_cache()
+    return migrated
 
 class _Cancelled(BaseException):
     """Raised from the progress callback to unwind a running generation.
@@ -1102,6 +1157,14 @@ async def _startup():
     n = sum(1 for e in EXTENSIONS.extensions.values() if e.module is not None)
     log.info("[startup] extensions: %d loaded, %d total", n,
              len(EXTENSIONS.extensions))
+    # One-time rename of legacy DD-MM-YYYY output folders to ISO YYYY-MM-DD.
+    try:
+        n_migrated = _migrate_output_dirs()
+        if n_migrated:
+            log.info("[startup] renamed %d legacy output date folder(s) to ISO YYYY-MM-DD",
+                     n_migrated)
+    except Exception as e:  # noqa: BLE001
+        log.warning("[startup] output folder migration failed: %s", e)
     # Purge aged gallery trash on boot (cheap; runs again on each delete).
     try:
         purged = _purge_trash()

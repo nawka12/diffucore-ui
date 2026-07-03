@@ -111,16 +111,20 @@ def upscaler_path(name: str) -> Path:
 
 
 def _parse_date_dir(name: str) -> date:
+    # Date folders are ISO ``YYYY-MM-DD`` (legacy ``DD-MM-YYYY`` dirs are
+    # renamed at startup — see server._migrate_output_dirs). Anything else
+    # sorts last rather than erroring.
     try:
-        return date(int(name[6:10]), int(name[3:5]), int(name[0:2]))
-    except (ValueError, IndexError):
+        return date.fromisoformat(name)
+    except ValueError:
         return date.min
 
 
 def _output_sort_key(f: Path) -> tuple:
     """Newest-first ordering within a day folder. The leading index in
-    ``{i:02d}-{seed}.png`` climbs with save time, so sort on it numerically — a
-    string sort misorders once a day passes 99 images (``"100"`` < ``"99"``).
+    ``{i:05d}-{seed}.png`` climbs with save time, so sort on it numerically — a
+    string sort misorders legacy 2-digit-padded names (pre-ISO ``07-…``)
+    against the 5-digit ones saved into the same folder after a migration merge.
     Names without a parseable index fall back to mtime, ranked below indexed files.
     """
     try:
@@ -198,7 +202,7 @@ def _scan_outputs_uncached() -> List[Path]:
     _ensure_dirs()
     # Skip dot-dirs (notably ``.trash/`` — the gallery's soft-delete holding pen)
     # so trashed images don't reappear in the gallery list. Real date folders are
-    # ``DD-MM-YYYY`` and never start with a dot.
+    # ``YYYY-MM-DD`` and never start with a dot.
     dirs = [d for d in OUTPUTS_DIR.iterdir() if d.is_dir() and not d.name.startswith(".")]
     dirs.sort(key=lambda d: _parse_date_dir(d.name), reverse=True)
     files: List[Path] = []
@@ -211,7 +215,8 @@ def _scan_outputs_uncached() -> List[Path]:
 
 def next_output_path(seed: int, ext: str = "png") -> Path:
     _ensure_dirs()
-    date_str = date.today().strftime("%d-%m-%Y")
+    # ISO date folder: lexicographic order == chronological order in any tool.
+    date_str = date.today().isoformat()
     dir_path = OUTPUTS_DIR / date_str
     dir_path.mkdir(parents=True, exist_ok=True)
     max_i = 0
@@ -223,5 +228,6 @@ def next_output_path(seed: int, ext: str = "png") -> Path:
             except (ValueError, IndexError):
                 pass
     i = max_i + 1
-    name = f"{i:02d}-{seed}.{ext}"
+    # 5-digit padding (A1111-style): string sort stays correct past 99/day.
+    name = f"{i:05d}-{seed}.{ext}"
     return dir_path / name
