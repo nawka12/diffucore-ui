@@ -7,14 +7,9 @@ interface with a unified txt2img / img2img / inpaint workspace, an X/Y/Z
 parameter-sweep mode, and a gallery that recycles past generations' metadata
 back into the workspace.
 
-![version](https://img.shields.io/badge/version-0.1.7-blue)
+![version](https://img.shields.io/badge/version-0.1.8-blue)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
-
-> 🚀 **v0.1.0 — first release.** Diffucore UI is functional end-to-end across
-> its model families and verified on real hardware. It's an early release, so
-> expect the occasional rough edge — please report issues. Check out the
-> `v0.1.0` tag for the tagged release, or track `main` for the latest.
 
 ## Quick start
 
