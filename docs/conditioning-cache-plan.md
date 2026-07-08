@@ -1,8 +1,18 @@
 # Conditioning cache — implementation plan
 
-> Status: **planned, not started.** Written 2026-07-08 from the perf review that
-> also removed the per-step LLM-Adapter re-run and the per-forward RoPE H2D copy
-> (`_anima.py` / `anima_dit.py`).
+> Status: **implemented 2026-07-08.** `runtime/cond_cache.py` (`ConditioningCache`,
+> LRU 16, CPU storage) + `ModelBundle.cond_cache` + the three pipeline touch points
+> (Anima t2i/i2i share one entry; FLUX keyed on prompt; SD/SDXL split into a cached
+> encode + a resolution-dependent `y` assembly) + engine create-per-load /
+> clear-on-LoRA wiring. Verified: offline unit tests (LRU + SD/SDXL hit/miss/
+> y-reassembly, `test_cond_cache.py`); Anima real-weights (hit skips encode+adapter,
+> new negative misses, warm==cold bit-identical); SDXL real-weights (default path
+> unchanged, warm==cold bit-identical, cross-resolution context reuse). GPU e2e
+> timing (verification #4) still worth a look but the correctness bar is met.
+>
+> Written 2026-07-08 from the perf review that also removed the per-step
+> LLM-Adapter re-run and the per-forward RoPE H2D copy (`_anima.py` /
+> `anima_dit.py`).
 
 ## Context
 

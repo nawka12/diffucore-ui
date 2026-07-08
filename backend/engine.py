@@ -66,7 +66,7 @@ from diffucore import (
     Inpaint,
     TextToImage,
 )
-from diffucore.runtime import DevicePolicy
+from diffucore.runtime import ConditioningCache, DevicePolicy
 
 from utils import checkpoint_path, lora_path, diffusion_model_path, vae_path, te_path
 
@@ -371,12 +371,14 @@ class Engine:
             report = apply_lora(self._loaded.model, str(path), multiplier=mult)
             self._loaded.applied_loras.append(name)
             msgs.append(f"{name}@{mult}: {report.applied} matched")
+        self._invalidate_cond_cache()  # LoRA patches the TE/adapter → cached embeds stale
         return " | ".join(msgs) if msgs else "No LoRAs"
 
     def clear_temp_loras(self) -> None:
         if self._loaded:
             clear_bundle_loras(self._loaded.model)
             self._loaded.applied_loras.clear()
+            self._invalidate_cond_cache()  # weights back to base → cached LoRA embeds stale
 
     # ── model loading ──────────────────────────────────────────────
 
@@ -453,6 +455,7 @@ class Engine:
             self._tf32 = tf32
             self._fp16_accumulation = fp16_accumulation
             self._loaded = restored
+            self._attach_cond_cache()
             self._reclaim_memory()
             log.info("[load] %s (%s) restored from ckpt cache", model_name, restored.family)
             return f"Loaded {model_name} ({restored.family}) (from cache)"
@@ -494,6 +497,7 @@ class Engine:
             model=model,
             native_res=self._native_res(family),
         )
+        self._attach_cond_cache()
         flags = self._perf_flag_summary()
         return f"Loaded {model_name} ({family}) in {elapsed:.1f}s{flags}"
 
@@ -566,6 +570,7 @@ class Engine:
             self._tf32 = False
             self._fp16_accumulation = fp16_accumulation
             self._loaded = restored
+            self._attach_cond_cache()
             self._reclaim_memory()
             log.info("[load] %s restored from ckpt cache", label)
             return f"Loaded Anima (from cache)  (DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})"
@@ -612,6 +617,7 @@ class Engine:
             vae_name=vae_name,
             te_name=te_name,
         )
+        self._attach_cond_cache()
         flags = self._perf_flag_summary()
         return f"Loaded Anima in {elapsed:.1f}s{flags}  (DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})"
 
@@ -690,6 +696,7 @@ class Engine:
             name=label, family=family, model=model, native_res=1024,
             vae_name=vae_name, te_name=te_name, clip_name=clip_name,
         )
+        self._attach_cond_cache()
         flags = self._perf_flag_summary()
         return f"Loaded {family} in {elapsed:.1f}s{flags}  (DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})"
 
@@ -735,6 +742,23 @@ class Engine:
             del self._loaded.model
             self._loaded = None
         self._reclaim_memory()
+
+    # ── conditioning cache ─────────────────────────────────────────
+    def _attach_cond_cache(self) -> None:
+        """Give the freshly (re)activated model an empty conditioning cache. A
+        fresh cache per load/restore makes stale-across-models entries
+        structurally impossible; LoRA changes clear it in place (below)."""
+        if self._loaded is not None:
+            self._loaded.model.cond_cache = ConditioningCache()
+
+    def _invalidate_cond_cache(self) -> None:
+        """Drop cached conditioning after a LoRA change. LoRAs can patch the text
+        encoders (SD) and the Anima LLM-Adapter, so any cached embeds are stale;
+        clearing unconditionally is cheaper than diffing which modules changed."""
+        if self._loaded is not None:
+            cache = getattr(self._loaded.model, "cond_cache", None)
+            if cache is not None:
+                cache.clear()
 
     # ── X/Y/Z Checkpoint LRU cache (#10) ───────────────────────────
     def _cacheable_for_stash(self) -> bool:
@@ -831,6 +855,7 @@ class Engine:
             raise FileNotFoundError(f"LoRA not found: {path}")
         report = apply_lora(self._loaded.model, str(path), multiplier=multiplier)
         self._loaded.applied_loras.append(lora_name)
+        self._invalidate_cond_cache()  # LoRA patches the TE/adapter → cached embeds stale
         return f"Applied {lora_name}: {report}"
 
     def clear_loras(self) -> str:
