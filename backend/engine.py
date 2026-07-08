@@ -59,6 +59,7 @@ from diffucore import (
     anima_calibrate_teacache,
     apply_lora,
     clear_loras as clear_bundle_loras,
+    fa2_turing_available,
     load_anima_checkpoint,
     load_checkpoint,
     load_flux_checkpoint,
@@ -257,6 +258,7 @@ class Engine:
         self._channels_last = False
         self._tf32 = False
         self._fp16_accumulation = False
+        self._attention = "sdpa"
         self._last_seed: int = -1
         self._anima_defaults_applied: bool = False
         self._ckpt_cache: "OrderedDict[str, LoadedModel]" = OrderedDict()
@@ -292,6 +294,13 @@ class Engine:
         ``Inpaint`` pipeline per region). True for every supported family now that
         FLUX has an inpaint path."""
         return bool(self._loaded)
+
+    @staticmethod
+    def fa2_attention_available() -> bool:
+        """Whether the optional FA2-Turing attention kernel can run here (the
+        locally built ``flash_attn_turing`` package is installed and the GPU is
+        sm75) — gates the UI's "fa2 attn" perf chip."""
+        return fa2_turing_available()
 
     def recommended_offload(self) -> str:
         """A sensible default offload mode for the UI, picked from the GPU's VRAM.
@@ -385,7 +394,7 @@ class Engine:
     def _settings_match(
         self, offload: bool | str, vae_tile: bool, compile: bool,
         cuda_graphs: bool, channels_last: bool, tf32: bool,
-        fp16_accumulation: bool,
+        fp16_accumulation: bool, attention: str = "sdpa",
     ) -> bool:
         """Whether the requested load-time staging settings equal those of the
         currently loaded model. Offload and the perf flags are baked in at load
@@ -399,6 +408,7 @@ class Engine:
             and self._channels_last == channels_last
             and self._tf32 == tf32
             and self._fp16_accumulation == fp16_accumulation
+            and self._attention == attention
         )
 
     def _components_match(
@@ -419,7 +429,7 @@ class Engine:
         self, model_name: str, offload: bool | str = True, vae_tile: bool = True,
         compile: bool = False, cuda_graphs: bool = False,
         channels_last: bool = False, tf32: bool = False,
-        fp16_accumulation: bool = False,
+        fp16_accumulation: bool = False, attention: str = "sdpa",
     ) -> str:
         if compile and offload is True:
             offload = "encoders"
@@ -434,7 +444,7 @@ class Engine:
         if (self._loaded and self._loaded.name == model_name
                 and self._settings_match(offload, vae_tile, compile,
                                          cuda_graphs, channels_last, tf32,
-                                         fp16_accumulation)):
+                                         fp16_accumulation, attention)):
             return f"Model already loaded: {model_name}"
 
         # X/Y/Z Checkpoint LRU cache (#10): try to restore a recently-swept
@@ -444,7 +454,7 @@ class Engine:
         # failure it leaves the previous model for _unload to drop.
         restored = self._try_cache_restore(model_name, offload, vae_tile,
                                            compile, cuda_graphs, channels_last, tf32,
-                                           fp16_accumulation)
+                                           fp16_accumulation, attention)
         stashed = self._stash_loaded()
         if restored is not None:
             self._offload = offload
@@ -454,6 +464,7 @@ class Engine:
             self._channels_last = channels_last
             self._tf32 = tf32
             self._fp16_accumulation = fp16_accumulation
+            self._attention = attention
             self._loaded = restored
             self._attach_cond_cache()
             self._reclaim_memory()
@@ -468,6 +479,7 @@ class Engine:
         self._channels_last = channels_last
         self._tf32 = tf32
         self._fp16_accumulation = fp16_accumulation
+        self._attention = attention
 
         path = checkpoint_path(model_name)
         if not path.exists():
@@ -478,7 +490,7 @@ class Engine:
             offload=offload, vae_tile=vae_tile,
             compile=compile, cuda_graphs=cuda_graphs,
             channels_last=channels_last, tf32=tf32,
-            fp16_accumulation=fp16_accumulation,
+            fp16_accumulation=fp16_accumulation, attention=attention,
             # Overlap block-streaming copies with compute (see DevicePolicy). Only
             # active in "stream" mode, where the backbone already lives in CPU RAM.
             stream_prefetch=(offload == "stream"),
@@ -515,6 +527,7 @@ class Engine:
                 offload=self._offload, vae_tile=self._vae_tile,
                 compile=self._compile, cuda_graphs=self._cuda_graphs,
                 fp16_accumulation=self._fp16_accumulation,
+                attention=self._attention,
             )
         return self.load_model(
             name,
@@ -522,13 +535,14 @@ class Engine:
             compile=self._compile, cuda_graphs=self._cuda_graphs,
             channels_last=self._channels_last, tf32=self._tf32,
             fp16_accumulation=self._fp16_accumulation,
+            attention=self._attention,
         )
 
     def load_anima(
         self, dit_name: str, vae_name: str, te_name: str,
         offload: bool | str = True, vae_tile: bool = True,
         compile: bool = False, cuda_graphs: bool = False,
-        fp16_accumulation: bool = False,
+        fp16_accumulation: bool = False, attention: str = "sdpa",
     ) -> str:
         label = f"Anima({dit_name})"
         if compile and offload is True:
@@ -545,7 +559,7 @@ class Engine:
                 and self._components_match(vae_name, te_name)
                 and self._settings_match(offload, vae_tile, compile,
                                          cuda_graphs, False, False,
-                                         fp16_accumulation)):
+                                         fp16_accumulation, attention)):
             return f"Model already loaded: {label}"
 
         # X/Y/Z Checkpoint LRU cache (#10): restore a recently-swept Anima DiT
@@ -559,7 +573,7 @@ class Engine:
             except Exception: pass  # noqa: BLE001
         restored = self._try_cache_restore(label, offload, vae_tile,
                                            compile, cuda_graphs, False, False,
-                                           fp16_accumulation)
+                                           fp16_accumulation, attention)
         stashed = self._stash_loaded()
         if restored is not None:
             self._offload = offload
@@ -569,6 +583,7 @@ class Engine:
             self._channels_last = False
             self._tf32 = False
             self._fp16_accumulation = fp16_accumulation
+            self._attention = attention
             self._loaded = restored
             self._attach_cond_cache()
             self._reclaim_memory()
@@ -583,6 +598,7 @@ class Engine:
         self._channels_last = False
         self._tf32 = False
         self._fp16_accumulation = fp16_accumulation
+        self._attention = attention
 
         dit_path = diffusion_model_path(dit_name)
         vae_file = vae_path(vae_name)
@@ -595,7 +611,7 @@ class Engine:
             device=self.device, compute_dtype=self.dtype,
             offload=offload, vae_tile=vae_tile,
             compile=compile, cuda_graphs=cuda_graphs,
-            fp16_accumulation=fp16_accumulation,
+            fp16_accumulation=fp16_accumulation, attention=attention,
             # Overlap block-streaming copies with compute (see DevicePolicy). Only
             # active in "stream" mode, where the backbone already lives in CPU RAM.
             stream_prefetch=(offload == "stream"),
@@ -625,7 +641,7 @@ class Engine:
         self, dit_name: str, vae_name: str, te_name: str, clip_name: str | None = None,
         offload: bool | str = True, vae_tile: bool = True,
         compile: bool = False, cuda_graphs: bool = False,
-        fp16_accumulation: bool = False,
+        fp16_accumulation: bool = False, attention: str = "sdpa",
     ) -> str:
         """Load a split-file FLUX model. ``te_name`` is the primary text encoder
         (T5-XXL for FLUX.1, Mistral-3 for FLUX.2); ``clip_name`` is the CLIP-L
@@ -646,7 +662,7 @@ class Engine:
                 and self._components_match(vae_name, te_name, clip_name)
                 and self._settings_match(offload, vae_tile, compile,
                                          cuda_graphs, False, False,
-                                         fp16_accumulation)):
+                                         fp16_accumulation, attention)):
             return f"Model already loaded: {label}"
 
         self._unload()
@@ -657,6 +673,7 @@ class Engine:
         self._channels_last = False
         self._tf32 = False
         self._fp16_accumulation = fp16_accumulation
+        self._attention = attention
 
         dit_path = diffusion_model_path(dit_name)
         vae_file = vae_path(vae_name)
@@ -674,7 +691,7 @@ class Engine:
             device=self.device, compute_dtype=self.dtype,
             offload=offload, vae_tile=vae_tile,
             compile=compile, cuda_graphs=cuda_graphs,
-            fp16_accumulation=fp16_accumulation,
+            fp16_accumulation=fp16_accumulation, attention=attention,
             # Overlap block-streaming copies with compute (see DevicePolicy). Only
             # active in "stream" mode, where the backbone already lives in CPU RAM.
             stream_prefetch=(offload == "stream"),
@@ -712,6 +729,8 @@ class Engine:
             flags.append("tf32")
         if self._fp16_accumulation:
             flags.append("fp16_acc")
+        if self._attention != "sdpa":
+            flags.append("fa2_attn")
         if self._offload is True:
             flags.append("offload=full")
         elif self._offload == "encoders":
@@ -735,6 +754,8 @@ class Engine:
             parts.append("tf32")
         if self._fp16_accumulation:
             parts.append("fp16_acc")
+        if self._attention != "sdpa":
+            parts.append("fa2_attn")
         return ", ".join(parts) if parts else "default"
 
     def _unload(self) -> None:
@@ -802,7 +823,8 @@ class Engine:
 
     def _try_cache_restore(self, key: str,
                            offload, vae_tile, compile, cuda_graphs,
-                           channels_last, tf32, fp16_accumulation) -> Optional[LoadedModel]:
+                           channels_last, tf32, fp16_accumulation,
+                           attention="sdpa") -> Optional[LoadedModel]:
         """Pop a cached model for ``key`` and move it back to the device, but
         only if the requested staging settings match the model's (a settings
         change invalidates the cached placement). Returns the restored
@@ -813,7 +835,8 @@ class Engine:
         if not (self._offload == offload and self._vae_tile == vae_tile
                 and self._compile == compile and self._cuda_graphs == cuda_graphs
                 and self._channels_last == channels_last and self._tf32 == tf32
-                and self._fp16_accumulation == fp16_accumulation):
+                and self._fp16_accumulation == fp16_accumulation
+                and self._attention == attention):
             # Settings changed since this was cached — placement is stale. Drop it.
             self._ckpt_cache.pop(key, None)
             try: del lm.model

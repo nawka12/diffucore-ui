@@ -52,7 +52,8 @@ document.addEventListener('alpine:init', () => {
     modelType: 'SD/SDXL',
     checkpoints: [], dits: [], vaes: [], tes: [], loras: [], detailers: [], upscalers: [],
     checkpoint: '', dit: '', vae: '', te: '', clip: '', fluxCheckpoint: '',
-    perf: { compile: false, cudaGraphs: false, channelsLast: true, tf32: false, fp16Acc: false, offload: 'full' },
+    perf: { compile: false, cudaGraphs: false, channelsLast: true, tf32: false, fp16Acc: false, fa2Attn: false, offload: 'full' },
+    fa2Available: false,
     recommendedOffload: 'full',   // GPU-VRAM-based default from the backend (set on init)
     status: 'No model loaded',
     modelLoaded: false,
@@ -493,6 +494,7 @@ document.addEventListener('alpine:init', () => {
       this.perf.channelsLast = !!f.channels_last;
       this.perf.tf32 = !!f.tf32;
       this.perf.fp16Acc = !!f.fp16_accumulation;
+      this.perf.fa2Attn = f.attention === 'fa2_turing';
       this.syncSampler();
       this.syncScheduler();
     },
@@ -511,6 +513,7 @@ document.addEventListener('alpine:init', () => {
       this.schedulersFlux = m.schedulers_flux;
       this.paramTypes = m.xyz_param_types;
       this.recommendedOffload = m.recommended_offload || 'full';
+      this.fa2Available = !!m.fa2_available;
       this.uiId = m.ui_id; this.diffId = m.diff_id;
       // First fetch seeds every selector; a later Refresh (picking up newly
       // dropped files) must NOT clobber selections the user already made —
@@ -596,6 +599,9 @@ document.addEventListener('alpine:init', () => {
           channels_last: this.perf.channelsLast,
           tf32: this.perf.tf32,
           fp16_accumulation: this.perf.fp16Acc,
+          // fa2 only applies to the DiT families; never send it for SD/SDXL so
+          // a leftover checked chip can't tag an SD load with a no-op flag.
+          attention: (this.perf.fa2Attn && this.modelType !== 'SD/SDXL') ? 'fa2_turing' : 'sdpa',
         };
         // Load is queued like any job; it waits for a running generation to
         // finish. The server also broadcasts the new state to every device.

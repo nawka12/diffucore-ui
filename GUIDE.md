@@ -39,6 +39,19 @@ network/share flags, architecture, and status.
 - **fp16 accumulation** — opt-in per-load perf flag: fp16-accumulated matmuls
   run at 2× the tensor-core rate on consumer GPUs (measured ~1.17× end-to-end
   on Anima on an RTX 2060, slight precision trade-off). All families.
+- **fa2 attention (Turing GPUs)** — opt-in per-load perf flag for DiT families
+  (Anima, FLUX) on Turing cards (RTX 20-series / GTX 16-series, sm75), where
+  PyTorch has no flash-attention kernel. Swaps the DiT's attention for a
+  community FlashAttention-2 port — measured ~1.5× on the attention kernel and
+  ~1.10× end-to-end at 1024² on an RTX 2060 with fp16 accumulation on (stacks
+  with it; grows with resolution). Not bit-exact; incompatible with
+  torch.compile. The chip only appears when the kernel is installed — it's a
+  local-build optional extra, never required:
+  `pip install` the [flash-attention-turing](https://github.com/ssiu/flash-attention-turing)
+  repo into the app venv with `--no-build-isolation` (needs nvcc; on GCC 15+
+  hosts add `-std=c++20` and `-Xcompiler -fpermissive` to `nvcc_flags` in its
+  `setup.py`). Newer GPUs (sm80+) don't need it — they already use PyTorch's
+  built-in flash attention, and this flag never engages there.
 - **11 samplers, multiple schedulers** — Euler, Heun, DPM++ family, ER-SDE,
   SECANT; Karras, exponential, sgm_uniform, flow, and more.
 - **Gallery with metadata round-trip** — every generated image saves its full

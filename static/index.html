@@ -120,7 +120,7 @@
           </select>
         </label>
         <label class="chip" :class="{on: perf.compile}">
-          <input type="checkbox" x-model="perf.compile" @change="if(!perf.compile) perf.cudaGraphs=false"> torch.compile
+          <input type="checkbox" x-model="perf.compile" @change="if(!perf.compile) perf.cudaGraphs=false; if(perf.compile) perf.fa2Attn=false"> torch.compile
         </label>
         <label class="chip" :class="{on: perf.cudaGraphs, disabled: !perf.compile}">
           <input type="checkbox" x-model="perf.cudaGraphs" :disabled="!perf.compile"> CUDA Graphs
@@ -133,6 +133,11 @@
         </label>
         <label class="chip" :class="{on: perf.fp16Acc}">
           <input type="checkbox" x-model="perf.fp16Acc"> fp16 accum
+        </label>
+        <label class="chip" :class="{on: perf.fa2Attn, disabled: perf.compile}"
+               x-show="fa2Available && modelType!=='SD/SDXL'"
+               title="FlashAttention-2 port for Turing GPUs (DiT attention; not bit-exact)">
+          <input type="checkbox" x-model="perf.fa2Attn" :disabled="perf.compile"> fa2 attn
         </label>
       </div>
 

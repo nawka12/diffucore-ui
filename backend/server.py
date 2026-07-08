@@ -252,6 +252,8 @@ class LoadPayload(BaseModel):
     channels_last: bool = False
     tf32: bool = False                  # SD/SDXL only (fp32 VAE path; Ampere+)
     fp16_accumulation: bool = False     # fp16-accumulate matmuls; all families
+    attention: str = "sdpa"             # "sdpa" | "fa2_turing" — DiT attention kernel
+                                        # (fa2 = sm75-only FA2 port; Anima/FLUX)
 
 
 class DetailerModel(BaseModel):
@@ -1261,6 +1263,9 @@ def api_models():
         "load_form": LAST_LOAD_FORM,
         "last_seed": ENGINE.last_seed,
         "recommended_offload": ENGINE.recommended_offload(),
+        # Whether the optional FA2-Turing attention kernel can run here (package
+        # built+installed and the GPU is sm75) — gates the UI's "fa2 attn" chip.
+        "fa2_available": ENGINE.fa2_attention_available(),
         "ui_id": md.UI_ID,
         "diff_id": md.DIFF_ID,
     }
@@ -1293,6 +1298,11 @@ def _validate_load(p: LoadPayload) -> Optional[str]:
         if not (d / name).is_file():
             return f"{label} not found: {name}"
         return None
+
+    # fa2 attention + compile can't coexist (the custom op graph-breaks in every
+    # block); reject at submit like TeaCache+CUDA-Graphs instead of mid-load.
+    if p.attention == "fa2_turing" and p.compile:
+        return "fa2 attention is incompatible with torch.compile — disable one"
 
     if p.model_type == "Anima":
         for label, name, d in (("DiT", p.dit, DIFFUSION_DIR),
@@ -1356,6 +1366,7 @@ def _do_load_impl(p: LoadPayload) -> str:
             offload=offload, vae_tile=vae_tile_pref,
             compile=p.compile, cuda_graphs=p.cuda_graphs,
             fp16_accumulation=p.fp16_accumulation,
+            attention=p.attention,
         )
     if p.model_type == "FLUX":
         # All-in-one checkpoint takes precedence; otherwise load split files.
@@ -1364,6 +1375,7 @@ def _do_load_impl(p: LoadPayload) -> str:
                 p.checkpoint, offload=offload, vae_tile=True,
                 compile=p.compile, cuda_graphs=p.cuda_graphs,
                 fp16_accumulation=p.fp16_accumulation,
+                attention=p.attention,
             )
         for name in (p.dit, p.vae, p.te):
             if not name or name.startswith("("):
@@ -1373,6 +1385,7 @@ def _do_load_impl(p: LoadPayload) -> str:
             offload=offload, vae_tile=True,
             compile=p.compile, cuda_graphs=p.cuda_graphs,
             fp16_accumulation=p.fp16_accumulation,
+            attention=p.attention,
         )
     if not p.checkpoint or p.checkpoint.startswith("("):
         return "Select a model"

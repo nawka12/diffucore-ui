@@ -1,8 +1,23 @@
 # FlashAttention-2-for-Turing attention swap — spike plan
 
-> Status: **planned, not started.** This is a *spike* with explicit gates —
-> the SageAttention attempt (2026-07-02) died at kernel compilation on sm75,
-> so every phase here has an abandon criterion. Do not push past a failed gate.
+> Status: **shipped (2026-07-08).** All gates passed:
+> - Phase 0: builds on torch 2.12+cu130 after two `setup.py` tweaks for GCC 15+
+>   hosts (`-std=c++20` — torch headers need C++20 optional-typename in the
+>   nvcc host pass — and `-Xcompiler -fpermissive`). Pinned commit `52a67d7`.
+> - Phase 1: max-abs error vs fp32 reference within 0.86–1.13× of SDPA's own
+>   error on every shape, incl. cross-attn (Lq≠Lkv works) and odd L.
+> - Phase 2: ×1.44–1.64 self-attn D=128, ×1.3–1.4 cross-attn, ×1.27–1.36 D=64.
+> - Phase 4 (2060, Anima 1024², 20 steps, CFG, seed 42): ×1.083 default config,
+>   **×1.103 with fp16_accumulation on** (the realistic fast config; the saved
+>   attention time is constant, so the relative win grows as GEMMs shrink) —
+>   images visually identical. Kernel delivered exactly its microbench win
+>   (177 ms/step measured vs 173 ms predicted).
+>
+> Integration: `models/_attention.py` dispatch + `DevicePolicy.attention`
+> (`"sdpa"` default bit-exact / `"auto"` / `"fa2_turing"`), stamped at load;
+> "fa2 attn" LoadPayload chip gated on `fa2_available`. Never engages off
+> sm75 — sm80+ keeps native flash SDPA (not Turing-locked). fa2+compile
+> rejected at submit. Wheel installed in the app venv; not in requirements.
 
 ## Context
 
