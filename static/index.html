@@ -22,7 +22,11 @@
     <header class="topbar">
       <span class="brand">Diffu<em>core</em></span>
       <span class="version" x-text="uiId + ' · ' + diffId"></span>
-      <button class="gear" @click="openSettings()" title="Settings" aria-label="Settings">⚙</button>
+      <button class="gear" @click="openSettings()" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
     </header>
 
     <!-- ── SSE connection banner (#7): a stalled stream freezes the queue
@@ -36,7 +40,7 @@
     <div class="conn-banner down" role="alert"
          x-show="connState === 'down'"
          x-transition>
-      <span class="conn-dot"></span> Lost connection to the server — the queue
+      <span class="conn-dot"></span> Lost connection to the server; the queue
       panel is frozen. <span class="conn-sub">It will resume automatically when
       the link is back.</span>
     </div>
@@ -72,10 +76,10 @@
             </label>
           </div>
           <div class="anima-grid" x-show="modelType==='FLUX'">
-            <label class="field" style="grid-column: 1 / -1;">
-              <span>All-in-one checkpoint <small>(optional — else use files below)</small></span>
+            <label class="field span-all">
+              <span>All-in-one checkpoint <small>(optional, or use the files below)</small></span>
               <select x-model="fluxCheckpoint" @change="loadFormDirty = true">
-                <option value="">— none —</option>
+                <option value="">(none)</option>
                 <template x-for="m in checkpointChoices" :key="m"><option :value="m" x-text="m"></option></template>
               </select>
             </label>
@@ -92,9 +96,9 @@
               <select x-model="te" @change="loadFormDirty = true"><template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
             </label>
             <label class="field">
-              <span>CLIP-L <small>(FLUX.1 — none for FLUX.2)</small></span>
+              <span>CLIP-L <small>(FLUX.1 only, none for FLUX.2)</small></span>
               <select x-model="clip" @change="loadFormDirty = true">
-                <option value="">— none —</option>
+                <option value="">(none)</option>
                 <template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template>
               </select>
             </label>
@@ -161,7 +165,7 @@
         <label class="field lora-ac-wrap" @click.outside="loraAC.open=false">
           <span class="prompt-head">Prompt
             <button type="button" class="btn small" @click="importFromPrompt()"
-                    title="Read AUTO1111 generation parameters pasted into the prompt box">Import params ↙</button>
+                    title="Read AUTO1111 generation parameters pasted into the prompt box">Import params</button>
           </span>
           <textarea class="autosize" x-model="form.prompt" rows="3"
                     x-effect="autogrow($el, form.prompt)"
@@ -182,7 +186,7 @@
                     @keydown="promptKeydown($event)"
                     placeholder="blurry, low quality"></textarea>
         </label>
-        <p class="hint">LoRA — use <code>&lt;lora:name:mult&gt;</code> in your prompt, e.g. <code>&lt;lora:my_lora:0.75&gt;</code></p>
+        <p class="hint">LoRA: use <code>&lt;lora:name:mult&gt;</code> in your prompt, e.g. <code>&lt;lora:my_lora:0.75&gt;</code></p>
 
         <!-- img2img / inpaint inputs -->
         <fieldset x-show="mode==='i2i'">
@@ -276,12 +280,12 @@
             </select>
           </label>
           <div class="oss-panel" x-show="modelType==='Anima' && mode==='t2i' && form.scheduler==='oss'" x-effect="checkOssStatus()">
-            <p class="hint" style="margin:0 0 8px" x-show="ossCalibrated === true">
+            <p class="hint" x-show="ossCalibrated === true">
               ✓ Calibrated for <span x-text="form.steps"></span> steps @
               <span x-text="form.width + '×' + form.height"></span>, shift <span x-text="form.shift"></span>.
             </p>
-            <p class="hint" style="margin:0 0 8px" x-show="ossCalibrated === false">
-              Not calibrated for this steps / size / shift — <strong>Generate</strong> will calibrate it first (one-time). Or do it now:
+            <p class="hint" x-show="ossCalibrated === false">
+              Not calibrated for this steps / size / shift. <strong>Generate</strong> will run a one-time calibration first, or do it now:
             </p>
             <button class="btn" type="button" @click="calibrateOss()" :disabled="busy"
                     x-text="calibrating ? 'Calibrating…' : (ossCalibrated ? 'Re-calibrate' : 'Calibrate now')"></button>
@@ -302,29 +306,44 @@
             <div class="slider-head"><span>Shift</span>
               <input type="number" x-model.number="form.shift" min="1" max="9" step="0.1" :disabled="!shiftHonored"></div>
             <input type="range" x-model.number="form.shift" min="1" max="9" step="0.1" :disabled="!shiftHonored">
-            <p class="sub" style="margin:4px 0 0" x-show="!shiftHonored">Ignored by the <span x-text="form.scheduler"></span> scheduler — it derives its own shift.</p>
+            <p class="sub" x-show="!shiftHonored">Ignored by the <span x-text="form.scheduler"></span> scheduler, which derives its own shift.</p>
           </div>
           <div class="slider" x-show="modelType==='Anima'">
-            <label class="chip toggle" :class="{on: form.teacacheOn}" style="margin-bottom:8px">
+            <label class="chip toggle" :class="{on: form.teacacheOn}">
               <input type="checkbox" x-model="form.teacacheOn"> TeaCache (faster sampling)</label>
             <div x-show="form.teacacheOn">
               <div class="slider-head"><span>TeaCache threshold</span>
                 <input type="number" x-model.number="form.teacache" min="0.005" max="1.0" step="0.005"></div>
               <input type="range" x-model.number="form.teacache" min="0.005" max="1.0" step="0.005">
-              <p class="sub" style="margin:4px 0 0">Reuses the transformer output on low-change steps; the threshold directly bounds accumulated per-step change. Higher = more skipping = faster but lower fidelity. The safe value depends on sampler &amp; steps: high step counts + single-step/secant samplers stay near-lossless to ~0.3–0.5, while few-step multistep samplers (dpmpp_2m) need ≤0.01.</p>
-              <label class="chip toggle" :class="{on: form.teacacheCalibrated}" style="margin-top:8px">
+              <p class="sub">Skips transformer work on low-change steps. Higher skips more: faster, lower fidelity.</p>
+              <details class="set-more">
+                <summary>Choosing a threshold</summary>
+                <p>The threshold bounds accumulated per-step change, so the safe value depends on
+                  sampler and steps. High step counts with single-step or secant samplers stay
+                  near-lossless up to ~0.3–0.5; few-step multistep samplers (dpmpp_2m) need 0.01
+                  or less.</p>
+              </details>
+              <label class="chip toggle" :class="{on: form.teacacheCalibrated}">
                 <input type="checkbox" x-model="form.teacacheCalibrated"> Use calibrated coefficients</label>
-              <p class="sub" style="margin:4px 0 0">When on, applies the fitted rescale polynomial (Settings → TeaCache) so the threshold tracks true per-step change. Turn off to use the raw, uncalibrated estimate — the threshold then maps to change differently, so re-tune it.</p>
+              <p class="sub">Maps the threshold through the fitted curve (Settings → TeaCache) so it
+                tracks true per-step change. When off, the raw estimate maps differently; re-tune
+                the threshold.</p>
             </div>
           </div>
           <div class="slider" x-show="modelType==='SD/SDXL'">
-            <label class="chip toggle" :class="{on: form.deepcacheOn}" style="margin-bottom:8px">
+            <label class="chip toggle" :class="{on: form.deepcacheOn}">
               <input type="checkbox" x-model="form.deepcacheOn"> DeepCache (faster sampling)</label>
             <div x-show="form.deepcacheOn">
               <div class="slider-head"><span>DeepCache interval</span>
                 <input type="number" x-model.number="form.deepcache" min="2" max="5" step="1"></div>
               <input type="range" x-model.number="form.deepcache" min="2" max="5" step="1">
-              <p class="sub" style="margin:4px 0 0">Reuses the UNet's deep, low-resolution features across steps, recomputing only the high-resolution detail layers. Interval N runs the full UNet every Nth step and reuses the cache on the others — higher = faster but lower fidelity. N=2 is a near-lossless ~1.5–1.8× speedup; 3+ trades more quality for speed.</p>
+              <p class="sub">Reuses deep UNet features across steps, recomputing only the detail layers.</p>
+              <details class="set-more">
+                <summary>Choosing an interval</summary>
+                <p>Interval N runs the full UNet every Nth step and reuses the cache on the others;
+                  higher is faster but loses fidelity. N=2 is a near-lossless ~1.5–1.8× speedup;
+                  3 and up trade more quality for speed.</p>
+              </details>
             </div>
           </div>
         </fieldset>
@@ -335,7 +354,7 @@
             <input type="checkbox" x-model="detail.enabled"> Enable detailer
           </label>
           <div class="axes-body" x-show="detail.enabled">
-            <p class="hint" x-show="detailers.length===0" style="margin:0">
+            <p class="hint" x-show="detailers.length===0">
               Drop a YOLO <code>.pt</code> (e.g. <code>face_yolov8n.pt</code>) into
               <code>models/detailers/</code> and Refresh. Requires <code>pip install ultralytics</code>.
             </p>
@@ -357,7 +376,7 @@
               </template>
               <button class="btn small" type="button" @click="addDetailModel()">+ Add detection model</button>
             </div>
-            <p class="hint" style="margin:0">Each model runs in sequence, refining the previous result.</p>
+            <p class="hint">Each model runs in sequence, refining the previous result.</p>
             <div class="slider">
               <div class="slider-head"><span>Confidence</span>
                 <input type="number" x-model.number="detail.confidence" min="0.05" max="1" step="0.05"></div>
@@ -378,11 +397,11 @@
               <label class="field"><span>Max detections <small>(0 = all)</small></span>
                 <input type="number" x-model.number="detail.maxDet" min="0" max="20" step="1"></label>
             </div>
-            <label class="chip toggle" x-show="modelType==='Anima'" :class="{on: detail.teacache}" style="margin-top:8px">
+            <label class="chip toggle" x-show="modelType==='Anima'" :class="{on: detail.teacache}">
               <input type="checkbox" x-model="detail.teacache"> TeaCache in detailer passes</label>
-            <p class="hint" x-show="modelType==='Anima' && detail.teacache" style="margin:4px 0 0">
-              Reuses the main TeaCache threshold &amp; calibration for the inpaint passes. These crops
-              are small and detail-forming, so caching is riskier here — keep the threshold low.</p>
+            <p class="hint" x-show="modelType==='Anima' && detail.teacache">
+              Reuses the main TeaCache threshold and calibration. These small crops form fine
+              detail, so keep the threshold low.</p>
           </div>
         </fieldset>
 
@@ -410,10 +429,10 @@
             </div>
             <label class="field"><span>Base upscaler</span>
               <select x-model="upscale.base">
-                <option value="">Lanczos (soft — use higher denoise)</option>
+                <option value="">Lanczos (soft, use higher denoise)</option>
                 <template x-for="u in upscalers" :key="u"><option :value="u" x-text="u"></option></template>
               </select></label>
-            <p class="hint" x-show="upscale.base" style="margin:4px 0 0">Sharp base — use low denoise (~0.2) to avoid duplicated subjects.</p>
+            <p class="hint" x-show="upscale.base">Sharp base: use low denoise (~0.2) to avoid duplicated subjects.</p>
             <div class="slider">
               <div class="slider-head"><span>TeaCache <small>(0 = off)</small></span>
                 <input type="number" x-model.number="upscale.teacache" min="0.0" max="1.0" step="0.05"></div>
@@ -422,20 +441,24 @@
             <textarea class="autosize" x-model="upscale.prompt" rows="1"
                       x-effect="autogrow($el, upscale.prompt)" @input="autogrow($el)"
                       placeholder="prompt (blank = main prompt)"></textarea>
-            <p class="hint" style="margin:4px 0 0">Uses main prompt when left blank.</p>
+            <p class="hint">Uses main prompt when left blank.</p>
           </div>
         </fieldset>
 
         <fieldset>
           <legend>Size</legend>
-          <p class="hint" x-show="mode!=='t2i'" style="margin:0 0 8px">Defaults to the input image; the image is resized to fit.</p>
+          <p class="hint" x-show="mode!=='t2i'">Defaults to the input image; the image is resized to fit.</p>
           <div class="slider">
             <div class="slider-head"><span>Width</span>
               <input type="number" x-model.number="form.width" min="256" max="2048" step="64"></div>
             <input type="range" x-model.number="form.width" min="256" max="2048" step="64">
           </div>
-          <div style="text-align:center; margin:-2px 0 6px">
-            <button type="button" class="btn small" style="margin-top:0" @click="swapDimensions()" title="Swap width and height">⇅ Swap</button>
+          <div class="dim-swap">
+            <button type="button" class="btn small ico" @click="swapDimensions()" title="Swap width and height">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m3 8 4-4 4 4"/><path d="M7 4v16"/><path d="m21 16-4 4-4-4"/><path d="M17 20V4"/></svg>
+              Swap
+            </button>
           </div>
           <div class="slider">
             <div class="slider-head"><span>Height</span>
@@ -457,16 +480,28 @@
           <legend>Seed</legend>
           <div class="seed-row">
             <input type="number" class="seed-input" x-model.number="form.seed" step="1">
-            <button class="btn icon" title="Recycle last seed" aria-label="Recycle last seed" @click="form.seed = lastSeed >= 0 ? lastSeed : -1">♻</button>
-            <button class="btn icon" title="Randomize" aria-label="Randomize seed" @click="form.seed = -1">🎲</button>
+            <button class="btn icon" title="Recycle last seed" aria-label="Recycle last seed" @click="form.seed = lastSeed >= 0 ? lastSeed : -1">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M7 19H4.815a1.83 1.83 0 0 1-1.57-.881 1.785 1.785 0 0 1-.004-1.784L7.196 9.5"/>
+                <path d="M11 19h8.203a1.83 1.83 0 0 0 1.556-.89 1.784 1.784 0 0 0 0-1.775l-1.226-2.12"/>
+                <path d="m14 16-3 3 3 3"/>
+                <path d="M8.293 13.596 7.196 9.5 3.1 10.598"/>
+                <path d="m9.344 5.811 1.093-1.892A1.83 1.83 0 0 1 11.985 3a1.784 1.784 0 0 1 1.546.888l3.943 6.843"/>
+                <path d="m13.378 9.633 4.096 1.098 1.097-4.096"/></svg>
+            </button>
+            <button class="btn icon" title="Randomize" aria-label="Randomize seed" @click="form.seed = -1">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <path d="M8 8h.01"/><path d="M16 8h.01"/><path d="M12 12h.01"/><path d="M8 16h.01"/><path d="M16 16h.01"/></svg>
+            </button>
           </div>
           <p class="sub">-1 = random</p>
-          <div class="slider" style="margin-top:10px">
+          <div class="slider batch">
             <div class="slider-head"><span>Batch count</span>
               <input type="number" x-model.number="batchCount" min="1" max="16" step="1"></div>
             <input type="range" x-model.number="batchCount" min="1" max="16" step="1">
           </div>
-          <p class="sub">Submit N jobs at once. Pinned seed → seed+i per image; random → fresh seed each.</p>
+          <p class="sub">Queues N jobs at once. A pinned seed advances by one per image; -1 picks a fresh random seed for each.</p>
         </fieldset>
 
         <fieldset x-show="mode==='t2i'">
@@ -571,7 +606,7 @@
           <input type="checkbox" x-model="preview"> Live preview
         </label>
         <div class="progress" x-show="busy">
-          <div class="bar"><div class="fill" :style="`width:${progressPct}%`"></div></div>
+          <div class="bar"><div class="fill" :style="`transform:scaleX(${progressPct / 100})`"></div></div>
           <span class="progress-label"><span x-show="calibrating">Calibrating (one-time) · </span><span x-text="progressLabel"></span></span>
         </div>
 
@@ -600,8 +635,7 @@
           <template x-if="!sweeping && !(busy && previewUrl) && !resultUrl"><div class="placeholder">No image yet</div></template>
         </div>
         <div class="info" x-text="sweeping ? xyzInfo : info"></div>
-        <button class="btn small" x-show="resultUrl && !sweeping && !busy" @click="openUpscale()"
-                style="margin-top:8px; width:100%">Upscale ⬆</button>
+        <button class="btn small wide" x-show="resultUrl && !sweeping && !busy" @click="openUpscale()">Upscale</button>
       </div>
 
       <!-- standalone upscale popover -->
@@ -631,10 +665,10 @@
           </div>
           <label class="field"><span>Base upscaler</span>
             <select x-model="upscaleForm.base">
-              <option value="">Lanczos (soft — use higher denoise)</option>
+              <option value="">Lanczos (soft, use higher denoise)</option>
               <template x-for="u in upscalers" :key="u"><option :value="u" x-text="u"></option></template>
             </select></label>
-          <p class="hint" x-show="upscaleForm.base" style="margin:4px 0 0">Sharp base — use low denoise (~0.2) to avoid duplicated subjects.</p>
+          <p class="hint" x-show="upscaleForm.base">Sharp base: use low denoise (~0.2) to avoid duplicated subjects.</p>
           <div class="slider">
             <div class="slider-head"><span>TeaCache <small>(0 = off)</small></span>
               <input type="number" x-model.number="upscaleForm.teacache" min="0.0" max="1.0" step="0.05"></div>
@@ -643,7 +677,7 @@
           <textarea class="autosize" x-model="upscaleForm.prompt" rows="1"
                     x-effect="autogrow($el, upscaleForm.prompt)" @input="autogrow($el)"
                     placeholder="optional prompt"></textarea>
-          <button class="btn primary" style="margin-top:10px; width:100%"
+          <button class="btn primary wide"
                   @click="runUpscale()" :disabled="upscalePopover.busy"
                   x-text="upscalePopover.busy ? 'Upscaling…' : 'Start upscale'"></button>
         </div>
@@ -718,7 +752,7 @@
       <button class="lb-nav prev" x-show="gallery.length>1" @click="lbPrev()" aria-label="Previous image">‹</button>
       <button class="lb-nav next" x-show="gallery.length>1" @click="lbNext()" aria-label="Next image">›</button>
       <div class="lb-stage" @touchstart="lbTouchStart($event)" @touchend="lbTouchEnd($event)">
-        <img class="lb-img" :src="selected ? selected.url : ''" alt="">
+        <template x-if="selected"><img class="lb-img" :src="selected.url" alt=""></template>
       </div>
       <div class="lb-panel">
         <div class="lb-head">
@@ -732,7 +766,7 @@
                :download="selected ? selected.name : ''">Download</a>
             <button class="btn small" @click="sendToMode('i2i')">To img2img</button>
             <button class="btn small" @click="sendToMode('inpaint')">To inpaint</button>
-            <button class="btn small" @click="openUpscale()">Upscale ⬆</button>
+            <button class="btn small" @click="openUpscale()">Upscale</button>
             <button class="btn small primary" @click="loadToWorkspace()">Load to Generate</button>
             <button class="btn small"
                     :class="{danger: deleteConfirm}"
@@ -829,8 +863,8 @@
                   <span class="field-tag">guidance interval</span></label>
               </div>
               <p class="set-foot">Guidance interval: apply CFG only between these fractions of the sampling
-                run — the negative-prompt pass is skipped outside, saving a full model pass per skipped
-                step. 0 / 1 = every step. Anima + SD/SDXL (FLUX has no CFG pass).</p>
+                run. Outside the band the negative-prompt pass is skipped, saving a full model pass per
+                skipped step. 0 / 1 = every step. Anima + SD/SDXL (FLUX has no CFG pass).</p>
               <button class="btn small primary" @click="saveSettings()">Save settings</button>
             </section>
 
@@ -842,11 +876,11 @@
               <p class="set-purpose">How the final image is rendered from its latent.</p>
               <label class="field"><span>Mode</span>
                 <select x-model="settings.vae_tiling" @change="saveSettings()">
-                  <option value="auto">Automatic — tile only when needed</option>
-                  <option value="always">Always tiled — lowest memory</option>
+                  <option value="auto">Automatic (tile only when needed)</option>
+                  <option value="always">Always tiled (lowest memory)</option>
                 </select></label>
               <p class="set-foot" x-show="settings.vae_tiling==='auto'">One-pass decode; tiles only when VRAM is tight. Best speed.</p>
-              <p class="set-foot" x-show="settings.vae_tiling==='always'">Always tiles — slower, but the lowest, steadiest peak memory.</p>
+              <p class="set-foot" x-show="settings.vae_tiling==='always'">Always tiles: slower, but the lowest, steadiest peak memory.</p>
               <p class="set-foot muted">FLUX always tiles. Changes apply to the loaded model immediately.</p>
             </section>
 
@@ -889,7 +923,7 @@
               </div>
               <label class="ext-install-pip" :class="{off: !extInstallPip}"
                      title="Runs pip install -r requirements.txt from the extension source on install.
-This executes arbitrary code — only enable it for sources you trust.">
+This executes arbitrary code; only enable it for sources you trust.">
                 <input type="checkbox" x-model="extInstallPip">
                 Install Python dependencies
                 <small>runs untrusted code</small>

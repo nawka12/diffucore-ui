@@ -380,7 +380,7 @@ document.addEventListener('alpine:init', () => {
                 const bi = this._myBatchIds.indexOf(+id);
                 if (bi !== -1) this._myBatchIds.splice(bi, 1);
                 if (String(this.myJobId) === id) this.myJobId = null;
-                w({ type: 'error', message: 'Lost connection during the job — check the gallery for the result.' });
+                w({ type: 'error', message: 'Lost connection during the job. Check the gallery for the result.' });
               }
             }
           }
@@ -530,7 +530,7 @@ document.addEventListener('alpine:init', () => {
         this.dit = keep(this.dit, this.ditChoices);
         this.vae = keep(this.vae, this.vaeChoices);
         this.te = keep(this.te, this.teChoices);
-        // '' is a valid CLIP pick ("— none —", FLUX.2); a gone file falls to none.
+        // '' is a valid CLIP pick ("(none)", FLUX.2); a gone file falls to none.
         if (this.clip !== '' && !this.teChoices.includes(this.clip)) this.clip = '';
         for (const dm of this.detail.models) dm.model = keep(dm.model, this.detailerChoices);
       }
@@ -1583,7 +1583,7 @@ document.addEventListener('alpine:init', () => {
         this.selected = null;
         this.selectedMeta = '';
         this.selectedFields = null;
-        this.flash('Deleted — gallery is now empty');
+        this.flash('Deleted. Gallery is now empty');
         return;
       }
       // Step to the neighbor (clamp, since idx may now point past the end).
@@ -1627,7 +1627,7 @@ document.addEventListener('alpine:init', () => {
       if (!f) return;
       // Drops bypass the input's accept="image/png"; only PNGs carry the
       // parameters text chunk, so refuse other types with feedback.
-      if (f.type && f.type !== 'image/png') { this.flash('Metadata lives in PNGs — drop a PNG file'); return; }
+      if (f.type && f.type !== 'image/png') { this.flash('Metadata lives in PNGs. Drop a PNG file'); return; }
       const pre = new FileReader();
       pre.onload = () => { this.metaPreview = pre.result; };
       pre.readAsDataURL(f);
