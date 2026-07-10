@@ -134,6 +134,10 @@
         <label class="chip" :class="{on: perf.fp16Acc}">
           <input type="checkbox" x-model="perf.fp16Acc"> fp16 accum
         </label>
+        <label class="chip" :class="{on: perf.vaeFp16}"
+               title="Run the VAE in fp16 (~2.8× faster decode, halves decode VRAM; a non-finite output auto-falls back to fp32)">
+          <input type="checkbox" x-model="perf.vaeFp16"> fp16 vae
+        </label>
         <label class="chip" :class="{on: perf.fa2Attn, disabled: perf.compile}"
                x-show="fa2Available && modelType!=='SD/SDXL'"
                title="FlashAttention-2 port for Turing GPUs (DiT attention; not bit-exact)">

@@ -39,6 +39,13 @@ network/share flags, architecture, and status.
 - **fp16 accumulation** — opt-in per-load perf flag: fp16-accumulated matmuls
   run at 2× the tensor-core rate on consumer GPUs (measured ~1.17× end-to-end
   on Anima on an RTX 2060, slight precision trade-off). All families.
+- **fp16 vae** — opt-in per-load perf flag: run the VAE in fp16 instead of
+  fp32 (measured ~2.8× faster decode on Anima's Qwen-Image VAE on an RTX 2060,
+  max pixel difference under 3/255). Also halves decode VRAM, so large decodes
+  that used to fall back to (slower) tiling fit untiled. Safe by construction:
+  if a checkpoint's VAE overflows fp16 (rare, the A1111 `--no-half-vae` cases)
+  the non-finite output is detected and that model's VAE permanently drops
+  back to fp32 — one retried decode, never a black image. All families.
 - **fa2 attention (Turing GPUs)** — opt-in per-load perf flag for DiT families
   (Anima, FLUX) on Turing cards (RTX 20-series / GTX 16-series, sm75), where
   PyTorch has no flash-attention kernel. Swaps the DiT's attention for a

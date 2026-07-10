@@ -252,6 +252,8 @@ class LoadPayload(BaseModel):
     channels_last: bool = False
     tf32: bool = False                  # SD/SDXL only (fp32 VAE path; Ampere+)
     fp16_accumulation: bool = False     # fp16-accumulate matmuls; all families
+    vae_fp16: bool = False              # fp16 VAE encode/decode (~2.8× faster decode);
+                                        # non-finite output auto-falls back to fp32
     attention: str = "sdpa"             # "sdpa" | "fa2_turing" — DiT attention kernel
                                         # (fa2 = sm75-only FA2 port; Anima/FLUX)
 
@@ -1367,6 +1369,7 @@ def _do_load_impl(p: LoadPayload) -> str:
             compile=p.compile, cuda_graphs=p.cuda_graphs,
             fp16_accumulation=p.fp16_accumulation,
             attention=p.attention,
+            vae_fp16=p.vae_fp16,
         )
     if p.model_type == "FLUX":
         # All-in-one checkpoint takes precedence; otherwise load split files.
@@ -1376,6 +1379,7 @@ def _do_load_impl(p: LoadPayload) -> str:
                 compile=p.compile, cuda_graphs=p.cuda_graphs,
                 fp16_accumulation=p.fp16_accumulation,
                 attention=p.attention,
+                vae_fp16=p.vae_fp16,
             )
         for name in (p.dit, p.vae, p.te):
             if not name or name.startswith("("):
@@ -1386,6 +1390,7 @@ def _do_load_impl(p: LoadPayload) -> str:
             compile=p.compile, cuda_graphs=p.cuda_graphs,
             fp16_accumulation=p.fp16_accumulation,
             attention=p.attention,
+            vae_fp16=p.vae_fp16,
         )
     if not p.checkpoint or p.checkpoint.startswith("("):
         return "Select a model"
@@ -1397,6 +1402,7 @@ def _do_load_impl(p: LoadPayload) -> str:
         compile=p.compile, cuda_graphs=p.cuda_graphs,
         channels_last=p.channels_last, tf32=p.tf32,
         fp16_accumulation=p.fp16_accumulation,
+        vae_fp16=p.vae_fp16,
     )
 
 

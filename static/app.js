@@ -52,7 +52,7 @@ document.addEventListener('alpine:init', () => {
     modelType: 'SD/SDXL',
     checkpoints: [], dits: [], vaes: [], tes: [], loras: [], detailers: [], upscalers: [],
     checkpoint: '', dit: '', vae: '', te: '', clip: '', fluxCheckpoint: '',
-    perf: { compile: false, cudaGraphs: false, channelsLast: true, tf32: false, fp16Acc: false, fa2Attn: false, offload: 'full' },
+    perf: { compile: false, cudaGraphs: false, channelsLast: true, tf32: false, fp16Acc: false, vaeFp16: false, fa2Attn: false, offload: 'full' },
     fa2Available: false,
     recommendedOffload: 'full',   // GPU-VRAM-based default from the backend (set on init)
     status: 'No model loaded',
@@ -494,6 +494,7 @@ document.addEventListener('alpine:init', () => {
       this.perf.channelsLast = !!f.channels_last;
       this.perf.tf32 = !!f.tf32;
       this.perf.fp16Acc = !!f.fp16_accumulation;
+      this.perf.vaeFp16 = !!f.vae_fp16;
       this.perf.fa2Attn = f.attention === 'fa2_turing';
       this.syncSampler();
       this.syncScheduler();
@@ -599,6 +600,7 @@ document.addEventListener('alpine:init', () => {
           channels_last: this.perf.channelsLast,
           tf32: this.perf.tf32,
           fp16_accumulation: this.perf.fp16Acc,
+          vae_fp16: this.perf.vaeFp16,
           // fa2 only applies to the DiT families; never send it for SD/SDXL so
           // a leftover checked chip can't tag an SD load with a no-op flag.
           attention: (this.perf.fa2Attn && this.modelType !== 'SD/SDXL') ? 'fa2_turing' : 'sdpa',
