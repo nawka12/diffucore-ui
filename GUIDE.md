@@ -309,6 +309,19 @@ bugs, just how the model responds:
   you want UniPC quality with a touch of stochastic variation; for the crispest
   deterministic result, use plain `uni_pc`. See `docs/uni-pc-anneal.md`.
 
+- **`stork2`** (STORK-2, ICLR 2026, arXiv:2505.24210 — clean-room) is a
+  deterministic multistep solver built from a stabilized Runge–Kutta–Gegenbauer
+  stage cascade driven by Taylor-extrapolated "virtual" stage velocities — still
+  one model evaluation per step, like `dpmpp_2m`. In effect it is a 2-step
+  Adams–Bashforth whose derivative correction — the noisiest term of any
+  multistep solver — is slightly *damped* (≈0.463 instead of 0.5 at the default
+  9 stages), trading a sliver of formal accuracy for robustness. On
+  flow-matching benchmarks (SANA, FLUX.1-dev) the paper measures it beating
+  Flow-UniPC and Flow-DPM-Solver++ at 7–10 steps, which makes it worth an A/B
+  against `uni_pc` at low step counts here. Works on all families (SD/SDXL,
+  Anima, FLUX); pair with `beta`/`flow` like the other multistep solvers.
+  Image-quality A/B on Anima is still pending.
+
 ### TeaCache — faster Anima sampling
 
 **TeaCache** (opt-in, Anima only) skips recomputing the 28-block DiT on steps

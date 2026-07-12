@@ -95,6 +95,7 @@ SAMPLERS_SD = [
     "res_multistep",
     "res_multistep_ancestral",
     "gradient_estimation",
+    "stork2",
     "lms",
     "er_sde",
     "ddpm",
