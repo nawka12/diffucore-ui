@@ -382,6 +382,9 @@ class Settings(BaseModel):
     # VAE decode: "auto" tiles only when a full decode won't fit free VRAM;
     # "always" forces tiled decode. Applies to Anima + SD/SDXL (FLUX always tiles).
     vae_tiling: str = "auto"      # "auto" | "always"
+    # Metadata format written into each PNG's ``parameters`` chunk: A1111/Forge
+    # text (default, widely read) or SwarmUI JSON. Both load back into this app.
+    metadata_format: str = "a1111"   # "a1111" | "swarmui"
     # Generate-form defaults seeded on load (None = use the app's built-in defaults).
     gen_defaults: Optional[GenDefaults] = None
 
@@ -480,7 +483,9 @@ def _save_output(image: Image.Image, gen_kwargs: dict,
     out = next_output_path(ENGINE.last_seed)
     meta = PngInfo()
     meta_kwargs = {k: v for k, v in gen_kwargs.items() if k != "progress_callback"}
-    meta.add_text("parameters", md.format_metadata(meta_kwargs, ENGINE, detailer=detailer, upscale=upscale))
+    formatter = (md.format_swarmui_metadata if SETTINGS.get("metadata_format") == "swarmui"
+                 else md.format_metadata)
+    meta.add_text("parameters", formatter(meta_kwargs, ENGINE, detailer=detailer, upscale=upscale))
     image.save(out, pnginfo=meta)
     # Invalidate the gallery search index so the new image is visible to the next
     # search without waiting for the day-folder mtime to advance (covers
@@ -1177,6 +1182,15 @@ async def _startup():
                      purged, TRASH_RETENTION_DAYS)
     except Exception as e:  # noqa: BLE001
         log.warning("[startup] trash purge failed: %s", e)
+    # Hash any checkpoint/diffusion model/LoRA missing a hash *before* we serve, so
+    # the metadata carries real model hashes and the (disk-heavy) hashing never
+    # contends with generation I/O. Offloaded to a thread so the event loop stays
+    # responsive, but awaited so startup doesn't complete until it finishes. On a
+    # big first batch the per-file progress lands in this console log.
+    try:
+        await asyncio.to_thread(md.model_hash.scan_all, background=False)
+    except Exception as e:  # noqa: BLE001 — hashing is best-effort, never fatal
+        log.warning("[startup] model-hash scan failed: %s", e)
     # Stamp the runtime environment into the log once so a "it broke" report
     # carries the engine/torch/CUDA context without the user having to dig.
     _log_runtime_env()

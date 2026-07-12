@@ -803,6 +803,7 @@
             <button :class="{active: settingsTab==='teacache'}" @click="settingsTab='teacache'">TeaCache</button>
             <button :class="{active: settingsTab==='sampler'}" @click="settingsTab='sampler'">Sampler &amp; scheduler</button>
             <button :class="{active: settingsTab==='vae'}" @click="settingsTab='vae'">VAE decode</button>
+            <button :class="{active: settingsTab==='metadata'}" @click="settingsTab='metadata'">Metadata</button>
             <button :class="{active: settingsTab==='defaults'}" @click="settingsTab='defaults'">Generate defaults</button>
             <button :class="{active: settingsTab==='extensions'}" @click="settingsTab='extensions'">Extensions</button>
           </nav>
@@ -891,6 +892,25 @@
               <p class="set-foot" x-show="settings.vae_tiling==='auto'">One-pass decode; tiles only when VRAM is tight. Best speed.</p>
               <p class="set-foot" x-show="settings.vae_tiling==='always'">Always tiles: slower, but the lowest, steadiest peak memory.</p>
               <p class="set-foot muted">FLUX always tiles. Changes apply to the loaded model immediately.</p>
+            </section>
+
+            <!-- Metadata format -->
+            <section class="settings-sec" x-show="settingsTab==='metadata'">
+              <div class="set-head">
+                <h3>Image metadata format</h3>
+              </div>
+              <p class="set-purpose">Which format the generation parameters are embedded in as each PNG's
+                <code>parameters</code> chunk.</p>
+              <label class="field"><span>Format</span>
+                <select x-model="settings.metadata_format" @change="saveSettings()">
+                  <option value="a1111">AUTO1111 / Forge (text)</option>
+                  <option value="swarmui">SwarmUI (JSON)</option>
+                </select></label>
+              <p class="set-foot" x-show="settings.metadata_format==='a1111'">The widely-read
+                <code>key: value</code> text format, read by AUTO1111, Forge, and most tools.</p>
+              <p class="set-foot" x-show="settings.metadata_format==='swarmui'">SwarmUI's
+                <code>sui_image_params</code> JSON blob. Both formats load back into this app.</p>
+              <p class="set-foot muted">Applies to new images only; existing images keep their format.</p>
             </section>
 
             <!-- Generate form defaults -->

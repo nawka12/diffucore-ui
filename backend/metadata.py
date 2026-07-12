@@ -10,10 +10,13 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from datetime import date
+from math import gcd
 from pathlib import Path
 
 from PIL import Image
 
+import model_hash
 from diffucore import __version__ as _DIFFUCORE_VERSION
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -111,7 +114,17 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     """
     prompt = gen_kwargs.get("prompt", "")
     neg = gen_kwargs.get("negative_prompt", "")
-    model = engine.loaded_name or "unknown"
+    model = model_hash.clean_model_name(engine.loaded_name or "unknown")
+    # AutoV2 hashes (first 10 hex of the full-file SHA256) for Civitai resource
+    # detection: the checkpoint's goes in "Model hash:", the LoRAs' in the quoted
+    # "Lora hashes:" map. Read from the startup-scan cache (None until hashed).
+    model_av2 = model_hash.get_autov2(
+        model_hash.resolve_model_file(engine.loaded_name) if engine.loaded_name else None)
+    lora_hashes = []
+    for name, _w in _split_loras(prompt)[1] + _split_loras(neg)[1]:
+        av2 = model_hash.get_autov2(model_hash.resolve_lora_file(name))
+        if av2:
+            lora_hashes.append(f"{name}: {av2}")
     fields = []
     if "steps" in gen_kwargs:
         fields.append(f"Steps: {gen_kwargs['steps']}")
@@ -126,7 +139,13 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     fields.append(f"Seed: {engine.last_seed}")
     if "width" in gen_kwargs and "height" in gen_kwargs:
         fields.append(f"Size: {gen_kwargs['width']}x{gen_kwargs['height']}")
+    if model_av2:
+        fields.append(f"Model hash: {model_av2}")
     fields.append(f"Model: {model}")
+    if lora_hashes:
+        # Forge always double-quotes this map (even a single entry); match that so
+        # Civitai's parser reads it, and so the internal commas don't split fields.
+        fields.append(f"Lora hashes: {json.dumps(', '.join(lora_hashes), ensure_ascii=False)}")
     if "strength" in gen_kwargs:
         fields.append(f"Denoising strength: {gen_kwargs['strength']}")
     if "shift" in gen_kwargs:
@@ -146,6 +165,119 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     if flags != "default":
         fields.append(f"Perf flags: {flags}")
     return f"{prompt}\nNegative prompt: {neg}\n{', '.join(fields)}"
+
+
+def _aspect_ratio(w, h) -> str:
+    """Reduced ``W:H`` string for SwarmUI's ``aspectratio`` (1024x1024 -> "1:1")."""
+    w, h = int(w), int(h)
+    g = gcd(w, h) or 1
+    return f"{w // g}:{h // g}"
+
+
+# Matches the engine's LoRA prompt tag (engine.LORA_PROMPT_RE) so we split out
+# exactly what was applied. SwarmUI stores LoRAs structurally, not inline in the
+# prompt, so its writer strips these and records loras/loraweights + sui_models.
+_LORA_TAG_RE = re.compile(r"<lora:([^:]+):([^>]+)>")
+
+
+def _split_loras(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """``(text_without_tags, [(name, weight), …])`` from a prompt/negative string."""
+    pairs: list[tuple[str, str]] = []
+    def _grab(m):
+        pairs.append((m.group(1).strip(), m.group(2).strip()))
+        return ""
+    return _LORA_TAG_RE.sub(_grab, text), pairs
+
+
+def _extra_pairs_to_dict(fields: list[str]) -> dict:
+    """Fold the ``"Key: value"`` lines the A1111 field builders emit into a
+    ``snake_case -> value`` dict, matching :func:`parse_metadata`'s key
+    normalisation so :func:`parse_swarmui_metadata` restores them identically."""
+    out = {}
+    for f in fields:
+        key, _, val = f.partition(": ")
+        out[key.strip().lower().replace(" ", "_")] = _unquote(val.strip())
+    return out
+
+
+def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
+                            upscale: dict | None = None) -> str:
+    """Build a SwarmUI-format ``parameters`` JSON blob for a finished generation.
+
+    Standard knobs go in ``sui_image_params`` under SwarmUI's own parameter IDs;
+    app-specific extras (shift, TeaCache, detailer, upscale, the build ids) live
+    in ``sui_extra_data`` under the same snake_case keys the A1111 reader
+    produces, so :func:`parse_swarmui_metadata` restores them losslessly. See
+    https://github.com/mcmonkeyprojects/SwarmUI docs (Image Metadata Format).
+    """
+    loaded = engine.loaded_name or "unknown"
+    # SwarmUI records LoRAs structurally (loras/loraweights + sui_models), not as
+    # inline <lora:…> prompt tags, so split them out of the prompt/negative here.
+    clean_prompt, prompt_loras = _split_loras(gen_kwargs.get("prompt", ""))
+    clean_neg, neg_loras = _split_loras(gen_kwargs.get("negative_prompt", ""))
+    lora_pairs = prompt_loras + neg_loras
+    # SwarmUI's ``model`` param carries no extension; ``sui_models`` name keeps it.
+    params: dict = {
+        "prompt": clean_prompt.strip(),
+        "negativeprompt": clean_neg.strip(),
+        "model": model_hash.clean_model_name(loaded, strip_ext=True),
+        "seed": engine.last_seed,
+        "sampler": gen_kwargs.get("sampler", "euler"),
+        "scheduler": gen_kwargs.get("scheduler", "karras"),
+        "cfgscale": gen_kwargs.get("cfg_scale", 7.0),
+    }
+    if lora_pairs:
+        # Comma-joined, index-aligned lists (SwarmUI's format, not JSON arrays).
+        params["loras"] = ",".join(
+            model_hash.clean_model_name(n, strip_ext=True) for n, _ in lora_pairs)
+        params["loraweights"] = ",".join(w for _, w in lora_pairs)
+    if "steps" in gen_kwargs:
+        params["steps"] = gen_kwargs["steps"]
+    if "width" in gen_kwargs and "height" in gen_kwargs:
+        params["width"] = gen_kwargs["width"]
+        params["height"] = gen_kwargs["height"]
+        params["aspectratio"] = _aspect_ratio(gen_kwargs["width"], gen_kwargs["height"])
+
+    # App-specific extras: same snake_case keys parse_metadata would yield, so the
+    # gallery / load-into-form paths read them through workspace_fields unchanged.
+    extra: dict = {"date": date.today().isoformat(), "diffucore_ui": UI_ID, "diffucore": DIFF_ID}
+    if "strength" in gen_kwargs:
+        extra["denoising_strength"] = gen_kwargs["strength"]
+    if "shift" in gen_kwargs:
+        extra["shift"] = gen_kwargs["shift"]
+    if "cfg_interval_start" in gen_kwargs:
+        extra["cfg_interval"] = (f"{gen_kwargs['cfg_interval_start']}-"
+                                 f"{gen_kwargs.get('cfg_interval_end', 1.0)}")
+    if gen_kwargs.get("teacache_thresh", 0):
+        raw = "" if gen_kwargs.get("teacache_use_coeffs", True) else " (raw)"
+        extra["teacache"] = f"{gen_kwargs['teacache_thresh']}{raw}"
+    if gen_kwargs.get("deepcache_interval", 1) > 1:
+        extra["deepcache"] = gen_kwargs["deepcache_interval"]
+    if detailer:
+        extra.update(_extra_pairs_to_dict(_detailer_fields(detailer)))
+    if upscale:
+        extra.update(_extra_pairs_to_dict(_upscale_fields(upscale)))
+    flags = engine.perf_flags_str
+    if flags != "default":
+        extra["perf_flags"] = flags
+
+    # One sui_models entry for the checkpoint, then one per LoRA (param "loras").
+    # Hashes come from the startup-scan cache (never computed here, so the save
+    # doesn't block); null until the background scan reaches that file.
+    models = [{
+        "name": model_hash.clean_model_name(loaded),
+        "param": "model",
+        "hash": model_hash.get_hash(model_hash.resolve_model_file(loaded)),
+    }]
+    for name, _ in lora_pairs:
+        path = model_hash.resolve_lora_file(name)
+        models.append({
+            "name": path.name if path else name,
+            "param": "loras",
+            "hash": model_hash.get_hash(path),
+        })
+    blob = {"sui_image_params": params, "sui_extra_data": extra, "sui_models": models}
+    return json.dumps(blob, ensure_ascii=False, indent=4)
 
 
 def read_png_metadata(path: str) -> str:
@@ -171,6 +303,12 @@ def parse_metadata(params_str: str) -> dict:
     """
     if not params_str:
         return {}
+    # SwarmUI writes its JSON blob into the same "parameters" chunk; dispatch so
+    # every reader (gallery, viewer, load-into-form) handles both transparently.
+    if params_str.lstrip().startswith("{"):
+        swarm = parse_swarmui_metadata(params_str)
+        if swarm:
+            return swarm
     result = {}
     neg_marker = "\nNegative prompt: "
     if neg_marker in params_str:
@@ -190,6 +328,48 @@ def parse_metadata(params_str: str) -> dict:
     for m in _PARAM_RE.finditer(fields_str):
         key = m.group(1).strip().lower().replace(" ", "_")
         result[key] = _unquote(m.group(2).strip())
+    return result
+
+
+def parse_swarmui_metadata(json_str: str) -> dict:
+    """Parse a SwarmUI ``parameters`` JSON blob into the same flat dict shape as
+    :func:`parse_metadata` (lowercased, underscore-separated keys), so downstream
+    helpers work identically for both formats. ``{}`` if it isn't SwarmUI JSON.
+    """
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError:
+        return {}
+    params = data.get("sui_image_params") if isinstance(data, dict) else None
+    if not isinstance(params, dict):
+        return {}
+    result = {
+        "prompt": str(params.get("prompt", "")).strip(),
+        "negative_prompt": str(params.get("negativeprompt", "")).strip(),
+    }
+    for src, dst in (("model", "model"), ("seed", "seed"), ("steps", "steps"),
+                     ("cfgscale", "cfg_scale"), ("sampler", "sampler"),
+                     ("scheduler", "scheduler")):
+        if src in params:
+            result[dst] = params[src]
+    if "width" in params and "height" in params:
+        result["size"] = f"{params['width']}x{params['height']}"
+    # Rebuild <lora:name:weight> tags from the structured loras/loraweights and
+    # append them to the prompt, so loading a SwarmUI image restores the LoRA
+    # selection into the prompt box the same way an A1111 image does.
+    loras = [s for s in str(params.get("loras", "")).split(",") if s]
+    if loras:
+        weights = str(params.get("loraweights", "")).split(",")
+        tags = "".join(
+            f"<lora:{n}:{weights[i].strip() if i < len(weights) and weights[i].strip() else '1'}>"
+            for i, n in enumerate(loras))
+        result["prompt"] = f"{result['prompt']} {tags}".strip() if result["prompt"] else tags
+    # App-specific extras were written under snake_case keys matching the A1111
+    # reader, so extract_detailer/extract_upscale/workspace_fields read them as-is.
+    extra = data.get("sui_extra_data")
+    if isinstance(extra, dict):
+        for k, v in extra.items():
+            result.setdefault(k, v)
     return result
 
 

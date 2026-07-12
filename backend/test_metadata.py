@@ -17,8 +17,20 @@ class _StubEngine:
     perf_flags_str = "default"
 
 
+class _WrappedEngine(_StubEngine):
+    """An Anima split-DiT load, whose name carries the ``Anima(...)`` wrapper."""
+    loaded_name = "Anima(AnimaPulse-1.1.safetensors)"
+
+
 def _roundtrip(gen_kwargs: dict, **kw) -> dict:
     params = md.format_metadata(gen_kwargs, _StubEngine(), **kw)
+    return md.workspace_fields(md.parse_metadata(params))
+
+
+def _roundtrip_swarm(gen_kwargs: dict, **kw) -> dict:
+    """Same round-trip as :func:`_roundtrip`, but through the SwarmUI formatter.
+    parse_metadata auto-detects the JSON blob, so the reader path is identical."""
+    params = md.format_swarmui_metadata(gen_kwargs, _StubEngine(), **kw)
     return md.workspace_fields(md.parse_metadata(params))
 
 
@@ -90,3 +102,145 @@ def test_deepcache_off_leaves_toggle_untouched():
     fields = _roundtrip({**_BASE_GEN, "deepcache_interval": 1})
     assert "deepcacheOn" not in fields
     assert "deepcache" not in fields
+
+
+# ── SwarmUI format ──────────────────────────────────────────────────
+
+def test_swarmui_blob_shape_and_ids():
+    """The SwarmUI writer emits the three root keys with idiomatic param IDs."""
+    import json
+    blob = json.loads(md.format_swarmui_metadata(_BASE_GEN, _StubEngine()))
+    p = blob["sui_image_params"]
+    assert p["prompt"] == "a fox"
+    assert p["negativeprompt"] == "blurry"
+    assert p["cfgscale"] == 5.0
+    assert p["seed"] == 2150942283
+    assert p["width"] == 1024 and p["height"] == 1536
+    assert p["aspectratio"] == "2:3"          # gcd(1024,1536)=512
+    assert blob["sui_models"][0]["param"] == "model"
+
+
+def test_swarmui_core_fields_roundtrip():
+    """prompt/neg/steps/cfg/sampler/scheduler/seed/size survive the SwarmUI path."""
+    fields = _roundtrip_swarm(_BASE_GEN)
+    assert fields["prompt"] == "a fox"
+    assert fields["neg"] == "blurry"
+    assert fields["steps"] == 32
+    assert fields["cfg"] == 5.0
+    assert fields["sampler"] == "euler"
+    assert fields["scheduler"] == "flow"
+    assert fields["seed"] == 2150942283
+    assert fields["width"] == 1024 and fields["height"] == 1536
+
+
+def test_swarmui_teacache_and_extras_roundtrip():
+    """App-specific extras (TeaCache raw, shift, denoise) round-trip via sui_extra_data."""
+    fields = _roundtrip_swarm({
+        **_BASE_GEN, "shift": 3.0, "strength": 0.6,
+        "teacache_thresh": 0.3, "teacache_use_coeffs": False,
+    })
+    assert fields["shift"] == 3.0
+    assert fields["strength"] == 0.6
+    assert fields["teacacheOn"] is True
+    assert fields["teacache"] == 0.3
+    assert fields["teacacheCalibrated"] is False
+
+
+def test_swarmui_cleans_wrapped_model_name():
+    """The ``Anima(...)`` wrapper is stripped; SwarmUI's model/name/hash conventions."""
+    import json
+    blob = json.loads(md.format_swarmui_metadata(_BASE_GEN, _WrappedEngine()))
+    assert blob["sui_image_params"]["model"] == "AnimaPulse-1.1"          # no wrapper, no ext
+    assert blob["sui_models"][0]["name"] == "AnimaPulse-1.1.safetensors"  # no wrapper, keeps ext
+    assert blob["sui_models"][0]["hash"] is None    # file not on disk → uncached, null (not faked)
+
+
+def test_a1111_cleans_wrapped_model_name():
+    """The A1111 ``Model:`` field drops the family wrapper too (keeps extension)."""
+    params = md.format_metadata(_BASE_GEN, _WrappedEngine())
+    assert "Model: AnimaPulse-1.1.safetensors" in params
+    assert "Anima(" not in params
+
+
+def test_a1111_emits_civitai_hashes(monkeypatch):
+    """AutoV2 hashes land in ``Model hash:`` + a quoted ``Lora hashes:`` for Civitai,
+    and the new fields don't disturb the round-trip."""
+    from pathlib import Path
+    hashes = {"AnimaPulse-1.1.safetensors": "aaaaaaaaaa",
+              "add-detail.safetensors": "bbbbbbbbbb"}
+    monkeypatch.setattr(md.model_hash, "resolve_model_file",
+                        lambda name: Path("/x/AnimaPulse-1.1.safetensors"))
+    monkeypatch.setattr(md.model_hash, "resolve_lora_file",
+                        lambda name: Path(f"/x/{name}.safetensors"))
+    monkeypatch.setattr(md.model_hash, "get_autov2",
+                        lambda path: hashes.get(path.name) if path else None)
+    gen = {**_BASE_GEN, "prompt": "a fox <lora:add-detail:0.8>"}
+    params = md.format_metadata(gen, _WrappedEngine())
+    assert "Model hash: aaaaaaaaaa" in params
+    assert 'Lora hashes: "add-detail: bbbbbbbbbb"' in params   # Forge-style quoted map
+    fields = md.workspace_fields(md.parse_metadata(params))
+    assert fields["prompt"] == "a fox <lora:add-detail:0.8>"   # inline tag preserved
+    assert fields["seed"] == 2150942283                        # other fields intact
+
+
+def test_a1111_no_hashes_when_uncached(monkeypatch):
+    """No cached hash → no ``Model hash:`` / ``Lora hashes:`` lines (older metadata stays clean)."""
+    monkeypatch.setattr(md.model_hash, "get_autov2", lambda path: None)
+    params = md.format_metadata({**_BASE_GEN, "prompt": "a fox <lora:x:1>"}, _WrappedEngine())
+    assert "Model hash:" not in params
+    assert "Lora hashes:" not in params
+
+
+def test_swarmui_loras_structured_not_inline():
+    """LoRA tags are pulled out of the prompt into loras/loraweights + sui_models."""
+    import json
+    gen = {**_BASE_GEN,
+           "prompt": "a fox <lora:add-detail:0.8>",
+           "negative_prompt": "blurry <lora:bad-hands:1>"}
+    blob = json.loads(md.format_swarmui_metadata(gen, _StubEngine()))
+    p = blob["sui_image_params"]
+    assert p["prompt"] == "a fox"                    # tag stripped from the prompt
+    assert p["negativeprompt"] == "blurry"           # and from the negative
+    assert "<lora:" not in p["prompt"]
+    assert p["loras"] == "add-detail,bad-hands"      # comma-joined, prompt then neg
+    assert p["loraweights"] == "0.8,1"
+    lora_models = [m for m in blob["sui_models"] if m["param"] == "loras"]
+    assert [m["name"] for m in lora_models] == ["add-detail", "bad-hands"]  # not on disk → bare name
+    assert all(m["hash"] is None for m in lora_models)  # uncached (files absent), not faked
+
+
+def test_swarmui_loras_roundtrip_into_prompt():
+    """loras/loraweights rebuild the <lora:…> tags in the prompt on read (A1111 parity)."""
+    gen = {**_BASE_GEN, "prompt": "a fox <lora:add-detail:0.8>"}
+    params = md.format_swarmui_metadata(gen, _StubEngine())
+    fields = md.workspace_fields(md.parse_metadata(params))
+    assert fields["prompt"] == "a fox <lora:add-detail:0.8>"
+
+
+def test_swarmui_no_loras_omits_keys():
+    """A generation with no LoRAs writes neither loras nor loraweights."""
+    import json
+    p = json.loads(md.format_swarmui_metadata(_BASE_GEN, _StubEngine()))["sui_image_params"]
+    assert "loras" not in p and "loraweights" not in p
+
+
+def test_swarmui_detailer_and_upscale_roundtrip():
+    """The detailer stack and upscale knobs survive the SwarmUI path too."""
+    detailer = {
+        "models": [{"model": "face_yolov8n.pt", "prompt": "a face, sharp"}],
+        "neg": "blurry", "confidence": 0.3, "strength": 0.4,
+        "dilation": 4, "padding": 32, "blur": 4, "maxDet": 0,
+    }
+    upscale = {
+        "scale": 4.0, "tile": 1024, "overlap": 128, "denoise": 0.25,
+        "teacache": 0.1, "base": "4x-UltraSharp.pth", "prompt": "a fox, sharp",
+    }
+    fields = _roundtrip_swarm(_BASE_GEN, detailer=detailer, upscale=upscale)
+    det = fields["detailer"]
+    assert det["models"][0]["model"] == "face_yolov8n.pt"
+    assert det["models"][0]["prompt"] == "a face, sharp"   # comma-free but quoted-safe
+    assert det["strength"] == 0.4
+    up = fields["upscale"]
+    assert up["scale"] == 4.0
+    assert up["base"] == "4x-UltraSharp.pth"
+    assert up["prompt"] == "a fox, sharp"                   # comma survives quote/unquote
