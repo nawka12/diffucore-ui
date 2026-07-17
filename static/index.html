@@ -337,6 +337,15 @@
               <p class="sub">Maps the threshold through the fitted curve (Settings → TeaCache) so it
                 tracks true per-step change. When off, the raw estimate maps differently; re-tune
                 the threshold.</p>
+              <div class="slider-head"><span>Forecast basis</span>
+                <select x-model="form.teacacheForecast">
+                  <option value="hermite">HiCache (Hermite, order 2)</option>
+                  <option value="taylor">TaylorSeer (linear)</option>
+                </select></div>
+              <p class="sub">How skipped steps extrapolate the cached residual. HiCache's damped
+                Hermite basis tracks curved trajectories the linear forecast overshoots; same
+                skip decisions, only the skip output changes. Measurably better with ancestral
+                samplers; on plain euler TaylorSeer is marginally closer to the uncached image.</p>
             </div>
           </div>
           <div class="slider" x-show="modelType==='SD/SDXL'">

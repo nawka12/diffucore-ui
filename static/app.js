@@ -87,7 +87,7 @@ document.addEventListener('alpine:init', () => {
       steps: 25, cfg: 6.0, seed: -1,
       width: 1024, height: 1024,
       strength: 0.6, shift: 3.0,
-      teacacheOn: false, teacache: 0.15, teacacheCalibrated: true,
+      teacacheOn: false, teacache: 0.15, teacacheCalibrated: true, teacacheForecast: 'hermite',
       deepcacheOn: false, deepcache: 2,
     },
     // Batch count: >1 submits N generate jobs at once. With a pinned seed each
@@ -1006,6 +1006,7 @@ document.addEventListener('alpine:init', () => {
           strength: this.form.strength, shift: this.form.shift,
           teacache: this.form.teacacheOn ? this.form.teacache : 0,
           teacache_calibrated: this.form.teacacheCalibrated,
+          teacache_forecast: this.form.teacacheForecast,
           deepcache: this.form.deepcacheOn ? this.form.deepcache : 1,
           input_image: this.mode !== 't2i' ? this.inputImage : null,
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
@@ -1140,6 +1141,7 @@ document.addEventListener('alpine:init', () => {
         seed: this.form.seed, shift: this.form.shift,
         teacache: this.form.teacacheOn ? this.form.teacache : 0,
         teacache_calibrated: this.form.teacacheCalibrated,
+        teacache_forecast: this.form.teacacheForecast,
         x_type: this.axes.x.type, x_vals: this.axisValues(this.axes.x),
         y_type: this.axes.y.type, y_vals: this.axisValues(this.axes.y),
         z_type: this.axes.z.type, z_vals: this.axisValues(this.axes.z),
@@ -1390,6 +1392,7 @@ document.addEventListener('alpine:init', () => {
           seed: refine.seed,
           teacache: this.upscaleForm.teacache,
           teacache_calibrated: this.form.teacacheCalibrated,
+          teacache_forecast: this.form.teacacheForecast,
           preview: this.preview,
         };
         const ev = await this.submitJob('/api/upscale', payload);
@@ -1665,7 +1668,7 @@ document.addEventListener('alpine:init', () => {
       if (!f) return;
       const keys = ['prompt', 'neg', 'steps', 'cfg', 'sampler', 'scheduler',
                     'seed', 'shift', 'strength', 'width', 'height',
-                    'teacacheOn', 'teacache', 'teacacheCalibrated',
+                    'teacacheOn', 'teacache', 'teacacheCalibrated', 'teacacheForecast',
                     'deepcacheOn', 'deepcache'];
       for (const k of keys) if (f[k] !== undefined) this.form[k] = f[k];
       if (f.detailer) this.applyDetailer(f.detailer);

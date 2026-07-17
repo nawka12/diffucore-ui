@@ -363,6 +363,20 @@ speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
   applies that fitted polynomial. Turn it **off** to gate on the raw estimate
   instead — the threshold then *means* something different, so re-tune it.
 
+- **Forecast basis (dropdown, HiCache by default).** Skipped steps don't freeze
+  the cached residual — they extrapolate it from its recent history. **HiCache**
+  (arXiv:2508.16984) weights that history with damped Hermite polynomials
+  (order 2, σ=0.5), which track the curved, turning trajectories where a linear
+  forecast overshoots; **TaylorSeer** is the previous linear (order-1)
+  extrapolation. The skip *decisions* (threshold, calibration) are identical
+  under both — only what a skipped step outputs changes, so no re-tuning is
+  needed when switching. Measured on Anima (RMSE vs the uncached image, same
+  skip pattern): HiCache is clearly better with ancestral samplers (6–15%
+  lower error on `euler_ancestral` — TeaCache's recommended pairing); on
+  deterministic `euler`+`flow` it's a wash to marginally worse, so pick
+  TaylorSeer there if you're chasing exactness. Images written before this
+  option record TaylorSeer in their metadata and restore with it.
+
 - **When to turn calibration off.** Calibration is fit on a single *deterministic
   Euler* trajectory over the flow schedule, so it matches deterministic samplers
   best. Stochastic / second-order samplers — e.g. `secant_anneal` on the `beta`

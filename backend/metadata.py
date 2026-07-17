@@ -153,6 +153,9 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     if gen_kwargs.get("teacache_thresh", 0):
         calib = "" if gen_kwargs.get("teacache_use_coeffs", True) else " (raw)"
         fields.append(f"TeaCache: {gen_kwargs['teacache_thresh']}{calib}")
+        # Written whenever TeaCache ran, so the absence of the key means the
+        # image predates the hermite forecast (i.e. it was taylor).
+        fields.append(f"TeaCache forecast: {gen_kwargs.get('teacache_forecast', 'hermite')}")
     if gen_kwargs.get("deepcache_interval", 1) > 1:
         fields.append(f"DeepCache: {gen_kwargs['deepcache_interval']}")
     if detailer:
@@ -251,6 +254,7 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
     if gen_kwargs.get("teacache_thresh", 0):
         raw = "" if gen_kwargs.get("teacache_use_coeffs", True) else " (raw)"
         extra["teacache"] = f"{gen_kwargs['teacache_thresh']}{raw}"
+        extra["teacache_forecast"] = gen_kwargs.get("teacache_forecast", "hermite")
     if gen_kwargs.get("deepcache_interval", 1) > 1:
         extra["deepcache"] = gen_kwargs["deepcache_interval"]
     if detailer:
@@ -528,6 +532,10 @@ def workspace_fields(meta: dict) -> dict:
             out["teacacheOn"] = True
             out["teacache"] = thresh
             out["teacacheCalibrated"] = not raw.endswith("(raw)")
+            # Absent on pre-HiCache images, which forecast with taylor — restore
+            # that so the params reproduce the image, not the current default.
+            fc = str(meta.get("teacache_forecast", "taylor")).strip()
+            out["teacacheForecast"] = fc if fc in ("hermite", "taylor") else "hermite"
     # DeepCache is only written when it ran: "DeepCache: <interval>". Absent
     # means off — additive, like TeaCache above.
     dc = meta.get("deepcache")

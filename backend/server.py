@@ -279,6 +279,7 @@ class GeneratePayload(BaseModel):
     shift: float = Field(3.0, ge=0.0, le=30.0)
     teacache: float = Field(0.0, ge=0.0, le=1.0)           # TeaCache rel-L1 threshold (0 = off; Anima only)
     teacache_calibrated: bool = True     # use the fitted rescale polynomial vs the raw identity path
+    teacache_forecast: str = "hermite"   # skip-step forecast basis: "hermite" (HiCache) | "taylor" (TaylorSeer)
     deepcache: int = Field(1, ge=1, le=64)                # DeepCache reuse interval (1 = off; SD/SDXL UNet only)
     input_image: Optional[str] = None   # base64 / data-URL
     mask_image: Optional[str] = None
@@ -325,6 +326,7 @@ class UpscalePayload(BaseModel):
     seed: int = Field(-1, ge=-1, le=2**63 - 1)
     teacache: float = Field(0.0, ge=0.0, le=1.0)
     teacache_calibrated: bool = True
+    teacache_forecast: str = "hermite"
     preview: bool = True
 
 
@@ -402,6 +404,7 @@ class XYZPayload(BaseModel):
     shift: float = Field(3.0, ge=0.0, le=30.0)
     teacache: float = Field(0.0, ge=0.0, le=1.0)           # TeaCache rel-L1 threshold (0 = off; Anima only)
     teacache_calibrated: bool = True     # use the fitted rescale polynomial vs the raw identity path
+    teacache_forecast: str = "hermite"   # skip-step forecast basis: "hermite" (HiCache) | "taylor" (TaylorSeer)
     x_type: str = "None"
     x_vals: str = ""
     y_type: str = "None"
@@ -522,6 +525,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             sampler=p.sampler, scheduler=p.scheduler, seed=int(p.seed),
             teacache_thresh=float(p.teacache),
             teacache_use_coeffs=bool(p.teacache_calibrated),
+            teacache_forecast=p.teacache_forecast,
             deepcache_interval=int(p.deepcache),
             progress_callback=on_progress,
             preview_callback=on_preview if p.preview else None,
@@ -602,6 +606,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                     seed=int(p.seed),
                     teacache_thresh=float(p.upscale_teacache),
                     teacache_use_coeffs=bool(p.teacache_calibrated),
+                    teacache_forecast=p.teacache_forecast,
                     progress_callback=on_progress,
                     preview_callback=on_preview if p.preview else None,
                 )
@@ -641,6 +646,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                         seed=int(p.seed),
                         teacache_thresh=float(p.teacache) if p.detail_teacache else 0.0,
                         teacache_use_coeffs=bool(p.teacache_calibrated),
+                        teacache_forecast=p.teacache_forecast,
                         progress_callback=on_progress,
                         preview_callback=on_preview if p.preview else None,
                     )
@@ -713,6 +719,7 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
         seed=int(p.seed), shift=float(p.shift),
         teacache_thresh=float(p.teacache),
         teacache_use_coeffs=bool(p.teacache_calibrated),
+        teacache_forecast=p.teacache_forecast,
     )
     # A "Checkpoint" axis swaps the in-memory model per cell, leaving the last
     # swept checkpoint loaded. Restore the model the user actually had loaded so
@@ -1492,6 +1499,7 @@ async def api_upscale(p: UpscalePayload):
             seed=int(p.seed),
             teacache_thresh=float(p.teacache),
             teacache_use_coeffs=bool(p.teacache_calibrated),
+            teacache_forecast=p.teacache_forecast,
             progress_callback=on_progress,
             preview_callback=on_preview if p.preview else None,
         )

@@ -88,7 +88,22 @@ def test_no_teacache_meta_leaves_toggle_untouched():
     """TeaCache off writes no line, so nothing is restored (additive)."""
     fields = _roundtrip(_BASE_GEN)
     assert "teacacheOn" not in fields
-    assert "teacacheCalibrated" not in fields
+    assert "teacacheForecast" not in fields
+
+
+def test_teacache_forecast_roundtrips():
+    """Both forecast bases survive the A1111 and SwarmUI round-trips."""
+    for forecast in ("hermite", "taylor"):
+        gen = {**_BASE_GEN, "teacache_thresh": 0.15, "teacache_forecast": forecast}
+        assert _roundtrip(gen)["teacacheForecast"] == forecast
+        assert _roundtrip_swarm(gen)["teacacheForecast"] == forecast
+
+
+def test_teacache_forecast_absent_restores_taylor():
+    """Pre-HiCache images carry no forecast key but were generated with the
+    taylor forecast — restore that, not the current hermite default."""
+    fields = md.workspace_fields({"teacache": "0.15"})
+    assert fields["teacacheForecast"] == "taylor"
 
 
 def test_deepcache_roundtrips():
