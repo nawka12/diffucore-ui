@@ -128,7 +128,8 @@ SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal",
 SAMPLERS_FLUX = SAMPLERS_FLOW
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
-                 "sgm_uniform", "simple", "normal", "ddim_uniform", "linear_quadratic"]
+                 "sgm_uniform", "simple", "normal", "infinity", "ddim_uniform",
+                 "linear_quadratic"]
 # "oss" is a calibrated optimal-stepsize schedule: it needs a one-time
 # calibration for the exact (model, steps, resolution, shift) before it works.
 # The UI's OSS panel runs that calibration (Engine.calibrate_oss) and writes the
@@ -145,11 +146,15 @@ SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
 # in shape; defaults are detail-leaning (Lee et al. 2024 Fig. 2d's LDM
 # importance curve) but tuned for the flow shift map, not transcribed from
 # SD. Anima-only.
+# infinity is Infinity Diffusion's sine-perturbed timestep ramp: normal with
+# the first step's gap shrunk (gentler start) and the last step's grown (more
+# final cleanup), adapting to the step count. Starts at σ_max, so flow-safe;
+# all families. Upstream pairs it with the infinity sampler.
 SCHEDULERS_ANIMA = ["flow", "flow_dyn", "oss", "sgm_uniform", "simple",
-                    "normal", "kl_optimal", "linear_quadratic", "smoothstep",
-                    "beta", "beta_mix"]
+                    "normal", "infinity", "kl_optimal", "linear_quadratic",
+                    "smoothstep", "beta", "beta_mix"]
 SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple",
-                   "normal", "kl_optimal", "linear_quadratic"]
+                   "normal", "infinity", "kl_optimal", "linear_quadratic"]
 
 # Calibrated OSS schedules are cached one JSON (list of descending sigmas) per
 # (model, steps, resolution, shift); calibrate_oss.py writes them here.

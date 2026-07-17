@@ -324,16 +324,29 @@ bugs, just how the model responds:
 
 - **`infinity`** is an implementation of
   [Infinity Diffusion](https://github.com/galpt/infinity-diffusion)'s sampler
-  (MIT): Euler plus an EMA-smoothed derivative correction — deterministic, one
-  model evaluation per step, all families. It sits between Euler and the true
-  multistep solvers: at full EMA weight it is a damped 2-step Adams–Bashforth,
-  and the smoothing spreads that derivative estimate over the step history for
-  noise robustness. **Pair it with `normal`** (upstream's recommended linear
-  timesteps through the model's native σ(t) is exactly our `normal`
-  scheduler), or `sgm_uniform`/`flow`: the fixed correction weight assumes
-  neighboring steps are comparable, so on strongly nonuniform grids like
-  `karras` it can measurably *underperform* Euler. Image-quality A/B on Anima
-  is still pending.
+  (MIT, tracking the 2026-07-17 upstream rework): Euler plus an
+  invariant-gated IIR correction that tracks both the *velocity* (first
+  difference) and, from the third step, the *acceleration* (second
+  difference) of the denoising derivative through EMA filters — deterministic,
+  one model evaluation per step, all families. Before each step three
+  invariants gate the correction: its magnitude is clamped to 50% of the
+  derivative's, it is halved if the derivative reversed direction, and it
+  drops to a pure Euler step when both trigger — so the correction only acts
+  where the trajectory is smooth enough to trust it. **Pair it with the
+  matching `infinity` scheduler** (upstream's recommended combo) or `normal`/
+  `sgm_uniform`/`flow`; on strongly nonuniform grids like `karras` the fixed
+  correction weights are mis-scaled — the clamp now keeps that to roughly
+  Euler parity instead of a regression, but there is still no reason to
+  choose it. Image-quality A/B on Anima is still pending.
+
+  The **`infinity` scheduler** (same project, all families) is `normal`'s
+  linear timestep ramp warped by a sine perturbation: the first step's gap
+  shrinks (a gentler start) and the last step's grows (more room for the
+  final cleanup), with the strength adapting to the step count — near-linear
+  at low steps, fully perturbed from 30 up. Every sigma still comes from the
+  model's native σ(t), so unlike sigma-space schedules (`karras`,
+  `exponential`) it never asks the model to denoise at a noise level it was
+  not trained on.
 
 ### TeaCache — faster Anima sampling
 
