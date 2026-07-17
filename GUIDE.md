@@ -322,6 +322,19 @@ bugs, just how the model responds:
   Anima, FLUX); pair with `beta`/`flow` like the other multistep solvers.
   Image-quality A/B on Anima is still pending.
 
+- **`infinity`** is an implementation of
+  [Infinity Diffusion](https://github.com/galpt/infinity-diffusion)'s sampler
+  (MIT): Euler plus an EMA-smoothed derivative correction — deterministic, one
+  model evaluation per step, all families. It sits between Euler and the true
+  multistep solvers: at full EMA weight it is a damped 2-step Adams–Bashforth,
+  and the smoothing spreads that derivative estimate over the step history for
+  noise robustness. **Pair it with `normal`** (upstream's recommended linear
+  timesteps through the model's native σ(t) is exactly our `normal`
+  scheduler), or `sgm_uniform`/`flow`: the fixed correction weight assumes
+  neighboring steps are comparable, so on strongly nonuniform grids like
+  `karras` it can measurably *underperform* Euler. Image-quality A/B on Anima
+  is still pending.
+
 ### TeaCache — faster Anima sampling
 
 **TeaCache** (opt-in, Anima only) skips recomputing the 28-block DiT on steps
