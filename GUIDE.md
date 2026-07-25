@@ -332,12 +332,112 @@ bugs, just how the model responds:
   invariants gate the correction: its magnitude is clamped to 50% of the
   derivative's, it is halved if the derivative reversed direction, and it
   drops to a pure Euler step when both trigger — so the correction only acts
-  where the trajectory is smooth enough to trust it. **Pair it with the
-  matching `infinity` scheduler** (upstream's recommended combo) or `normal`/
-  `sgm_uniform`/`flow`; on strongly nonuniform grids like `karras` the fixed
-  correction weights are mis-scaled — the clamp now keeps that to roughly
-  Euler parity instead of a regression, but there is still no reason to
-  choose it. Image-quality A/B on Anima is still pending.
+  where the trajectory is smooth enough to trust it.
+
+  One deliberate deviation from upstream: each difference is divided by the
+  step size it was measured over *before* it enters the EMA, and the filter
+  output is multiplied by the current step size after. On a uniform sigma grid
+  those factors cancel and the recursion is upstream's bit-for-bit; on a
+  nonuniform one it is the step-size-consistent form of the same filter, which
+  upstream's raw fixed gains are not. Measured against a converged reference,
+  that is a ~3× accuracy gain on `flow`/`normal` and `infinity`, and it turns
+  `karras` from a grid this sampler could not integrate (worse than plain
+  Euler) into one it handles comfortably. The trade is real but small:
+  `sgm_uniform`/`simple`, `kl_optimal` and `linear_quadratic` give some
+  accuracy back, while staying well ahead of Euler. **Pair it with the matching
+  `infinity` scheduler** (upstream's recommended combo) or `normal`/`flow`.
+  Note this changes `infinity`'s output for a given seed versus earlier
+  releases. Image-quality A/B on Anima is still pending.
+
+- **`infinity_realism`** is the same project's `realism` branch, kept as a
+  second sampler beside `infinity` rather than replacing it — it is the
+  grain/detail-leaning variant, and the two are genuinely different filters.
+  The integrator step is identical (upstream writes it as
+  `x ← r·x − (r−1)·x0`, which is Euler in σ space), but three things change:
+  the velocity/acceleration EMAs and both invariants move from the *derivative*
+  into *x0* (denoised-prediction) space — which weights the late, low-σ steps
+  far more heavily and makes the direction-reversal gate fire much more rarely
+  — and, the point of the branch, every step that clears its invariants
+  comfortably re-noises by up to `0.2·σ`. That injected noise is what buys the
+  film-like grain and extra high-frequency texture; it also means the sampler
+  is **stochastic**, so it trades the deterministic ODE's cleanliness for it.
+  **SD/SDXL only.** The injection is an absolute `0.2·σ` that ignores how far
+  the step travels. On SD that is proportionate — σ_max is 14.6 and the early
+  steps are big, so on `karras`/16 steps it never adds more than a step
+  removes. On rectified flow σ_max is 1.0 and the shift squeezes the top of
+  the schedule, so the same amount swamps it: on Anima at flow shift=3.0 over
+  32 steps the first step injects 18.8× what it removes — 46× under the
+  `infinity` scheduler, whose sine warp shrinks that gap further — and 28 of
+  32 steps over-inject, for ~0.83 of injected noise std against a latent std
+  of ~1. The result is a latent held off-distribution for most of the run,
+  which decodes as chromatic speckle and blown highlights, and it gets *worse*
+  with more steps because smaller steps do not shrink the injection. It is
+  therefore no longer offered for Anima or FLUX.
+
+  On SD/SDXL, try it where `infinity` looks clean but flat — skin, fabric,
+  foliage — and stay on `infinity` for graphic or flat-shaded work; prefer
+  moderate step counts (at 32 steps even `karras` starts over-injecting on
+  about two thirds of its steps). Two deliberate departures
+  from upstream: seeds reproduce here (upstream draws unseeded noise, so its
+  runs never repeat), and upstream's "self-correcting scheduler" — which
+  inserts a midpoint σ and re-runs a step whenever an invariant trips — is not
+  ported, because the re-run re-evaluates the model at an unchanged `(x, σ)`
+  for no new information while making the step count unbounded and
+  data-dependent. Image-quality A/B on Anima is still pending.
+
+  Do not re-sync this one from upstream. The algorithm described above is the
+  `realism` branch as of 2026-07-20; on 07-21 upstream replaced it wholesale
+  with a plain exponential-integrator step plus a per-channel standard-
+  deviation EMA — no x0 filter, no invariant gates, no noise injection. What
+  ships here is the more capable version, and the branch name no longer
+  points at it.
+
+- **`infinity_omega`** is the same project's `omega` branch — upstream's
+  current default — and it is a different kind of thing from the two above.
+  **Its integrator is plain Euler**: both `infinity`'s invariant-gated
+  correction and the intermediate `micro` branch's second-order term were
+  dropped upstream along the way, so as an ODE solver it is strictly weaker.
+  What it adds is a per-step *spatial* filter. Each step's velocity field is
+  split into three bands with a Gaussian pyramid, and the finest band is
+  amplified by up to 25% where a local standard-deviation map says
+  high-frequency structure already exists (plus a difference-of-Gaussians term
+  that, at ≤3.8% strength on an already-small band, is close to a no-op). Two
+  EMA stabilizers also hold the denoised prediction's per-channel spread and
+  mean near their running averages — upstream's answer to colour cast at high
+  CFG. Below 7 steps the whole filter is bypassed and it is exactly `euler`.
+
+  **On Anima it loses, and not narrowly.** Measured at 1024×1536, 32 steps,
+  CFG 4.0, one seed, against `stork2` on the same schedule: omega has 2.1× less
+  high-frequency energy (97 vs 209), 1.4× less edge energy, lower contrast
+  (57.2 vs 64.7), and a heavy cyan cast — its per-channel means span 123 points
+  (R 115 / B 238) where `stork2` spans 54 (R 136 / B 190) — with lower
+  per-channel spread on top. Visually it reads as flat and fogged: the sky
+  loses its cloud structure, fabric loses its folds, fur trim loses its
+  texture. The culprit looks like ACS: pulling each channel's mean halfway to a
+  running EMA every step locks the image to its early-trajectory colour balance
+  and prevents the late shift that gives a finished render its depth. So the
+  band gain does not win — the stabilizers do, exactly as the synthetic test
+  predicted, only more severely. Upstream's own benchmark measures FFT power
+  density, which its mechanism inflates by construction, so it was never
+  independent evidence. Ported and kept for completeness; on Anima reach for
+  `stork2` or `infinity` instead. **SD/SDXL and Anima only** — the band split is 2-D convolution
+  over the latent's spatial axes, and FLUX packs its latent into a token
+  sequence before sampling, so omega is absent from the FLUX dropdown. Costs
+  about 6 ms/step of extra CPU work on a 1024px Anima latent, i.e. well under
+  1% of a real step.
+
+- **`infinity_nano`** is upstream's `nano` branch, which is exactly
+  `infinity_omega` with ACS and the DoG term removed and nothing else changed.
+  It exists here to test the diagnosis above: if ACS's per-step mean pull is
+  what flattens omega, dropping it should bring the detail back. Offline that
+  holds — driving a denoiser whose per-channel means need to move, `euler`
+  lands them 1.93 apart, `nano` 1.94, and `omega` only **1.18**, a 39%
+  compression of the range that carries colour and brightness. NQVP's spread
+  clamp is still active, so this is not an un-stabilized run; only the mean
+  pull and the near-no-op DoG are gone. Same 4-D restriction (SD/SDXL and
+  Anima, not FLUX), same `euler` bypass below 7 steps, two fewer convolutions
+  per step than omega. **Not yet compared on real weights** — that is the open
+  A/B, at the same seed against `stork2` and `infinity`.
 
   The **`infinity` scheduler** (same project, all families) is `normal`'s
   linear timestep ramp warped by a sine perturbation: the first step's gap
@@ -347,6 +447,18 @@ bugs, just how the model responds:
   model's native σ(t), so unlike sigma-space schedules (`karras`,
   `exponential`) it never asks the model to denoise at a noise level it was
   not trained on.
+
+  The **`infinity_htds` scheduler** (from `omega`/`nano`, all families) bends
+  that same linear ramp with a hyperbolic tangent whose curvature grows with
+  the step count, flattening back to linear at 4 steps or fewer. Upstream
+  calls it a "tail-density" schedule and claims it spends up to 45% of the
+  budget at low noise; the formula it ships does the opposite — the curve is
+  convex, so sigma is held high through the early trajectory and plunges at
+  the end. At 50 flow steps it puts 7 sigmas below half of σ_max where
+  `normal` puts 13. It is ported as upstream wrote it, since that is what
+  upstream's comparisons were made against, and it does pair coherently with
+  `infinity_omega` (whose detail gain is also strongest at high sigma) — just
+  reach for it to spend steps on structure, not on texture.
 
 ### TeaCache — faster Anima sampling
 

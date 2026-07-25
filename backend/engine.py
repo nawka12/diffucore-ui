@@ -97,6 +97,9 @@ SAMPLERS_SD = [
     "gradient_estimation",
     "stork2",
     "infinity",
+    "infinity_realism",
+    "infinity_nano",
+    "infinity_omega",
     "lms",
     "er_sde",
     "ddpm",
@@ -106,7 +109,22 @@ SAMPLERS_SD = [
     "uni_pc",
     "uni_pc_bh2",
 ]
-SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm"]
+# infinity_realism injects γ·σ of noise per step with γ saturating at 0.20.
+# That is proportionate on SD/SDXL, where σ_max is 14.6 and each step removes a
+# large chunk of σ (on karras/16 it never injects more than a step removes). On
+# rectified flow σ_max is 1.0 and the shift compresses the top of the schedule,
+# so the same absolute injection dwarfs the step: measured on Anima at flow
+# shift=3.0 / 32 steps, the first step injects 18.8× what it removes, and 46×
+# with the infinity scheduler (whose sine warp shrinks that first gap further),
+# with 28/32 steps over-injecting. That drives the latent out of distribution
+# for most of the trajectory and decodes as chromatic breakup. SD/SDXL only.
+_SAMPLERS_SD_ONLY = {"infinity_realism"}
+SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm" and s not in _SAMPLERS_SD_ONLY]
+# infinity_omega decomposes the velocity field with 2-D convolutions, so it
+# needs a [B, C, H, W] latent. SD/SDXL and Anima have one; FLUX patchifies to a
+# [B, L, C·p²] token sequence before sampling, where a spatial blur is
+# meaningless — and the sampler signature carries no (h, w) to unpack with.
+_SAMPLERS_4D_ONLY = {"infinity_nano", "infinity_omega"}
 # euler_ancestral_anneal anneals eta with σ (full ancestral burn-in at high σ,
 # deterministic at low σ); Anima-only, aimed at rectified-flow merges.
 # secant_anneal is that annealed ancestral burn-in handing off to secant's
@@ -125,11 +143,11 @@ SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm"]
 # NOT wired to the shared eta_max panel knob (1.0 over-smooths it). Anima-only.
 SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal",
                                   "dpmpp_2m_anneal", "uni_pc_anneal"]
-SAMPLERS_FLUX = SAMPLERS_FLOW
+SAMPLERS_FLUX = [s for s in SAMPLERS_FLOW if s not in _SAMPLERS_4D_ONLY]
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
-                 "sgm_uniform", "simple", "normal", "infinity", "ddim_uniform",
-                 "linear_quadratic"]
+                 "sgm_uniform", "simple", "normal", "infinity", "infinity_htds",
+                 "ddim_uniform", "linear_quadratic"]
 # "oss" is a calibrated optimal-stepsize schedule: it needs a one-time
 # calibration for the exact (model, steps, resolution, shift) before it works.
 # The UI's OSS panel runs that calibration (Engine.calibrate_oss) and writes the
@@ -150,11 +168,18 @@ SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
 # the first step's gap shrunk (gentler start) and the last step's grown (more
 # final cleanup), adapting to the step count. Starts at σ_max, so flow-safe;
 # all families. Upstream pairs it with the infinity sampler.
+# infinity_htds is the same project's omega/nano schedule: normal's ramp bent
+# by tanh, with the bend adapting to the step count and flattening to linear at
+# ≤4 steps. Upstream calls it a low-noise "tail density" schedule, but the curve
+# it ships is convex, so sigma is held HIGH through the early trajectory and
+# plunges at the end — at 50 flow steps it puts 7 sigmas below σ_max/2 where
+# normal puts 13. Spend it on structure, not texture. Starts at σ_max, so
+# flow-safe; all families. Upstream pairs it with infinity_omega.
 SCHEDULERS_ANIMA = ["flow", "flow_dyn", "oss", "sgm_uniform", "simple",
-                    "normal", "infinity", "kl_optimal", "linear_quadratic",
-                    "smoothstep", "beta", "beta_mix"]
-SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple",
-                   "normal", "infinity", "kl_optimal", "linear_quadratic"]
+                    "normal", "infinity", "infinity_htds", "kl_optimal",
+                    "linear_quadratic", "smoothstep", "beta", "beta_mix"]
+SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple", "normal",
+                   "infinity", "infinity_htds", "kl_optimal", "linear_quadratic"]
 
 # Calibrated OSS schedules are cached one JSON (list of descending sigmas) per
 # (model, steps, resolution, shift); calibrate_oss.py writes them here.
