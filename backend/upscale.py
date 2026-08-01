@@ -20,9 +20,14 @@ def tile_starts(dim: int, tile: int, overlap: int) -> List[int]:
     ``n = ceil((dim - overlap) / (tile - overlap))``, then starts are
     ``round(i * (dim - tile) / (n - 1))``. Returns ``[0]`` when
     ``dim <= tile`` (single tile that may be smaller than ``tile``).
+
+    ``overlap`` is clamped to ``tile - 1``: an overlap at or above the tile size
+    means zero (or negative) stride — a division by zero, or an empty grid that
+    would blend to a black image.
     """
     if dim <= tile:
         return [0]
+    overlap = min(overlap, tile - 1)
     n = math.ceil((dim - overlap) / (tile - overlap))
     starts = [round(i * (dim - tile) / (n - 1)) for i in range(n)]
     return starts

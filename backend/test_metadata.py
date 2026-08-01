@@ -259,3 +259,31 @@ def test_swarmui_detailer_and_upscale_roundtrip():
     assert up["scale"] == 4.0
     assert up["base"] == "4x-UltraSharp.pth"
     assert up["prompt"] == "a fox, sharp"                   # comma survives quote/unquote
+
+
+# ── BUG.md L22: workspace_fields returns only keys that were present ──
+
+def test_workspace_fields_omits_absent_seed():
+    """A metadata blob with no Seed used to yield ``seed: -1``, which the form
+    then applied as "random" — overwriting whatever the user had set."""
+    assert "seed" not in md.workspace_fields({"prompt": "a fox"})
+    assert "seed" not in md.workspace_fields({"seed": "not-a-number"})
+    assert md.workspace_fields({"seed": "1234"})["seed"] == 1234
+
+
+# ── BUG.md L11: an explicit seed overrides engine.last_seed ──────────
+
+def test_format_metadata_seed_override():
+    """A standalone upscale has no generation of its own, so it must not
+    inherit the *previous* generation's seed from the engine."""
+    params = md.format_metadata(_BASE_GEN, _StubEngine(), seed=777)
+    assert "Seed: 777" in params
+    assert md.workspace_fields(md.parse_metadata(params))["seed"] == 777
+    # Without the override the engine's seed is still used.
+    assert f"Seed: {_StubEngine.last_seed}" in md.format_metadata(_BASE_GEN, _StubEngine())
+
+
+def test_format_swarmui_metadata_seed_override():
+    import json
+    blob = json.loads(md.format_swarmui_metadata(_BASE_GEN, _StubEngine(), seed=777))
+    assert blob["sui_image_params"]["seed"] == 777

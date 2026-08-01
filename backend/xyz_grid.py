@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 import time
 from typing import Any, Callable
@@ -114,6 +115,9 @@ def resolve_values(param_type: str, values_str: str, base_value: Any) -> list:
     """Parse a comma-separated values string into a typed list.
 
     Falls back to ``[base_value]`` when the string is empty or param is None.
+    A malformed numeric axis raises ``ValueError`` naming the offending token —
+    surfaced on the job like the cell-cap error, instead of a bare
+    ``invalid literal for int()`` from somewhere inside the run.
     """
     if param_type == "None" or not values_str.strip():
         return [base_value]
@@ -121,15 +125,35 @@ def resolve_values(param_type: str, values_str: str, base_value: Any) -> list:
     # with the search term replaced by nothing — i.e. an image *without* it — so
     # an empty replacement is meaningful and must survive the filter below.
     if param_type == "Prompt S/R":
-        return [v.strip() for v in values_str.split(",")]
+        vals = [v.strip() for v in values_str.split(",")]
+        # The first value is the *search* token; empty, str.replace("") would
+        # splice the replacement between every character of the prompt.
+        if not vals[0]:
+            raise ValueError(
+                "Prompt S/R: the first value is the text to search for and "
+                "cannot be empty")
+        return vals
     raw = [v.strip() for v in values_str.split(",") if v.strip()]
     if not raw:
         return [base_value]
     if param_type in ("Seed", "Steps"):
-        return [int(v) for v in raw]
+        return [_parse_num(param_type, v, int) for v in raw]
     if param_type == "CFG Scale":
-        return [float(v) for v in raw]
+        return [_parse_num(param_type, v, float) for v in raw]
     return raw
+
+
+def _parse_num(param_type: str, token: str, cast):
+    """``cast(token)`` with an axis-labelled error, rejecting NaN/Inf."""
+    try:
+        value = cast(token)
+    except ValueError:
+        raise ValueError(
+            f"{param_type} axis: {token!r} is not a valid "
+            f"{'integer' if cast is int else 'number'}") from None
+    if cast is float and not math.isfinite(value):
+        raise ValueError(f"{param_type} axis: {token!r} is not a finite number")
+    return value
 
 
 # ── grid assembly ─────────────────────────────────────────────────

@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import random
+import re
 import shutil
 import string
 import subprocess
@@ -41,6 +42,10 @@ log = logging.getLogger("diffucore.extensions")
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS_DIR = ROOT / "extensions"
 STATE_PATH = EXTENSIONS_DIR / "state.json"
+
+# The character set install() sanitizes a manifest name down to; uninstall()
+# requires the same shape so a crafted name can't point outside extensions/.
+_EXT_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -666,17 +671,23 @@ class ExtensionLoader:
         return None
 
     def uninstall(self, name: str) -> None:
+        # Validate before touching state: the name must be a plain directory
+        # name, matching what install() sanitizes it to. Bare ".", "..", "" and
+        # anything with a separator resolve to extensions/ itself or outside it,
+        # which would make the rmtree below wipe every extension.
+        if (not _EXT_NAME_RE.fullmatch(name or "") or name in (".", "..")
+                or name != Path(name).name):
+            raise ValueError(f"invalid extension name {name!r}")
         self._unload_one(name)
         self._state.get("enabled", {}).pop(name, None)
         self._state.get("ext_settings", {}).pop(name, None)
         self._write_state()
         target = EXTENSIONS_DIR / name
-        # Only delete a real subdirectory of extensions/ — never a parent or a
-        # symlink that escapes it.
+        # Only delete a real *direct child* of extensions/ — never extensions/
+        # itself, a parent, or a symlink that escapes it.
         try:
             resolved = target.resolve()
-            if (EXTENSIONS_DIR.resolve() not in resolved.parents
-                    and resolved != EXTENSIONS_DIR.resolve()):
+            if resolved.parent != EXTENSIONS_DIR.resolve():
                 raise ValueError("refusing to delete path outside extensions/")
             if target.is_dir():
                 shutil.rmtree(target)

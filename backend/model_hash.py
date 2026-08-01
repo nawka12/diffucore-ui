@@ -64,17 +64,29 @@ def clean_model_name(loaded_name: str, strip_ext: bool = False) -> str:
 
 
 def resolve_model_file(loaded_name: str) -> Path | None:
-    """Reverse an engine ``loaded_name`` to its on-disk weights file, or ``None``."""
+    """Reverse an engine ``loaded_name`` to its on-disk weights file, or ``None``.
+
+    ``None`` for a name that isn't a plain filename, same as for a missing one:
+    this runs while writing metadata, which must not fail over it."""
     fname, is_dm = _unwrap(loaded_name)
-    path = diffusion_model_path(fname) if is_dm else checkpoint_path(fname)
+    try:
+        path = diffusion_model_path(fname) if is_dm else checkpoint_path(fname)
+    except ValueError:
+        return None
     return path if path.exists() else None
 
 
 def resolve_lora_file(name: str) -> Path | None:
     """Resolve a ``<lora:name:…>`` name to its on-disk file, or ``None``.
 
-    ``lora_path`` accepts the bare name (no extension), as LoRA prompt tags use."""
-    p = lora_path(name)
+    ``lora_path`` accepts the bare name (no extension), as LoRA prompt tags use.
+    A name that isn't a plain filename resolves to ``None`` like any other
+    miss — this runs while writing metadata, which must not fail over a typo in
+    a prompt tag."""
+    try:
+        p = lora_path(name)
+    except ValueError:
+        return None
     return p if p.exists() else None
 
 
@@ -215,6 +227,17 @@ def _fmt_size(n: int) -> str:
         size /= 1024
 
 
+def _total_size(paths: "list[Path]") -> int:
+    """Summed size of ``paths``, skipping any that vanished since the listing."""
+    total = 0
+    for p in paths:
+        try:
+            total += p.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
 def scan_all(background: bool = True) -> None:
     """Hash every checkpoint / diffusion model / LoRA missing a fresh cache entry.
 
@@ -232,14 +255,20 @@ def scan_all(background: bool = True) -> None:
         if not missing:
             return
         total = len(missing)
-        total_bytes = sum(p.stat().st_size for p in missing)
+        total_bytes = _total_size(missing)
         log.info("[model-hash] hashing %d model(s) missing a hash (%s total)…",
                  total, _fmt_size(total_bytes))
         started = time.monotonic()
         for i, p in enumerate(missing, 1):
-            log.info("[model-hash] [%d/%d] %s (%s)", i, total, p.name,
-                     _fmt_size(p.stat().st_size))
-            ensure_hash(p)
+            # A file deleted between the listing and here must not abort the
+            # scan — the models after it would stay unhashed until restart.
+            try:
+                size = p.stat().st_size
+            except OSError:
+                log.info("[model-hash] [%d/%d] %s vanished; skipping", i, total, p.name)
+                continue
+            log.info("[model-hash] [%d/%d] %s (%s)", i, total, p.name, _fmt_size(size))
+            ensure_hash(p)   # already tolerates a file that vanished mid-hash
         log.info("[model-hash] scan complete: %d hashed in %.1fs",
                  total, time.monotonic() - started)
 

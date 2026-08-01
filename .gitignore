@@ -26,3 +26,5 @@ extensions/*
 dist/
 build/
 wandb/
+# Local bug-hunt report — not part of the shipped product
+BUG.md

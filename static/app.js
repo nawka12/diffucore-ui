@@ -162,6 +162,7 @@ document.addEventListener('alpine:init', () => {
     calibrating: false,
     ossCalibrated: null,          // null = unknown, true/false = checked
     ossInfo: '',
+    _ossToken: 0,                 // bumped per status check; stale replies are dropped
 
     // ── settings panel (global, non-per-image knobs) ────────────
     settingsOpen: false,
@@ -189,6 +190,7 @@ document.addEventListener('alpine:init', () => {
     galleryLimit: 60,   // chunked rendering: only this many thumbs live in the DOM
     galleryQuery: '',   // substring filter applied via /api/gallery?q=
     gallerySearching: false,
+    _galleryToken: 0,   // bumped per listing fetch; stale responses are dropped
     selected: null,
     selectedMeta: '',
     selectedFields: {},
@@ -1173,15 +1175,22 @@ document.addEventListener('alpine:init', () => {
     // when any of them change.
     async checkOssStatus() {
       const { scheduler, steps, width, height, shift } = this.form;
+      // Dragging a slider fires one check per tick; without a token an earlier,
+      // slower response could land last and report the verdict for stale params.
+      // Bumped before the early return too, so an in-flight check can't revive a
+      // verdict after the user switched away from oss.
+      const token = ++this._ossToken;
       if (this.modelType !== 'Anima' || scheduler !== 'oss' || !this.modelLoaded) {
         this.ossCalibrated = null;
         return;
       }
       const q = new URLSearchParams({ steps, width, height, shift });
       try {
-        this.ossCalibrated = (await fetchJSON('/api/oss_status?' + q)).calibrated;
+        const calibrated = (await fetchJSON('/api/oss_status?' + q)).calibrated;
+        if (token !== this._ossToken) return;
+        this.ossCalibrated = calibrated;
       } catch (e) {
-        this.ossCalibrated = null;
+        if (token === this._ossToken) this.ossCalibrated = null;
       }
     },
 
@@ -1424,6 +1433,9 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── gallery ─────────────────────────────────────────────────
+    // Both listing fetches share a monotonic token: a debounced search racing a
+    // tab-click (or two quick searches) can resolve out of order, and the last
+    // response to land would otherwise overwrite the newest one on screen.
     async openGallery() {
       this.tab = 'gallery';
       this.selected = null;
@@ -1431,8 +1443,15 @@ document.addEventListener('alpine:init', () => {
       this.galleryLimit = 60;
       this.galleryQuery = '';
       this.gallerySearching = false;
-      this.gallery = (await fetchJSON('/api/gallery')).images;
-      this.buildGalleryGroups();
+      const token = ++this._galleryToken;
+      try {
+        const images = (await fetchJSON('/api/gallery')).images;
+        if (token !== this._galleryToken) return;   // a newer fetch won
+        this.gallery = images;
+        this.buildGalleryGroups();
+      } catch (e) {
+        /* keep the previous list on a transient fetch error */
+      }
     },
 
     // Debounced search field: fetch the filtered list from the backend's cached
@@ -1440,9 +1459,12 @@ document.addEventListener('alpine:init', () => {
     async searchGallery() {
       const q = (this.galleryQuery || '').trim();
       this.gallerySearching = true;
+      const token = ++this._galleryToken;
       try {
         const url = q ? `/api/gallery?q=${encodeURIComponent(q)}` : '/api/gallery';
-        this.gallery = (await fetchJSON(url)).images;
+        const images = (await fetchJSON(url)).images;
+        if (token !== this._galleryToken) return;   // a newer fetch won
+        this.gallery = images;
         this.selected = null;
         this.selectedMeta = '';
         this.galleryLimit = 60;
@@ -1450,7 +1472,7 @@ document.addEventListener('alpine:init', () => {
       } catch (e) {
         /* keep the previous list on a transient fetch error */
       } finally {
-        this.gallerySearching = false;
+        if (token === this._galleryToken) this.gallerySearching = false;
       }
     },
 
@@ -1671,6 +1693,11 @@ document.addEventListener('alpine:init', () => {
                     'teacacheOn', 'teacache', 'teacacheCalibrated', 'teacacheForecast',
                     'deepcacheOn', 'deepcache'];
       for (const k of keys) if (f[k] !== undefined) this.form[k] = f[k];
+      // The metadata may come from another family's image (an SD sampler while
+      // FLUX is loaded); drop a pick the active family can't run rather than
+      // submitting it verbatim for an opaque generation failure.
+      this.syncSampler();
+      this.syncScheduler();
       if (f.detailer) this.applyDetailer(f.detailer);
       if (f.upscale) this.applyUpscale(f.upscale);
     },

@@ -7,6 +7,8 @@ import ctypes.util
 import gc
 import json
 import logging
+import math
+import os
 import re
 import sys
 import time
@@ -205,6 +207,46 @@ def teacache_override_path(name: str) -> Path:
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
     return _TEACACHE_CACHE_DIR / f"{safe}.json"
 
+
+def _write_cache_json(path: Path, values: list) -> None:
+    """Write a calibration cache atomically (temp file + os.replace).
+
+    A plain write truncates first, so an interrupted calibration would leave a
+    half-written file that every later generation then fails to parse.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".tmp{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(values))
+        os.replace(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _read_cache_json(path: Path) -> Optional[list]:
+    """Load a calibration cache, or None if it's absent, unreadable, or not a
+    list of finite numbers. A corrupt or NaN-poisoned file reads as "never
+    calibrated" instead of breaking generation with a parse error or silently
+    feeding NaN into the sampler."""
+    try:
+        with open(path) as f:
+            values = json.load(f)
+    except (OSError, ValueError):
+        log.warning("ignoring unreadable calibration cache %s", path.name)
+        return None
+    if not _finite_series(values):
+        log.warning("ignoring non-finite calibration cache %s", path.name)
+        return None
+    return values
+
+
+def _finite_series(values) -> bool:
+    """True if ``values`` is a non-empty list of finite real numbers."""
+    return (isinstance(values, list) and len(values) > 0
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                    and math.isfinite(v) for v in values))
+
 # (family, native_res) tuples — used for defaults
 MODEL_FAMILY_SD15 = "sd15"
 MODEL_FAMILY_SDXL = "sdxl"
@@ -266,6 +308,10 @@ class LoadedModel:
     vae_name: Optional[str] = None
     te_name: Optional[str] = None
     clip_name: Optional[str] = None
+    # Staging settings this model was actually loaded under (offload, vae_tile,
+    # …), recorded when it enters the LRU cache so a later restore can tell
+    # whether the cached *placement* still matches what's being asked for.
+    stage_settings: Optional[tuple] = None
 
 
 class Engine:
@@ -293,6 +339,7 @@ class Engine:
         self._vae_fp16 = False
         self._attention = "sdpa"
         self._last_seed: int = -1
+        self._last_upscale_seed: int = -1
         self._anima_defaults_applied: bool = False
         self._ckpt_cache: "OrderedDict[str, LoadedModel]" = OrderedDict()
 
@@ -320,6 +367,15 @@ class Engine:
     @property
     def last_seed(self) -> int:
         return self._last_seed
+
+    @property
+    def last_upscale_seed(self) -> int:
+        """Base seed the last ``upscale()`` call used for its tile passes.
+
+        ``upscale()`` deliberately leaves ``last_seed`` alone so a post-gen
+        upscale keeps its generation's seed; a *standalone* upscale has no such
+        generation, so it names and tags its output with this instead."""
+        return self._last_upscale_seed
 
     @property
     def can_inpaint(self) -> bool:
@@ -406,8 +462,13 @@ class Engine:
         self._loaded.applied_loras.clear()
         msgs = []
         for name, mult in loras:
-            path = lora_path(name)
-            if not path.exists():
+            # A prompt tag is free text: an unusable name is reported per-LoRA
+            # like any other miss, not raised as a generation failure.
+            try:
+                path = lora_path(name)
+            except ValueError:
+                path = None
+            if path is None or not path.exists():
                 msgs.append(f"LoRA '{name}' not found")
                 continue
             report = apply_lora(self._loaded.model, str(path), multiplier=mult)
@@ -851,6 +912,12 @@ class Engine:
             return False
         return True
 
+    def _current_stage_settings(self) -> tuple:
+        """The staging settings the currently-loaded model was loaded under."""
+        return (self._offload, self._vae_tile, self._compile, self._cuda_graphs,
+                self._channels_last, self._tf32, self._fp16_accumulation,
+                self._attention, self._vae_fp16)
+
     def _stash_loaded(self) -> bool:
         """Park ``self._loaded`` in the LRU cache (moved to CPU) for a later
         re-sweep. On success detaches it (caller must **not** then ``_unload``).
@@ -865,6 +932,9 @@ class Engine:
         except Exception as e:  # noqa: BLE001 — proxy/wrapper can't be moved wholesale
             log.debug("ckpt cache: can't move %s to CPU (%s); dropping", lm.name, e)
             return False
+        # Recorded here, before the in-progress load overwrites the engine's
+        # flags — at this point they still describe *this* model.
+        lm.stage_settings = self._current_stage_settings()
         cache = self._ckpt_cache
         cache.pop(lm.name, None)
         cache[lm.name] = lm
@@ -884,16 +954,18 @@ class Engine:
         """Pop a cached model for ``key`` and move it back to the device, but
         only if the requested staging settings match the model's (a settings
         change invalidates the cached placement). Returns the restored
-        ``LoadedModel`` or ``None`` (miss / settings mismatch / restore error)."""
+        ``LoadedModel`` or ``None`` (miss / settings mismatch / restore error).
+
+        Compares against the settings *this entry* was staged under, not the
+        engine's current flags: those describe whichever model was loaded last,
+        so a settings change made while a different checkpoint was active would
+        otherwise go unnoticed and the stale placement be reused."""
         lm = self._ckpt_cache.get(key)
         if lm is None:
             return None
-        if not (self._offload == offload and self._vae_tile == vae_tile
-                and self._compile == compile and self._cuda_graphs == cuda_graphs
-                and self._channels_last == channels_last and self._tf32 == tf32
-                and self._fp16_accumulation == fp16_accumulation
-                and self._attention == attention
-                and self._vae_fp16 == vae_fp16):
+        if lm.stage_settings != (offload, vae_tile, compile, cuda_graphs,
+                                 channels_last, tf32, fp16_accumulation,
+                                 attention, vae_fp16):
             # Settings changed since this was cached — placement is stale. Drop it.
             self._ckpt_cache.pop(key, None)
             try: del lm.model
@@ -941,8 +1013,10 @@ class Engine:
     def clear_loras(self) -> str:
         if not self._loaded:
             return "No model loaded"
+        # LoRAs are fused into the weights, so the only way to drop them is to
+        # throw the model away. Say so — the next generation needs a re-load.
         self._unload()
-        return "All LoRAs cleared (model reloaded without adapters)"
+        return "All LoRAs cleared — load the model again to generate"
 
     # ── generation ─────────────────────────────────────────────────
 
@@ -960,8 +1034,21 @@ class Engine:
         p = oss_cache_path(self._loaded.name, steps, width, height, shift)
         if not p.exists():
             return None
-        with open(p) as f:
-            return json.load(f)
+        return _read_cache_json(p)
+
+    def _degrade_oss(self, scheduler: str) -> str:
+        """Swap ``oss`` for a plain scheduler where it can't be used.
+
+        OSS is a calibrated full-trajectory t2i schedule keyed on
+        (steps, size, shift); only ``generate()`` can supply the matching
+        ``oss_sigmas``. Anywhere else — img2img/inpaint (partial trajectory) and
+        the detailer/upscaler refine passes — the pipeline would raise, so the
+        shared UI dropdown's "oss" pick degrades instead of failing the job.
+        """
+        if scheduler != "oss":
+            return scheduler
+        family = self._loaded.family if self._loaded else None
+        return "flow" if family == MODEL_FAMILY_ANIMA else "karras"
 
     def oss_calibrated(self, steps: int, width: int, height: int, shift: float) -> bool:
         """Whether a calibrated OSS schedule already exists for this config."""
@@ -987,9 +1074,13 @@ class Engine:
             )
         finally:
             self._reclaim_memory()
+        values = [round(float(s), 8) for s in sigmas]
+        if not _finite_series(values):
+            raise RuntimeError(
+                "OSS calibration produced a non-finite schedule — not cached "
+                "(try different steps/resolution)")
         p = oss_cache_path(self._loaded.name, steps, width, height, shift)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps([round(s, 8) for s in sigmas]))
+        _write_cache_json(p, values)
         return f"Calibrated OSS: {steps} steps @ {width}x{height}, shift={shift:g} → {p.name}"
 
     def apply_vae_tiling(self, always: bool) -> None:
@@ -998,9 +1089,13 @@ class Engine:
         per free VRAM). FLUX is left untouched: it's force-tiled at load by design.
         Keeps ``self._vae_tile`` in sync so X/Y/Z checkpoint swaps and the
         load-reuse cache inherit the same choice."""
-        if not self._loaded or self._loaded.family in _FLUX_FAMILIES:
+        # Called from the request thread while the worker may be loading or
+        # unloading; snapshot the reference so a concurrent unload can't turn
+        # self._loaded into None between the check and the write.
+        lm = self._loaded
+        if lm is None or lm.family in _FLUX_FAMILIES:
             return
-        self._loaded.model.policy.vae_tile = always
+        lm.model.policy.vae_tile = always
         self._vae_tile = always
 
     def _load_teacache_coeffs(self) -> "list[float] | None":
@@ -1011,8 +1106,9 @@ class Engine:
         for p in (teacache_override_path(self._loaded.name),
                   teacache_cache_path(self._loaded.family)):
             if p.exists():
-                with open(p) as f:
-                    return json.load(f)
+                coeffs = _read_cache_json(p)
+                if coeffs is not None:
+                    return coeffs
         return None
 
     def teacache_status(self) -> dict:
@@ -1053,9 +1149,17 @@ class Engine:
             )
         finally:
             self._reclaim_memory()
+        values = [round(float(c), 10) for c in coeffs]
+        # A degenerate fit (flat or too-short history) makes np.polyfit return
+        # NaN, which json.dumps happily writes as the non-standard `NaN` token
+        # and json.load reads back — poisoning every later skip decision with no
+        # error. Refuse to cache it.
+        if not _finite_series(values):
+            raise RuntimeError(
+                "TeaCache calibration produced non-finite coefficients — not "
+                "cached (try more steps)")
         p = teacache_cache_path(self._loaded.family)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps([round(c, 10) for c in coeffs]))
+        _write_cache_json(p, values)
         return f"Calibrated TeaCache for {self._loaded.family}: {steps} steps → {p.name}"
 
     # ── live preview (cheap latent→RGB approximation) ──────────────
@@ -1235,6 +1339,7 @@ class Engine:
         if (teacache_thresh > 0 and self._cuda_graphs
                 and self._loaded.family == MODEL_FAMILY_ANIMA):
             raise RuntimeError(_TEACACHE_CUDA_GRAPHS_ERROR)
+        scheduler = self._degrade_oss(scheduler)
         seed = self._resolve_seed(seed)
         gen_w, gen_h, snapped = self._anima_gen_size(width, height)
         gen = ImageToImage(self._loaded.model)
@@ -1310,6 +1415,7 @@ class Engine:
         if (teacache_thresh > 0 and self._cuda_graphs
                 and self._loaded.family == MODEL_FAMILY_ANIMA):
             raise RuntimeError(_TEACACHE_CUDA_GRAPHS_ERROR)
+        scheduler = self._degrade_oss(scheduler)
         seed = self._resolve_seed(seed)
         gen_w, gen_h, snapped = self._anima_gen_size(width, height)
         gen = Inpaint(self._loaded.model)
@@ -1392,8 +1498,7 @@ class Engine:
 
         # OSS is a full-trajectory t2i schedule (calibrated, not usable mid-denoise);
         # fall back to a plain scheduler for the masked inpaint passes.
-        if scheduler == "oss":
-            scheduler = "flow" if self._loaded.family == MODEL_FAMILY_ANIMA else "karras"
+        scheduler = self._degrade_oss(scheduler)
 
         from detailer import (
             bbox_to_mask, detect_regions, dilate_mask,
@@ -1491,8 +1596,7 @@ class Engine:
             raise RuntimeError(_TEACACHE_CUDA_GRAPHS_ERROR)
 
         # OSS is a full-trajectory t2i schedule — not usable mid-denoise.
-        if scheduler == "oss":
-            scheduler = "flow" if self._loaded.family == MODEL_FAMILY_ANIMA else "karras"
+        scheduler = self._degrade_oss(scheduler)
 
         from upscale import feather_weights, tile_grid, tile_starts
 
@@ -1514,6 +1618,7 @@ class Engine:
 
         base_seed = seed if seed is not None and seed >= 0 else \
             int(torch.randint(0, 2**32 - 1, (1,)).item())
+        self._last_upscale_seed = base_seed
 
         boxes = tile_grid(target_w, target_h, tile, overlap)
         n = len(boxes)

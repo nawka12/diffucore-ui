@@ -111,9 +111,14 @@ def origin_ok(request: Request) -> bool:
     if origin_host is None:
         return True  # curl / native client — not a browser CSRF vector
     request_host = (request.headers.get("host") or "").split("@")[-1].lower()
-    # ``Host`` may carry the port; compare the hostname portion only.
-    request_hostname = request_host.split(":")[0]
-    return origin_host == request_hostname
+    # ``Host`` may carry the port; compare the hostname portion only. Parse it
+    # rather than splitting on ":" — an IPv6 host is bracketed (``[::1]:8000``),
+    # so a naive split yields "[" and rejects every same-origin request.
+    try:
+        request_hostname = urlparse("//" + request_host).hostname
+    except ValueError:
+        return False
+    return bool(request_hostname) and origin_host == request_hostname
 
 
 class AuthGate:
@@ -171,7 +176,11 @@ class AuthGate:
     def accept(self, token: Optional[str]) -> Optional[Response]:
         """Validate a presented token; return a redirect that sets the cookie,
         or None if the token is wrong (caller returns 401)."""
-        if not token or not secrets.compare_digest(token, self.token):
+        # A JSON body can carry any type under "token"; compare_digest raises
+        # TypeError on a non-string, which would 500 this security path.
+        if not isinstance(token, str) or not token:
+            return None
+        if not secrets.compare_digest(token, self.token):
             return None
         # Redirect to bare "/" so the token isn't left in the browser history.
         resp = RedirectResponse("/", status_code=303)

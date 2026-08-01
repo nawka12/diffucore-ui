@@ -47,6 +47,28 @@ def test_tile_starts_degenerate():
     assert starts[-1] == 1025 - 1024
 
 
+# ── BUG.md H3: overlap >= tile ─────────────────────────────────────
+
+@pytest.mark.parametrize("overlap", [1024, 2048])
+def test_tile_starts_clamps_overlap_at_or_above_tile(overlap):
+    """``overlap == tile`` divided by zero; ``overlap > tile`` produced an empty
+    start list, so nothing was accumulated and the blend saved a black image."""
+    starts = tile_starts(4096, 1024, overlap)
+    assert starts, "an overlap >= tile must still yield a covering grid"
+    assert starts[0] == 0
+    assert starts[-1] == 4096 - 1024
+
+
+def test_tile_grid_covers_canvas_with_overlap_ge_tile():
+    w, h, tile = 2048, 2048, 1024
+    boxes = tile_grid(w, h, tile, tile)
+    assert boxes
+    covered = np.zeros((h, w), dtype=bool)
+    for x1, y1, x2, y2 in boxes:
+        covered[y1:y2, x1:x2] = True
+    assert covered.all()
+
+
 # ── tile_grid ──────────────────────────────────────────────────────
 
 def test_tile_grid_full_coverage():

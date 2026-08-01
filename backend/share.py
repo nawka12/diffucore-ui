@@ -159,5 +159,10 @@ def start(port: int, token: str | None = None) -> None:
                     suffix = f"?token={token}" if token else ""
                     _print_share_warning(url, suffix)
                     printed = True
+        # stderr closed: cloudflared exited. Say so if we never got a URL —
+        # otherwise the user waits for a share link that is never coming.
+        if not printed:
+            log.warning("cloudflared exited (code %s) without printing a tunnel "
+                        "URL — sharing is not active", proc.wait())
 
     threading.Thread(target=_watch, daemon=True).start()

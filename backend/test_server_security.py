@@ -100,6 +100,22 @@ def test_origin_ok_referer_fallback():
     assert authmod.origin_ok(req) is False
 
 
+def test_origin_ok_ipv6_host_same_origin():
+    """An IPv6 Host is bracketed (``[::1]:8000``); splitting it on ":" yielded
+    "[" and blocked every state-changing request over IPv6."""
+    req = _FakeReq("POST", "[::1]:8000", origin="http://[::1]:8000")
+    assert authmod.origin_ok(req) is True
+    req = _FakeReq("POST", "[2001:db8::1]:7860", origin="http://[2001:db8::1]:7860")
+    assert authmod.origin_ok(req) is True
+
+
+def test_origin_ok_ipv6_cross_origin_still_blocked():
+    req = _FakeReq("POST", "[::1]:8000", origin="http://[2001:db8::1]:8000")
+    assert authmod.origin_ok(req) is False
+    req = _FakeReq("POST", "[::1]:8000", origin="https://evil.example")
+    assert authmod.origin_ok(req) is False
+
+
 # ── #1: AuthGate token / cookie ─────────────────────────────────────
 
 TOKEN = "test-token-abc123"
@@ -481,3 +497,78 @@ def test_load_returns_400_for_missing_file(client):
 def test_generate_rejects_out_of_range_steps(client):
     r = client.post("/api/generate", json={"steps": 100000})
     assert r.status_code == 422  # pydantic validation error
+
+
+# ── BUG.md M8: the body cap must not be skippable via chunked encoding ──
+
+def test_body_cap_rejects_chunked_state_change(client):
+    # A generator body makes httpx stream it: chunked, no Content-Length — the
+    # shape that used to slip past the MAX_BODY_BYTES check entirely.
+    def _body():
+        yield b'{"job": null}'
+
+    r = client.post("/api/cancel", content=_body(),
+                    headers={"Content-Type": "application/json"})
+    assert r.status_code == 411
+
+
+def test_body_cap_chunked_get_unaffected(client):
+    # Only body-carrying methods are gated; a GET is left alone.
+    r = client.get("/api/models", headers={"Transfer-Encoding": "chunked"})
+    assert r.status_code == 200
+
+
+# ── BUG.md H3: overlap must be smaller than the tile ────────────────
+
+def test_upscale_payload_rejects_overlap_ge_tile():
+    # overlap == tile divides by zero in tile_starts; overlap > tile yields an
+    # empty tile grid that blends to an all-black "successful" upscale.
+    with pytest.raises(ValidationError):
+        server.UpscalePayload(tile=2048, overlap=2048)
+    with pytest.raises(ValidationError):
+        server.UpscalePayload(tile=1024, overlap=2048)
+    assert server.UpscalePayload(tile=1024, overlap=1023).overlap == 1023
+
+
+def test_generate_payload_rejects_overlap_ge_tile_when_enabled():
+    with pytest.raises(ValidationError):
+        server.GeneratePayload(upscale_enabled=True, upscale_tile=1024,
+                               upscale_overlap=1024)
+    # With the upscaler off the stale panel values don't block a plain generate.
+    assert server.GeneratePayload(upscale_enabled=False, upscale_tile=1024,
+                                  upscale_overlap=1024).steps
+
+
+# ── BUG.md M1: model names must stay inside their models dir ────────
+
+def test_model_name_rejects_traversal():
+    from utils import model_name_ok, checkpoint_path, detector_path
+
+    for bad in ("../../.auth_token", "..", ".", "", "sub/dir.safetensors",
+                "/etc/passwd"):
+        assert model_name_ok(bad) is False, bad
+    assert model_name_ok("model.safetensors") is True
+
+    for helper in (checkpoint_path, detector_path):
+        with pytest.raises(ValueError):
+            helper("../../.auth_token")
+
+
+def test_load_rejects_traversal_name_that_exists(client, tmp_path, monkeypatch):
+    # The escaping name points at a file that really exists, so a bare
+    # is_file() check would pass it straight through to the loader.
+    secret = tmp_path / "secret.safetensors"
+    secret.write_bytes(b"x")
+    monkeypatch.setattr(server, "CHECKPOINTS_DIR", tmp_path / "models")
+    r = client.post("/api/load", json={"model_type": "SD/SDXL",
+                                       "checkpoint": "../secret.safetensors"})
+    assert r.status_code == 400
+    assert "not found" in r.json()["detail"].lower()
+
+
+# ── BUG.md L2: a non-string JSON token must not 500 the login path ──
+
+def test_login_with_non_string_token_is_401(client):
+    r = client.post("/api/auth/login", json={"token": [1]},
+                    headers={"Origin": "http://testserver"})
+    assert r.status_code == 401

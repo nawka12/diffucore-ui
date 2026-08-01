@@ -107,10 +107,12 @@ def _upscale_fields(upscale: dict) -> list[str]:
 
 
 def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
-                    upscale: dict | None = None) -> str:
+                    upscale: dict | None = None, seed: int | None = None) -> str:
     """Build the AUTO1111-style ``parameters`` string for a finished generation.
 
     Reads loaded-model name, resolved seed, and perf flags off ``engine``.
+    ``seed`` overrides ``engine.last_seed`` for outputs that aren't a generation
+    (a standalone upscale, whose tile passes use their own base seed).
     """
     prompt = gen_kwargs.get("prompt", "")
     neg = gen_kwargs.get("negative_prompt", "")
@@ -136,7 +138,7 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     if "cfg_interval_start" in gen_kwargs:
         fields.append(f"CFG interval: {gen_kwargs['cfg_interval_start']}-"
                       f"{gen_kwargs.get('cfg_interval_end', 1.0)}")
-    fields.append(f"Seed: {engine.last_seed}")
+    fields.append(f"Seed: {engine.last_seed if seed is None else seed}")
     if "width" in gen_kwargs and "height" in gen_kwargs:
         fields.append(f"Size: {gen_kwargs['width']}x{gen_kwargs['height']}")
     if model_av2:
@@ -204,7 +206,7 @@ def _extra_pairs_to_dict(fields: list[str]) -> dict:
 
 
 def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
-                            upscale: dict | None = None) -> str:
+                            upscale: dict | None = None, seed: int | None = None) -> str:
     """Build a SwarmUI-format ``parameters`` JSON blob for a finished generation.
 
     Standard knobs go in ``sui_image_params`` under SwarmUI's own parameter IDs;
@@ -224,7 +226,7 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
         "prompt": clean_prompt.strip(),
         "negativeprompt": clean_neg.strip(),
         "model": model_hash.clean_model_name(loaded, strip_ext=True),
-        "seed": engine.last_seed,
+        "seed": engine.last_seed if seed is None else seed,
         "sampler": gen_kwargs.get("sampler", "euler"),
         "scheduler": gen_kwargs.get("scheduler", "karras"),
         "cfgscale": gen_kwargs.get("cfg_scale", 7.0),
@@ -507,8 +509,8 @@ def workspace_fields(meta: dict) -> dict:
     if meta.get("scheduler"):
         out["scheduler"] = meta["scheduler"]
     try:
-        out["seed"] = int(meta.get("seed", -1))
-    except (TypeError, ValueError):
+        out["seed"] = int(meta["seed"])
+    except (TypeError, ValueError, KeyError):
         pass
     try:
         out["shift"] = float(meta["shift"])

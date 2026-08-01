@@ -68,20 +68,38 @@ def scan_upscalers() -> List[str]:
     return _scan(UPSCALERS_DIR, _UPSCALER_EXTS)
 
 
+def model_name_ok(name: str) -> bool:
+    """Whether ``name`` is a plain filename that stays inside its model dir.
+
+    Model / LoRA / detector / upscaler names arrive in API payloads and are
+    joined onto a models directory. ``_scan`` only ever offers bare filenames
+    (it doesn't recurse), so anything carrying a separator or ``..`` is an
+    escape attempt — and the loaders on the other end include ``torch.load``,
+    where an attacker-chosen ``.pt`` is arbitrary code execution.
+    """
+    return bool(name) and name == Path(name).name and name not in (".", "..")
+
+
+def _model_path(directory: Path, name: str) -> Path:
+    if not model_name_ok(name):
+        raise ValueError(f"invalid model name: {name!r}")
+    return directory / name
+
+
 def checkpoint_path(name: str) -> Path:
-    return CHECKPOINTS_DIR / name
+    return _model_path(CHECKPOINTS_DIR, name)
 
 
 def diffusion_model_path(name: str) -> Path:
-    return DIFFUSION_DIR / name
+    return _model_path(DIFFUSION_DIR, name)
 
 
 def vae_path(name: str) -> Path:
-    return VAE_DIR / name
+    return _model_path(VAE_DIR, name)
 
 
 def te_path(name: str) -> Path:
-    return TE_DIR / name
+    return _model_path(TE_DIR, name)
 
 
 def lora_path(name: str) -> Path:
@@ -92,7 +110,7 @@ def lora_path(name: str) -> Path:
     (``my_lora``, as inserted by the tagcomplete extension). If the exact
     name doesn't exist, tries appending each known LoRA extension.
     """
-    p = LORAS_DIR / name
+    p = _model_path(LORAS_DIR, name)
     if p.exists():
         return p
     for ext in _LORA_EXTS:
@@ -103,11 +121,11 @@ def lora_path(name: str) -> Path:
 
 
 def detector_path(name: str) -> Path:
-    return DETAILERS_DIR / name
+    return _model_path(DETAILERS_DIR, name)
 
 
 def upscaler_path(name: str) -> Path:
-    return UPSCALERS_DIR / name
+    return _model_path(UPSCALERS_DIR, name)
 
 
 def _parse_date_dir(name: str) -> date:

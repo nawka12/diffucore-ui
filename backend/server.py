@@ -39,14 +39,17 @@ from PIL.PngImagePlugin import PngInfo
 from engine import ENGINE, SAMPLERS_SD, SAMPLERS_ANIMA, SAMPLERS_FLUX, SCHEDULERS_SD, SCHEDULERS_ANIMA, SCHEDULERS_FLUX
 from utils import (
     OUTPUTS_DIR, MODELS_DIR, CHECKPOINTS_DIR, DIFFUSION_DIR, VAE_DIR, TE_DIR,
-    detector_path,
+    detector_path, model_name_ok,
     scan_checkpoints, scan_loras, scan_diffusion_models,
     scan_vae, scan_text_encoders, scan_detectors, scan_upscalers, scan_outputs, next_output_path,
     invalidate_outputs_cache,
 )
 from xyz_grid import generate_xyz_grid, PARAM_TYPES as XYZ_PARAM_TYPES
 import metadata as md
-from auth import AuthGate, COOKIE_NAME, load_or_create_token, origin_ok, read_login_token
+from auth import (
+    AuthGate, COOKIE_NAME, load_or_create_token, origin_ok, read_login_token,
+    _STATE_CHANGE as _STATE_CHANGE_METHODS,
+)
 from extensions import (
     ExtensionLoader, InstallPayload, TogglePayload, UninstallPayload, UpdatePayload,
 )
@@ -308,6 +311,12 @@ class GeneratePayload(BaseModel):
     upscale_teacache: float = Field(0.0, ge=0.0, le=1.0)   # TeaCache for the refine pass (0 = off); independent of main gen
     upscale_base: str = ""               # ESRGAN model in models/upscalers/ (blank = Lanczos)
 
+    @model_validator(mode="after")
+    def _upscale_overlap_fits(self):
+        if self.upscale_enabled and self.upscale_overlap >= self.upscale_tile:
+            raise ValueError("upscale_overlap must be < upscale_tile")
+        return self
+
 
 class UpscalePayload(BaseModel):
     """Standalone upscale — input image + all params the tiled upscaler needs."""
@@ -328,6 +337,14 @@ class UpscalePayload(BaseModel):
     teacache_calibrated: bool = True
     teacache_forecast: str = "hermite"
     preview: bool = True
+
+    @model_validator(mode="after")
+    def _overlap_fits(self):
+        # A stride of zero (overlap == tile) divides by zero in tile_starts; a
+        # negative one yields an empty grid that blends to a black image.
+        if self.overlap >= self.tile:
+            raise ValueError("overlap must be < tile")
+        return self
 
 
 class CalibratePayload(BaseModel):
@@ -476,19 +493,24 @@ def _output_url(path: Path) -> str:
 
 def _save_output(image: Image.Image, gen_kwargs: dict,
                  detailer: Optional[dict] = None,
-                 upscale: Optional[dict] = None) -> Path:
+                 upscale: Optional[dict] = None,
+                 seed: Optional[int] = None) -> Path:
     """Save an image to outputs/ with AUTO1111 metadata; return its path.
 
     Used for single generations and for each individual X/Y/Z cell. ``detailer``,
     when given, is appended to the ``parameters`` line as ADetailer-compatible
-    keys so the post-gen detailer settings can be restored later.
+    keys so the post-gen detailer settings can be restored later. ``seed``
+    overrides ``ENGINE.last_seed`` for a standalone upscale, which has no
+    generation of its own to inherit a seed from.
     """
-    out = next_output_path(ENGINE.last_seed)
+    seed = ENGINE.last_seed if seed is None else seed
+    out = next_output_path(seed)
     meta = PngInfo()
     meta_kwargs = {k: v for k, v in gen_kwargs.items() if k != "progress_callback"}
     formatter = (md.format_swarmui_metadata if SETTINGS.get("metadata_format") == "swarmui"
                  else md.format_metadata)
-    meta.add_text("parameters", formatter(meta_kwargs, ENGINE, detailer=detailer, upscale=upscale))
+    meta.add_text("parameters", formatter(meta_kwargs, ENGINE, detailer=detailer,
+                                          upscale=upscale, seed=seed))
     image.save(out, pnginfo=meta)
     # Invalidate the gallery search index so the new image is visible to the next
     # search without waiting for the day-folder mtime to advance (covers
@@ -1039,6 +1061,13 @@ def _worker() -> None:
         except Exception as e:  # noqa: BLE001 — surface any engine error to the UI
             job.status = "error"
             _push({"type": "error", "job": job.id, "message": _friendly_error(e)})
+        except BaseException as e:  # noqa: BLE001
+            # This is the only worker thread; letting anything escape kills it
+            # and leaves every later job queued forever with no error event.
+            job.status = "error"
+            log.exception("worker job %s raised %s", job.id, type(e).__name__)
+            _push({"type": "error", "job": job.id,
+                   "message": f"job failed: {type(e).__name__}"})
         finally:
             with QUEUE_LOCK:
                 CURRENT = None
@@ -1143,6 +1172,16 @@ async def _request_guard(request: Request, call_next):
                                     status_code=413)
         except ValueError:
             pass
+    elif request.method in _STATE_CHANGE_METHODS:
+        # No Content-Length on a body-carrying request means chunked transfer,
+        # which would skip the cap above entirely while uvicorn still buffers
+        # the whole body for JSON parsing. Nothing in this app streams uploads,
+        # so requiring a declared length is free.
+        if "chunked" in (request.headers.get("transfer-encoding") or "").lower():
+            return JSONResponse(
+                {"error": "chunked request bodies are not accepted; "
+                          "send a Content-Length"},
+                status_code=411)
     # 2. CSRF / Origin allowlist (#2): block cross-origin state-changing
     #    requests. Same-origin fetches carry a matching Origin; curl sends none.
     if not origin_ok(request):
@@ -1318,7 +1357,9 @@ def _validate_load(p: LoadPayload) -> Optional[str]:
     "Select …" guards in ``_do_load_impl`` so the error message stays consistent.
     """
     def _missing(label: str, name: str, d: Path) -> Optional[str]:
-        if not (d / name).is_file():
+        # Plain filenames only — a name with a separator or ".." would resolve
+        # outside the models dir and still pass an is_file() check.
+        if not model_name_ok(name) or not (d / name).is_file():
             return f"{label} not found: {name}"
         return None
 
@@ -1515,12 +1556,16 @@ async def api_upscale(p: UpscalePayload):
             steps=int(p.steps), cfg_scale=float(p.cfg),
             sampler=p.sampler, scheduler=p.scheduler,
         )
-        out = _save_output(image, gen_kwargs, upscale=upscale_meta)
+        # A standalone upscale isn't a generation: ENGINE.last_seed still holds
+        # whatever ran before it, so name and tag the output with the seed the
+        # tile passes actually used.
+        seed = ENGINE.last_upscale_seed
+        out = _save_output(image, gen_kwargs, upscale=upscale_meta, seed=seed)
         rel = out.relative_to(OUTPUTS_DIR)
         return {
             "image_url": _output_url(out),
             "info": f"{unote}  |  saved to {rel}",
-            "seed": ENGINE.last_seed,
+            "seed": seed,
         }
     job = Job("upscale", f"upscale {p.scale}x", run)
     _enqueue(job)
@@ -1666,7 +1711,10 @@ def api_extensions_reload(name: str):
 def api_extensions_uninstall(p: UninstallPayload):
     """Remove an extension's folder and drop its hooks/routes. Its persisted
     enabled/state entries are cleared too."""
-    EXTENSIONS.uninstall(p.name)
+    try:
+        EXTENSIONS.uninstall(p.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"uninstalled": p.name}
 
 
@@ -1904,7 +1952,9 @@ def api_gallery_delete(path: str):
     if outputs_root not in target.parents or not target.is_file():
         raise HTTPException(status_code=404, detail="Image not found")
     _TRASH_DIR.mkdir(parents=True, exist_ok=True)
-    trashed = _TRASH_DIR / f"{int(time.time())}_{target.name}"
+    # Nanosecond stamp: a 1-second one lets two deletes of same-named files in
+    # the same second silently overwrite each other in the trash.
+    trashed = _TRASH_DIR / f"{time.time_ns()}_{target.name}"
     try:
         shutil.move(str(target), str(trashed))
     except OSError as e:

@@ -50,6 +50,33 @@ def test_install_endpoint_rejects_non_https_with_400(client):
     assert r.status_code == 400
 
 
+# ── BUG.md H1: uninstall must never target extensions/ itself ────────
+
+@pytest.mark.parametrize("name", [".", "", "..", "sub/dir", "../elsewhere"])
+def test_uninstall_rejects_non_child_names(tmp_path, monkeypatch, name):
+    """``name="."`` used to resolve to EXTENSIONS_DIR itself and pass the
+    guard, so the rmtree wiped every extension plus state.json."""
+    import extensions as extmod
+
+    ext_dir = tmp_path / "extensions"
+    (ext_dir / "keeper").mkdir(parents=True)
+    monkeypatch.setattr(extmod, "EXTENSIONS_DIR", ext_dir)
+    monkeypatch.setattr(extmod, "STATE_PATH", ext_dir / "state.json")
+    loader = extmod.ExtensionLoader(None, enqueue_job=lambda *a, **k: 0,
+                                    broadcast=lambda ev: None)
+    (ext_dir / "state.json").write_text("{}")
+
+    with pytest.raises(ValueError):
+        loader.uninstall(name)
+    assert (ext_dir / "keeper").is_dir()
+    assert (ext_dir / "state.json").is_file()
+
+
+def test_uninstall_endpoint_returns_400_not_500(client):
+    r = client.post("/api/extensions/uninstall", json={"name": "."})
+    assert r.status_code == 400
+
+
 def test_install_endpoint_enqueues_install_job_and_passes_pip_flag(client, monkeypatch):
     # Stub the real install so no network / git / pip runs.
     captured = {}
@@ -638,6 +665,83 @@ def test_ckpt_cache_restore_rejects_settings_mismatch():
     restored = eng._try_cache_restore("A", "stream", True, False, False, False, False, False)
     assert restored is None
     assert "A" not in eng._ckpt_cache
+
+
+# ── BUG.md L8: compare against the *entry's* settings, not the live ones ──
+
+def test_ckpt_cache_restore_uses_entry_settings_not_live_flags():
+    """A stashed model records what it was staged under. The comparison used
+    the engine's live flags instead, which by then described whichever model
+    was loaded after it — so a changed offload policy went unnoticed and the
+    stale placement was reused."""
+    eng = _cache_engine()
+    # A is stashed while the engine is on offload="none".
+    eng._loaded = _fake_loaded("A")
+    assert eng._stash_loaded() is True
+    # B is then loaded with a different policy (this is what a real load does
+    # after the restore attempt), leaving the live flags describing B.
+    eng._offload = "stream"
+    # Asking for A under B's policy must miss: A's placement is "none".
+    assert eng._try_cache_restore("A", "stream", True, False, False,
+                                  False, False, False) is None
+    assert "A" not in eng._ckpt_cache
+
+
+# ── BUG.md M4: calibration caches must never feed NaN into generation ──
+
+def test_cache_json_rejects_nan_and_corruption(tmp_path):
+    """``json.dumps`` writes NaN as the non-standard ``NaN`` token and
+    ``json.load`` reads it straight back, so a degenerate polyfit would poison
+    every later TeaCache decision with no error at all."""
+    from engine import _read_cache_json, _finite_series, _write_cache_json
+
+    good = tmp_path / "good.json"
+    _write_cache_json(good, [1.0, -2.5, 0.0])
+    assert _read_cache_json(good) == [1.0, -2.5, 0.0]
+
+    nan_file = tmp_path / "nan.json"
+    nan_file.write_text("[1.0, NaN, 3.0]")
+    assert json.loads(nan_file.read_text())[1] != json.loads(nan_file.read_text())[1]
+    assert _read_cache_json(nan_file) is None    # NaN → "not calibrated"
+
+    truncated = tmp_path / "partial.json"
+    truncated.write_text("[1.0, 2.0")
+    assert _read_cache_json(truncated) is None   # no raw JSONDecodeError
+
+    assert _finite_series([]) is False
+    assert _finite_series([float("inf")]) is False
+    assert _finite_series([1, 2.0]) is True
+
+
+def test_cache_json_write_is_atomic(tmp_path):
+    """An interrupted write must leave the previous file intact, not a stub."""
+    from engine import _write_cache_json
+
+    p = tmp_path / "c.json"
+    _write_cache_json(p, [1.0, 2.0])
+
+    class _Boom:
+        def __iter__(self): raise RuntimeError("interrupted")
+
+    with pytest.raises((RuntimeError, TypeError)):
+        _write_cache_json(p, _Boom())
+    assert json.loads(p.read_text()) == [1.0, 2.0]
+    assert not list(tmp_path.glob("*.tmp*")), "temp file cleaned up"
+
+
+# ── BUG.md M2: "oss" is a t2i-only schedule ─────────────────────────
+
+def test_oss_scheduler_degrades_outside_t2i():
+    """The scheduler dropdown is shared across modes; picking oss in t2i and
+    switching to img2img used to fail the job, where the detailer/upscaler
+    would have fallen back."""
+    eng = _cache_engine()
+    eng._loaded = _fake_loaded("A", family="anima")
+    assert eng._degrade_oss("oss") == "flow"
+    eng._loaded = _fake_loaded("A", family="sdxl")
+    assert eng._degrade_oss("oss") == "karras"
+    # Anything else passes through untouched.
+    assert eng._degrade_oss("beta") == "beta"
 
 
 # ── shared HTTP fixture (last so module-level client use above works) ──
