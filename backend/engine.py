@@ -110,6 +110,7 @@ SAMPLERS_SD = [
     "exp_heun_2_x0",
     "uni_pc",
     "uni_pc_bh2",
+    "cogent",
 ]
 # infinity_realism injects γ·σ of noise per step with γ saturating at 0.20.
 # That is proportionate on SD/SDXL, where σ_max is 14.6 and each step removes a
@@ -138,6 +139,15 @@ _SAMPLERS_4D_ONLY = {"infinity_nano", "infinity_omega"}
 # stays genuinely 2nd-order at low step counts (where the secant self-gates to
 # Euler), so it needs fewer steps. eta_max=0 ⇒ deterministic 2M flow multistep.
 # Anima-only; pair with beta/flow like its siblings.
+# cogent is the annealed-ancestral family's core (DPM++(2M) flow exponential
+# integrator + eta = eta_max·σ) with the 2nd-order correction scaled by a
+# *measured* weight instead of a hardcoded σ heuristic: psi = max((1+2·rho)/3,
+# 1−e^−h), where rho is the coherence of consecutive x0 differences (a Wiener
+# shrinkage — it damps itself on a merged/imperfect model and stays undamped on a
+# clean one) and 1−e^−h is the integrator's own phi-weight as a step-size floor
+# (a coarse step needs the 2nd-order term whatever its SNR). Unlike the rest of
+# the *_anneal family it is not flow-only — the same update serves VE, where the
+# anneal runs on σ/(1+σ) — so it is listed for every family. Prefer 24+ steps.
 # uni_pc_anneal is the stochastic sibling of uni_pc: UniPC's predictor-corrector
 # core (eta_max=0 ⇒ deterministic uni_pc bit-for-bit) plus a light σ-annealed
 # ancestral burn-in for stochastic diversity / merge robustness. Its high-order

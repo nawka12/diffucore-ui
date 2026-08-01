@@ -382,7 +382,7 @@ class Settings(BaseModel):
     the active sampler/scheduler uses them (see ``_run_generation``)."""
     # Anima sampler/scheduler knobs.
     curvature: float = 0.25       # secant / secant_anneal x0 extrapolation strength
-    eta_max: float = 1.0          # secant_anneal / euler_ancestral_anneal ancestral noise
+    eta_max: float = 1.0          # secant_anneal / euler_ancestral_anneal / cogent ancestral noise
     beta_alpha: float = 0.6       # beta scheduler Beta(α, β) — low-t (σ→0) density
     beta_beta: float = 0.6        # beta scheduler — high-t (σ→1) density
     lq_threshold: float = 0.025   # linear_quadratic threshold_noise (linear/quad knee)
@@ -559,7 +559,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
         if ENGINE.loaded_family == "anima":
             if p.sampler in ("secant", "secant_anneal"):
                 common["curvature"] = float(SETTINGS["curvature"])
-            if p.sampler in ("secant_anneal", "euler_ancestral_anneal", "dpmpp_2m_anneal"):
+            if p.sampler in ("secant_anneal", "euler_ancestral_anneal", "dpmpp_2m_anneal", "cogent"):
                 common["eta_max"] = float(SETTINGS["eta_max"])
             # uni_pc_anneal omitted on purpose: it uses its own low baked-in
             # eta_max (0.2); the shared 1.0 panel default over-smooths it.

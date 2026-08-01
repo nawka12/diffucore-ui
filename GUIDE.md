@@ -309,6 +309,47 @@ bugs, just how the model responds:
   you want UniPC quality with a touch of stochastic variation; for the crispest
   deterministic result, use plain `uni_pc`. See `docs/uni-pc-anneal.md`.
 
+- **`cogent`** is this project's own sampler, and the one to try if you like
+  `secant_anneal`. It keeps that family's σ-annealed ancestral burn-in (noise at
+  high σ, vanishing as σ→0) but replaces two things. The deterministic core is the
+  full 2nd-order exponential integrator (`dpmpp_2m`'s, in half-logSNR space)
+  instead of σ-space Euler plus a capped secant nudge. And the weight on that
+  2nd-order correction is **measured every step** rather than hardcoded:
+  `psi = max((1 + 2·rho)/3, 1 − e^−h)`, where `rho` is the cosine between the last
+  two changes in the model's x0 estimate. That reads how much of the correction is
+  real signal versus noise — a merged or imperfect model damps itself
+  automatically, a clean one keeps the full textbook coefficient — and the
+  `1 − e^−h` term is the integrator's own step weight acting as a floor, so a
+  coarse step never loses the correction it needs. Two dot products per step; no
+  extra model evaluations.
+
+  On an analytically-solvable flow benchmark it tracks the exact trajectory ~2.3×
+  more accurately than `secant_anneal` at matched steps, and lands 12–25% closer
+  to the target distribution under a deliberately imperfect model at 8 and at
+  24–32 steps (it gives up a few percent in the 12–16 step band). **Use 24+ steps**
+  — that is where its margin is largest; at ≤12 steps a deterministic solver like
+  `stork2` or `uni_pc_bh2` is still the better pick. It honours the shared
+  `eta_max` knob (`eta_max=0` makes it fully deterministic), and unlike the rest
+  of the `*_anneal` family it is **not flow-only** — it is offered for SD/SDXL and
+  FLUX too. Benchmarked offline against a known ground truth; not yet A/B'd on
+  real images. See `docs/cogent.md`, and `scripts/ab_cogent.py` to re-run the
+  numbers.
+
+  **Scheduler: use `flow` (or `simple` / `sgm_uniform` — near-identical), or
+  `linear_quadratic` at 24–32 steps.** This is the one place cogent does *not*
+  follow its siblings. `secant_anneal` and `euler_ancestral_anneal` want a
+  high-σ-dense schedule; cogent inherits the exponential core's preference for
+  fine, smooth steps at the *low*-σ end instead. On the benchmark, `beta`,
+  `beta_mix` and `smoothstep` cost it 2–4× (after the shift map they leave a
+  coarser minimum λ-step, which also pins the gate's floor too high to damp), and
+  `normal`, `infinity`, `infinity_htds` and `kl_optimal` are worse still. That
+  ordering is a property of the shared DPM++(2M) core rather than of the gate —
+  `dpmpp_2m_anneal` degrades on exactly the same schedules and by roughly twice as
+  much — so treat it as "cogent likes what `dpmpp_2m` likes", not as a quirk. Note
+  the absolute cross-scheduler ranking is the weaker half of the offline evidence:
+  which σ placement suits a real model depends on where that model's error lives,
+  so it is worth an A/B on your own checkpoint.
+
 - **`stork2`** (STORK-2, ICLR 2026, arXiv:2505.24210 — clean-room) is a
   deterministic multistep solver built from a stabilized Runge–Kutta–Gegenbauer
   stage cascade driven by Taylor-extrapolated "virtual" stage velocities — still
@@ -406,38 +447,51 @@ bugs, just how the model responds:
   mean near their running averages — upstream's answer to colour cast at high
   CFG. Below 7 steps the whole filter is bypassed and it is exactly `euler`.
 
-  **On Anima it loses, and not narrowly.** Measured at 1024×1536, 32 steps,
-  CFG 4.0, one seed, against `stork2` on the same schedule: omega has 2.1× less
-  high-frequency energy (97 vs 209), 1.4× less edge energy, lower contrast
-  (57.2 vs 64.7), and a heavy cyan cast — its per-channel means span 123 points
-  (R 115 / B 238) where `stork2` spans 54 (R 136 / B 190) — with lower
-  per-channel spread on top. Visually it reads as flat and fogged: the sky
-  loses its cloud structure, fabric loses its folds, fur trim loses its
-  texture. The culprit looks like ACS: pulling each channel's mean halfway to a
-  running EMA every step locks the image to its early-trajectory colour balance
-  and prevents the late shift that gives a finished render its depth. So the
-  band gain does not win — the stabilizers do, exactly as the synthetic test
-  predicted, only more severely. Upstream's own benchmark measures FFT power
-  density, which its mechanism inflates by construction, so it was never
-  independent evidence. Ported and kept for completeness; on Anima reach for
-  `stork2` or `infinity` instead. **SD/SDXL and Anima only** — the band split is 2-D convolution
-  over the latent's spatial axes, and FLUX packs its latent into a token
-  sequence before sampling, so omega is absent from the FLUX dropdown. Costs
-  about 6 ms/step of extra CPU work on a 1024px Anima latent, i.e. well under
-  1% of a real step.
+  **The two stabilizers only run when `sigmas[0] ≥ 8`,** which is the most
+  important thing to know about this sampler. Upstream added that test to
+  detect a mid-schedule restart, but it reads an *absolute* sigma, and only
+  variance-exploding models start that high: SD/SDXL begin at 14.6, so the
+  stabilizers are live, while rectified flow begins at 1.0, so they never run.
+  ComfyUI's Anima is a flow model with σ_max exactly 1.0, so **under ComfyUI
+  every Anima generation runs omega with both stabilizers off** — which is the
+  configuration upstream's flow-model results were produced in. It also closes
+  on nearly every SD **img2img** run: only the top ~13% of a karras schedule
+  sits above sigma 8, so the stabilizers need about denoise ≥ 0.87 (karras) or
+  ≥ 0.92 (exponential) to run at all. In practice the gate means "full-denoise
+  SD/SDXL only."
+
+  So omega is really two samplers. On **SD/SDXL** you get the full stack, where
+  the band gain pushes toward detail and the stabilizers push back. On **Anima**
+  you get LPVD + AHFRI + DoG on Euler with nothing stabilized — an unclamped
+  detail filter. One caution on upstream's evidence either way: its benchmark
+  measures FFT power density, which the band gain inflates by construction, so
+  it is not independent support for the detail claims.
+
+  An earlier build here dropped that gate, judging it a misfiring heuristic.
+  That left ACS running on Anima — which ComfyUI never does — and produced a
+  heavy cyan cast and a flat, fogged image, since pulling each channel's mean
+  halfway to an early-seeded EMA every step locks the render to its
+  early-trajectory colour balance. Upstream's author confirmed the effect does
+  not occur under ComfyUI, which is what pinned it to our deviation rather than
+  to the branch. The gate is now ported literally and the old Anima measurements
+  are void; a fresh A/B against `stork2` is the open item.
+
+  **SD/SDXL and Anima only** — the band split is 2-D convolution over the
+  latent's spatial axes, and FLUX packs its latent into a token sequence before
+  sampling, so omega is absent from the FLUX dropdown. Costs about 6 ms/step of
+  extra CPU work on a 1024px Anima latent, i.e. well under 1% of a real step.
 
 - **`infinity_nano`** is upstream's `nano` branch, which is exactly
   `infinity_omega` with ACS and the DoG term removed and nothing else changed.
-  It exists here to test the diagnosis above: if ACS's per-step mean pull is
-  what flattens omega, dropping it should bring the detail back. Offline that
-  holds — driving a denoiser whose per-channel means need to move, `euler`
-  lands them 1.93 apart, `nano` 1.94, and `omega` only **1.18**, a 39%
-  compression of the range that carries colour and brightness. NQVP's spread
-  clamp is still active, so this is not an un-stabilized run; only the mean
-  pull and the near-no-op DoG are gone. Same 4-D restriction (SD/SDXL and
-  Anima, not FLUX), same `euler` bypass below 7 steps, two fewer convolutions
-  per step than omega. **Not yet compared on real weights** — that is the open
-  A/B, at the same seed against `stork2` and `infinity`.
+  Because the stabilizer gate above also strips NQVP and ACS from omega on flow
+  models, **on Anima nano and omega differ by the near-no-op DoG term alone** —
+  measured 0.4% relative on a synthetic denoiser. The choice between them only
+  means something on SD/SDXL, where the gate is open and losing ACS is a real
+  behavioral change: driving a denoiser whose per-channel means need to move,
+  `nano` lands them 1.94 apart where `omega` compresses them to 1.18, a 39%
+  squeeze on the range that carries colour and brightness. Same 4-D restriction
+  (SD/SDXL and Anima, not FLUX), same `euler` bypass below 7 steps, two fewer
+  convolutions per step than omega.
 
   The **`infinity` scheduler** (same project, all families) is `normal`'s
   linear timestep ramp warped by a sine perturbation: the first step's gap
