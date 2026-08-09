@@ -102,6 +102,7 @@ SAMPLERS_SD = [
     "infinity_realism",
     "infinity_nano",
     "infinity_omega",
+    "infinity_aether",
     "lms",
     "er_sde",
     "ddpm",
@@ -112,22 +113,24 @@ SAMPLERS_SD = [
     "uni_pc_bh2",
     "cogent",
 ]
-# infinity_realism injects γ·σ of noise per step with γ saturating at 0.20.
-# That is proportionate on SD/SDXL, where σ_max is 14.6 and each step removes a
-# large chunk of σ (on karras/16 it never injects more than a step removes). On
-# rectified flow σ_max is 1.0 and the shift compresses the top of the schedule,
-# so the same absolute injection dwarfs the step: measured on Anima at flow
-# shift=3.0 / 32 steps, the first step injects 18.8× what it removes, and 46×
-# with the infinity scheduler (whose sine warp shrinks that first gap further),
-# with 28/32 steps over-injecting. That drives the latent out of distribution
-# for most of the trajectory and decodes as chromatic breakup. SD/SDXL only.
-_SAMPLERS_SD_ONLY = {"infinity_realism"}
+_SAMPLERS_SD_ONLY = set()
 SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm" and s not in _SAMPLERS_SD_ONLY]
-# infinity_omega decomposes the velocity field with 2-D convolutions, so it
-# needs a [B, C, H, W] latent. SD/SDXL and Anima have one; FLUX patchifies to a
-# [B, L, C·p²] token sequence before sampling, where a spatial blur is
-# meaningless — and the sampler signature carries no (h, w) to unpack with.
-_SAMPLERS_4D_ONLY = {"infinity_nano", "infinity_omega"}
+# infinity_omega and infinity_aether decompose the velocity field with 2-D
+# convolutions, and infinity_realism takes a per-channel statistic over the
+# spatial axes, so all of them need a [B, C, H, W] latent. SD/SDXL and Anima
+# have one; FLUX patchifies to a [B, L, C·p²] token sequence before sampling,
+# where a spatial blur is meaningless and dim 1 is a token index — and the
+# sampler signature carries no (h, w) to unpack with.
+#
+# infinity_realism was SD/SDXL-only through 2026-07-25 for a different reason:
+# it injected γ·σ of noise per step with γ saturating at 0.20, an absolute
+# scale that dwarfed the step on rectified flow (on Anima at shift=3.0 / 32
+# steps the first step injected 18.8× what it removed, 46× under the infinity
+# scheduler, with 28/32 steps over-injecting). Upstream deleted that injection
+# in the @21084d9 rewrite, so the sampler is deterministic now and the flow
+# restriction no longer applies — only the 4-D one does.
+_SAMPLERS_4D_ONLY = {"infinity_nano", "infinity_omega", "infinity_realism",
+                     "infinity_aether"}
 # euler_ancestral_anneal anneals eta with σ (full ancestral burn-in at high σ,
 # deterministic at low σ); Anima-only, aimed at rectified-flow merges.
 # secant_anneal is that annealed ancestral burn-in handing off to secant's

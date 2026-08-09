@@ -390,108 +390,125 @@ bugs, just how the model responds:
   Note this changes `infinity`'s output for a given seed versus earlier
   releases. Image-quality A/B on Anima is still pending.
 
-- **`infinity_realism`** is the same project's `realism` branch, kept as a
-  second sampler beside `infinity` rather than replacing it — it is the
-  grain/detail-leaning variant, and the two are genuinely different filters.
-  The integrator step is identical (upstream writes it as
-  `x ← r·x − (r−1)·x0`, which is Euler in σ space), but three things change:
-  the velocity/acceleration EMAs and both invariants move from the *derivative*
-  into *x0* (denoised-prediction) space — which weights the late, low-σ steps
-  far more heavily and makes the direction-reversal gate fire much more rarely
-  — and, the point of the branch, every step that clears its invariants
-  comfortably re-noises by up to `0.2·σ`. That injected noise is what buys the
-  film-like grain and extra high-frequency texture; it also means the sampler
-  is **stochastic**, so it trades the deterministic ODE's cleanliness for it.
-  **SD/SDXL only.** The injection is an absolute `0.2·σ` that ignores how far
-  the step travels. On SD that is proportionate — σ_max is 14.6 and the early
-  steps are big, so on `karras`/16 steps it never adds more than a step
-  removes. On rectified flow σ_max is 1.0 and the shift squeezes the top of
-  the schedule, so the same amount swamps it: on Anima at flow shift=3.0 over
-  32 steps the first step injects 18.8× what it removes — 46× under the
-  `infinity` scheduler, whose sine warp shrinks that gap further — and 28 of
-  32 steps over-inject, for ~0.83 of injected noise std against a latent std
-  of ~1. The result is a latent held off-distribution for most of the run,
-  which decodes as chromatic speckle and blown highlights, and it gets *worse*
-  with more steps because smaller steps do not shrink the injection. It is
-  therefore no longer offered for Anima or FLUX.
+- **`infinity_realism`** is the same project's `realism` branch. Upstream
+  rewrote it wholesale on 2026-07-21, and what ships here now is that rewrite:
+  the same first-order step as `infinity` (upstream writes it as
+  `x ← r·x − (r−1)·x0`, which is Euler in σ space) plus a **variance
+  stabiliser** — before each step, every channel's spatial standard deviation
+  is pulled toward its running average by a fraction that ramps smoothly with
+  three things: how far the spread has drifted, how far into the trajectory you
+  are, and the step count. The last of those is a Turbo/LCM guard: at 4 steps
+  the running average has nothing useful to correct toward, so the correction
+  is held to a third of its strength.
 
-  On SD/SDXL, try it where `infinity` looks clean but flat — skin, fabric,
-  foliage — and stay on `infinity` for graphic or flat-shaded work; prefer
-  moderate step counts (at 32 steps even `karras` starts over-injecting on
-  about two thirds of its steps). Two deliberate departures
-  from upstream: seeds reproduce here (upstream draws unseeded noise, so its
-  runs never repeat), and upstream's "self-correcting scheduler" — which
-  inserts a midpoint σ and re-runs a step whenever an invariant trips — is not
-  ported, because the re-run re-evaluates the model at an unchanged `(x, σ)`
-  for no new information while making the step count unbounded and
-  data-dependent. Image-quality A/B on Anima is still pending.
+  Everything that used to define this branch is gone — the x0-space EMA filter,
+  the invariant gates, and the `0.2·σ` noise injection that gave it its grain.
+  It is **deterministic** now, and the gentlest member of the family rather
+  than the grainiest: plain Euler with a spread correction that is deliberately
+  inert for the first third of the run. If you were using it for texture, use
+  `infinity_aether` instead.
 
-  Do not re-sync this one from upstream. The algorithm described above is the
-  `realism` branch as of 2026-07-20; on 07-21 upstream replaced it wholesale
-  with a plain exponential-integrator step plus a per-channel standard-
-  deviation EMA — no x0 filter, no invariant gates, no noise injection. What
-  ships here is the more capable version, and the branch name no longer
-  points at it.
+  The upside of losing the injection is that the flow restriction goes with it.
+  That injection was an absolute `0.2·σ` that ignored how far the step
+  travelled: on Anima at flow shift=3.0 over 32 steps the first step injected
+  18.8× what it removed — 46× under the `infinity` scheduler, whose sine warp
+  shrinks that gap further — and 28 of 32 steps over-injected, which is why the
+  sampler was SD/SDXL-only. With it deleted there is no absolute noise scale
+  left, so **Anima offers it again**. FLUX still does not: the stabiliser takes
+  a per-channel statistic over the spatial axes, and FLUX packs its latent into
+  a token sequence before sampling.
 
-- **`infinity_omega`** is the same project's `omega` branch — upstream's
-  current default — and it is a different kind of thing from the two above.
-  **Its integrator is plain Euler**: both `infinity`'s invariant-gated
-  correction and the intermediate `micro` branch's second-order term were
-  dropped upstream along the way, so as an ODE solver it is strictly weaker.
-  What it adds is a per-step *spatial* filter. Each step's velocity field is
-  split into three bands with a Gaussian pyramid, and the finest band is
-  amplified by up to 25% where a local standard-deviation map says
-  high-frequency structure already exists (plus a difference-of-Gaussians term
-  that, at ≤3.8% strength on an already-small band, is close to a no-op). Two
-  EMA stabilizers also hold the denoised prediction's per-channel spread and
-  mean near their running averages — upstream's answer to colour cast at high
-  CFG. Below 7 steps the whole filter is bypassed and it is exactly `euler`.
+- **`infinity_omega`** is the same project's `omega` branch, and it is a
+  different kind of thing from the two above. **Its integrator is plain Euler**:
+  both `infinity`'s invariant-gated correction and the intermediate `micro`
+  branch's second-order term were dropped upstream along the way, so as an ODE
+  solver it is strictly weaker. What it adds is a per-step *spatial* filter.
+  Each step's velocity field is split into three bands with a Gaussian pyramid,
+  and the finest band is amplified by up to 25% where a local standard-deviation
+  map says high-frequency structure already exists (plus a
+  difference-of-Gaussians term that, at ≤3.8% strength on an already-small band,
+  is close to a no-op). Below 7 steps the whole filter is bypassed and it is
+  exactly `euler`.
 
-  **The two stabilizers only run when `sigmas[0] ≥ 8`,** which is the most
-  important thing to know about this sampler. Upstream added that test to
-  detect a mid-schedule restart, but it reads an *absolute* sigma, and only
-  variance-exploding models start that high: SD/SDXL begin at 14.6, so the
-  stabilizers are live, while rectified flow begins at 1.0, so they never run.
-  ComfyUI's Anima is a flow model with σ_max exactly 1.0, so **under ComfyUI
-  every Anima generation runs omega with both stabilizers off** — which is the
-  configuration upstream's flow-model results were produced in. It also closes
-  on nearly every SD **img2img** run: only the top ~13% of a karras schedule
-  sits above sigma 8, so the stabilizers need about denoise ≥ 0.87 (karras) or
-  ≥ 0.92 (exponential) to run at all. In practice the gate means "full-denoise
-  SD/SDXL only."
+  Two stabilizers sit alongside it, and **which of them runs depends on the
+  family**. NQVP holds the denoised prediction's per-channel spread near its
+  running average and is **SD/SDXL only** — upstream gates it on `sigmas[0] ≥ 5`
+  as an explicit "not a flow model" test, since it exists to tame the large
+  early-step swings that `σ·ε` produces on variance-exploding models. AVN damps
+  each channel's *velocity* spread toward its running average and runs on
+  **every family**; it can only ever shrink a spread, never grow one, which is
+  upstream's current answer to CFG oversaturation.
 
-  So omega is really two samplers. On **SD/SDXL** you get the full stack, where
-  the band gain pushes toward detail and the stabilizers push back. On **Anima**
-  you get LPVD + AHFRI + DoG on Euler with nothing stabilized — an unclamped
-  detail filter. One caution on upstream's evidence either way: its benchmark
-  measures FFT power density, which the band gain inflates by construction, so
-  it is not independent support for the detail claims.
+  AVN is new as of upstream's 2026-07-25 rework and it replaced ACS, which is
+  worth knowing if you have used this sampler before. ACS pulled each channel's
+  spatial *mean* halfway to an early-seeded average every step — a DC-level
+  correction, and on a 16-channel flow latent that is how you manufacture a
+  colour cast. An earlier build here dropped upstream's `σ_max < 8` gate,
+  which left ACS running on Anima where ComfyUI never ran it, and produced
+  exactly that: a heavy cyan cast and a flat, fogged image. Upstream reached
+  the same conclusion from the other end — first excluding flow models from
+  ACS, then deleting ACS outright in favour of AVN, which touches only the
+  spread, only downward, and acts on the velocity rather than the prediction.
+  The gate is gone because nothing left in the stack can cast.
 
-  An earlier build here dropped that gate, judging it a misfiring heuristic.
-  That left ACS running on Anima — which ComfyUI never does — and produced a
-  heavy cyan cast and a flat, fogged image, since pulling each channel's mean
-  halfway to an early-seeded EMA every step locks the render to its
-  early-trajectory colour balance. Upstream's author confirmed the effect does
-  not occur under ComfyUI, which is what pinned it to our deviation rather than
-  to the branch. The gate is now ported literally and the old Anima measurements
-  are void; a fresh A/B against `stork2` is the open item.
+  The practical consequence: **on Anima, omega now stabilizes something.**
+  Through the previous build it was LPVD + AHFRI + DoG on Euler with nothing
+  held back at all. Any Anima impression of this sampler formed before
+  2026-08-09 describes that older build. One caution on upstream's evidence
+  either way: its benchmark measures FFT power density, which the band gain
+  inflates by construction, so it is not independent support for the detail
+  claims.
 
   **SD/SDXL and Anima only** — the band split is 2-D convolution over the
   latent's spatial axes, and FLUX packs its latent into a token sequence before
   sampling, so omega is absent from the FLUX dropdown. Costs about 6 ms/step of
   extra CPU work on a 1024px Anima latent, i.e. well under 1% of a real step.
 
-- **`infinity_nano`** is upstream's `nano` branch, which is exactly
-  `infinity_omega` with ACS and the DoG term removed and nothing else changed.
-  Because the stabilizer gate above also strips NQVP and ACS from omega on flow
-  models, **on Anima nano and omega differ by the near-no-op DoG term alone** —
-  measured 0.4% relative on a synthetic denoiser. The choice between them only
-  means something on SD/SDXL, where the gate is open and losing ACS is a real
-  behavioral change: driving a denoiser whose per-channel means need to move,
-  `nano` lands them 1.94 apart where `omega` compresses them to 1.18, a 39%
-  squeeze on the range that carries colour and brightness. Same 4-D restriction
-  (SD/SDXL and Anima, not FLUX), same `euler` bypass below 7 steps, two fewer
-  convolutions per step than omega.
+- **`infinity_nano`** is upstream's `nano` branch, which is `infinity_omega`
+  with AVN and the DoG term removed. It is now the *older* of the two: upstream
+  has not touched it since 2026-07-24, so it also still carries the
+  pre-rework `σ_max < 8` gate on NQVP rather than omega's `< 5`. The two
+  constants only disagree on a partial-denoise SD img2img.
+
+  Nano and omega used to differ on Anima by the near-no-op DoG term alone, so
+  the choice barely registered there. AVN changed that — omega damps the
+  velocity every step on flow and nano does not — so **nano is now the
+  unstabilized option**: LPVD + AHFRI on Euler with nothing held back. That is
+  the configuration upstream's original flow-model comparisons were made in, if
+  you want to reproduce them. Same 4-D restriction (SD/SDXL and Anima, not
+  FLUX), same `euler` bypass below 7 steps, two fewer convolutions per step
+  than omega.
+
+- **`infinity_aether`** is upstream's newest branch (added 2026-07-30), built
+  on omega's stack. Everything omega does is still there — Euler, the pyramid,
+  the nano-band gain, NQVP on SD/SDXL, AVN everywhere — and the isotropic
+  difference-of-Gaussians term is replaced by a **material-aware** one. Each
+  step, nine Laws texture-energy filters label every pixel as flat, skin,
+  line art, or fabric, a contrast-invariant edge map scores faint edges as
+  strongly as bold ones, and the band-pass is weighted per class: line art
+  follows the edge maps, skin and fabric blend in an isotropic term to lift
+  micro-texture, flat regions are suppressed. On top of that: directional
+  shading on the coarse band masked to coherent structure, a normalization that
+  rescales the enhanced velocity back to its original energy so none of this
+  can push the trajectory, a decay that fades every enhancement to zero below
+  σ 0.15, and **stochastic grain** gated to low-coherence regions — the flat
+  walls and backgrounds where models tend to go smooth.
+
+  It is the closest thing in this family to what `realism` used to be, and the
+  right place to go for texture now. Seeds reproduce here (upstream's do not).
+
+  **Treat Anima results as unvalidated.** Every threshold in the branch — the
+  σ 0.80/0.15 decay knees, the σ ≥ 0.80 shading window, the grain's `0.25·σ`
+  capped at 0.08 — is an absolute number compared against raw sigma, and the
+  decay band alone spans nearly two thirds of a flow model's entire σ range
+  against under 5% of an SD model's. This is the same construction that made
+  old `realism` unusable on flow, though not the same severity: the grain here
+  is capped absolutely and gated to flat pixels, where realism's `0.2·σ` was
+  neither. Still, on flow this is substantially a different sampler from the
+  one upstream tuned, and the grain is proportionally much heavier relative to
+  what each step removes. **SD/SDXL and Anima only**, same 4-D reason as omega.
+  The most expensive sampler here — roughly 20 depthwise convolutions plus nine
+  5×5 Laws filters per step — though still small next to a real forward pass.
 
   The **`infinity` scheduler** (same project, all families) is `normal`'s
   linear timestep ramp warped by a sine perturbation: the first step's gap
