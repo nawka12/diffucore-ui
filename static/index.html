@@ -262,7 +262,7 @@
                   </button>
                   <button class="btn small" @click="invertMask()">Invert</button>
                   <button class="btn small" @click="clearMask()">Clear mask</button>
-                  <button class="btn small ico" @click="inputImage=null; maskImage=null; maskPainted=false" title="Change image" aria-label="Change image">
+                  <button class="btn small ico" @click="inputImage=null; maskImage=null" title="Change image" aria-label="Change image">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
                   </button>
@@ -394,6 +394,12 @@
               </template>
               <button class="btn small" type="button" @click="addDetailModel()">+ Add detection model</button>
             </div>
+            <label class="field">
+              <span>Negative prompt <small>(optional, blank = main negative prompt)</small></span>
+              <textarea class="autosize" x-model="detail.neg" rows="1"
+                        x-effect="autogrow($el, detail.neg)" @input="autogrow($el)"
+                        placeholder="negative prompt for detailer passes"></textarea>
+            </label>
             <p class="hint">Each model runs in sequence, refining the previous result.</p>
             <div class="slider">
               <div class="slider-head"><span>Confidence</span>
@@ -652,53 +658,18 @@
           <template x-if="!sweeping && !(busy && previewUrl) && resultUrl"><img :src="resultUrl" alt="result"></template>
           <template x-if="!sweeping && !(busy && previewUrl) && !resultUrl"><div class="placeholder">No image yet</div></template>
         </div>
-        <div class="info" x-text="sweeping ? xyzInfo : info"></div>
-        <button class="btn small wide" x-show="resultUrl && !sweeping && !busy" @click="openUpscale()">Upscale</button>
-      </div>
-
-      <!-- standalone upscale popover -->
-      <div class="upscale-pop" x-show="upscalePopover.open"
-           @keydown.escape.window="closeUpscale()" x-transition.opacity>
-        <div class="upscale-backdrop" @click="closeUpscale()"></div>
-        <div class="upscale-card">
-          <div class="upscale-head">
-            <span>Upscale image</span>
-            <button class="btn small" @click="closeUpscale()" aria-label="Close">✕</button>
-          </div>
-          <div class="slider">
-            <div class="slider-head"><span>Scale</span>
-              <input type="number" x-model.number="upscaleForm.scale" min="1.0" max="4.0" step="0.5"></div>
-            <input type="range" x-model.number="upscaleForm.scale" min="1.0" max="4.0" step="0.5">
-          </div>
-          <div class="slider">
-            <div class="slider-head"><span>Denoise</span>
-              <input type="number" x-model.number="upscaleForm.denoise" min="0.05" max="0.8" step="0.05"></div>
-            <input type="range" x-model.number="upscaleForm.denoise" min="0.05" max="0.8" step="0.05">
-          </div>
-          <div class="detail-grid">
-            <label class="field"><span>Tile size</span>
-              <input type="number" x-model.number="upscaleForm.tile" min="256" max="2048" step="64"></label>
-            <label class="field"><span>Overlap</span>
-              <input type="number" x-model.number="upscaleForm.overlap" min="0" max="512" step="16"></label>
-          </div>
-          <label class="field"><span>Base upscaler</span>
-            <select x-model="upscaleForm.base">
-              <option value="">Lanczos (soft, use higher denoise)</option>
-              <template x-for="u in upscalers" :key="u"><option :value="u" x-text="u"></option></template>
-            </select></label>
-          <p class="hint" x-show="upscaleForm.base">Sharp base: use low denoise (~0.2) to avoid duplicated subjects.</p>
-          <div class="slider">
-            <div class="slider-head"><span>TeaCache <small>(0 = off)</small></span>
-              <input type="number" x-model.number="upscaleForm.teacache" min="0.0" max="1.0" step="0.05"></div>
-            <input type="range" x-model.number="upscaleForm.teacache" min="0.0" max="1.0" step="0.05">
-          </div>
-          <textarea class="autosize" x-model="upscaleForm.prompt" rows="1"
-                    x-effect="autogrow($el, upscaleForm.prompt)" @input="autogrow($el)"
-                    placeholder="optional prompt"></textarea>
-          <button class="btn primary wide"
-                  @click="runUpscale()" :disabled="upscalePopover.busy"
-                  x-text="upscalePopover.busy ? 'Upscaling…' : 'Start upscale'"></button>
+        <div class="batch-strip" x-show="batchResults.length > 1 && !sweeping">
+          <template x-for="(b, i) in batchResults" :key="b.url">
+            <button type="button" class="batch-thumb" :class="{sel: resultUrl === b.url}"
+                    @click="resultUrl = b.url; lastSeed = b.seed"
+                    :aria-label="'Show batch image ' + (i + 1)">
+              <img :src="b.url" alt="" loading="lazy">
+            </button>
+          </template>
         </div>
+        <div class="info" :class="{err: (sweeping ? xyzInfo : info).startsWith('Error')}"
+             x-text="sweeping ? xyzInfo : info"></div>
+        <button class="btn small wide" x-show="resultUrl && !sweeping && !busy" @click="openUpscale()">Upscale</button>
       </div>
     </section>
 
@@ -730,7 +701,8 @@
       </template>
       <div class="gallery-sentinel" x-show="galleryLimit < gallery.length"
            x-init="observeSentinel($el)">Loading more…</div>
-      <p class="placeholder" x-show="gallery.length===0 && !gallerySearching">No outputs yet.</p>
+      <p class="placeholder" x-show="gallery.length===0 && !gallerySearching"
+         x-text="galleryQuery.trim() ? 'No images match your search.' : 'No outputs yet.'"></p>
       <p class="placeholder" x-show="gallery.length===0 && gallerySearching">Searching…</p>
     </section>
 
@@ -763,8 +735,12 @@
 
     </main>
 
-    <!-- ── GALLERY LIGHTBOX ───────────────────────────────────── -->
-    <div class="lightbox" x-show="lightbox.open" @keydown.window="lightboxKey($event)">
+  </div>
+
+  <!-- ── GALLERY LIGHTBOX ───────────────────────────────────── -->
+  <div class="lightbox" x-cloak x-show="lightbox.open" x-transition.opacity
+       x-effect="modalA11y($el, lightbox.open, 'Image viewer')"
+       @keydown.window="lightboxKey($event)" @keydown="modalTab($event, $el)">
       <div class="lb-backdrop" @click="closeLightbox()"></div>
       <button class="lb-close" @click="closeLightbox()" aria-label="Close">✕</button>
       <button class="lb-nav prev" x-show="gallery.length>1" @click="lbPrev()" aria-label="Previous image">‹</button>
@@ -798,8 +774,9 @@
     </div>
 
     <!-- ── settings modal ─────────────────────────────────────── -->
-    <div class="settings" x-show="settingsOpen" x-transition.opacity
-         @keydown.escape.window="settingsOpen=false">
+    <div class="settings" x-cloak x-show="settingsOpen" x-transition.opacity
+         x-effect="modalA11y($el, settingsOpen, 'Settings')"
+         @keydown.escape.window="settingsOpen=false" @keydown="modalTab($event, $el)">
       <div class="settings-backdrop" @click="settingsOpen=false"></div>
       <div class="settings-card">
         <div class="settings-head">
@@ -852,7 +829,7 @@
             </section>
 
             <!-- Sampler & scheduler knobs -->
-            <section class="settings-sec" x-show="settingsTab==='sampler'">
+            <section class="settings-sec" x-show="settingsTab==='sampler'" @change="saveSamplerSettings()">
               <div class="set-head">
                 <h3>Sampler &amp; scheduler defaults</h3>
               </div>
@@ -881,10 +858,11 @@
                   <input type="number" step="0.05" min="0.05" max="1" x-model.number="settings.cfg_interval_end">
                   <span class="field-tag">guidance interval</span></label>
               </div>
+              <p class="sub" x-show="settings.cfg_interval_start >= settings.cfg_interval_end"
+                 x-text="'CFG start must be below CFG end — changes save once the pair is valid.'"></p>
               <p class="set-foot">Guidance interval: apply CFG only between these fractions of the sampling
                 run. Outside the band the negative-prompt pass is skipped, saving a full model pass per
                 skipped step. 0 / 1 = every step. Anima + SD/SDXL (FLUX has no CFG pass).</p>
-              <button class="btn small primary" @click="saveSettings()">Save settings</button>
             </section>
 
             <!-- VAE decode -->
@@ -972,7 +950,7 @@ This executes arbitrary code; only enable it for sources you trust.">
                 <template x-for="e in extensions" :key="e.name">
                   <li class="ext-card" :class="{disabled: !e.enabled, errored: e.load_error}">
                     <div class="ext-card-head">
-                      <label class="chip on">
+                      <label class="chip" :class="{on: e.enabled}">
                         <input type="checkbox" :checked="e.enabled"
                                @change="toggleExtension(e.name, $event.target.checked)">
                       </label>
@@ -1010,6 +988,51 @@ This executes arbitrary code; only enable it for sources you trust.">
       </div>
     </div>
 
+  <!-- ── standalone upscale popover ───────────────────────────── -->
+  <div class="upscale-pop" x-cloak x-show="upscalePopover.open"
+       x-effect="modalA11y($el, upscalePopover.open, 'Upscale image')"
+       @keydown.escape.window="closeUpscale()" @keydown="modalTab($event, $el)"
+       x-transition.opacity>
+    <div class="upscale-backdrop" @click="closeUpscale()"></div>
+    <div class="upscale-card">
+      <div class="upscale-head">
+        <span>Upscale image</span>
+        <button class="btn small" @click="closeUpscale()" aria-label="Close">✕</button>
+      </div>
+      <div class="slider">
+        <div class="slider-head"><span>Scale</span>
+          <input type="number" x-model.number="upscaleForm.scale" min="1.0" max="4.0" step="0.5"></div>
+        <input type="range" x-model.number="upscaleForm.scale" min="1.0" max="4.0" step="0.5">
+      </div>
+      <div class="slider">
+        <div class="slider-head"><span>Denoise</span>
+          <input type="number" x-model.number="upscaleForm.denoise" min="0.05" max="0.8" step="0.05"></div>
+        <input type="range" x-model.number="upscaleForm.denoise" min="0.05" max="0.8" step="0.05">
+      </div>
+      <div class="detail-grid">
+        <label class="field"><span>Tile size</span>
+          <input type="number" x-model.number="upscaleForm.tile" min="256" max="2048" step="64"></label>
+        <label class="field"><span>Overlap</span>
+          <input type="number" x-model.number="upscaleForm.overlap" min="0" max="512" step="16"></label>
+      </div>
+      <label class="field"><span>Base upscaler</span>
+        <select x-model="upscaleForm.base">
+          <option value="">Lanczos (soft, use higher denoise)</option>
+          <template x-for="u in upscalers" :key="u"><option :value="u" x-text="u"></option></template>
+        </select></label>
+      <p class="hint" x-show="upscaleForm.base">Sharp base: use low denoise (~0.2) to avoid duplicated subjects.</p>
+      <div class="slider">
+        <div class="slider-head"><span>TeaCache <small>(0 = off)</small></span>
+          <input type="number" x-model.number="upscaleForm.teacache" min="0.0" max="1.0" step="0.05"></div>
+        <input type="range" x-model.number="upscaleForm.teacache" min="0.0" max="1.0" step="0.05">
+      </div>
+      <textarea class="autosize" x-model="upscaleForm.prompt" rows="1"
+                x-effect="autogrow($el, upscaleForm.prompt)" @input="autogrow($el)"
+                placeholder="optional prompt"></textarea>
+      <button class="btn primary wide"
+              @click="runUpscale()" :disabled="upscalePopover.busy"
+              x-text="upscalePopover.busy ? 'Upscaling…' : 'Start upscale'"></button>
+    </div>
   </div>
 
   <div class="toast" :class="'toast--' + toastKind" x-show="toast" x-cloak x-transition x-text="toast"

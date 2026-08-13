@@ -358,16 +358,6 @@ legend {
   margin-bottom: 6px;
 }
 .slider-head span { font-size: 12px; color: var(--txt-2); }
-.slider-num, input.slider-num {
-  width: 72px;
-  padding: 2px 8px;
-  font-size: 12px;
-  font-weight: 600;
-  text-align: right;
-  color: var(--accent);
-  background: var(--surface-3);
-  border: 1px solid var(--line-hi);
-}
 .slider-head input[type="number"] {
   width: 76px;
   padding: 2px 8px;
@@ -451,10 +441,10 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 }
 .btn.cancel {
   background: var(--danger);
-  color: #fff;
+  color: #111;
   border-color: transparent;
 }
-.btn.cancel:hover { background: var(--danger-dim); color: #fff; }
+.btn.cancel:hover { background: var(--danger-dim); color: #111; }
 
 /* ── generate layout ──────────────────────────────────────────── */
 .gen-layout {
@@ -505,6 +495,31 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   word-break: break-word;
   white-space: pre-wrap;
 }
+.info.err { color: var(--danger); }
+
+/* ── batch results strip ──────────────────────────────────────── */
+.batch-strip {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.batch-thumb {
+  flex: 0 0 auto;
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  border: 2px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--surface-2);
+  transition: border-color 120ms ease;
+}
+.batch-thumb:hover { border-color: var(--line-hi); }
+.batch-thumb.sel { border-color: var(--accent); }
+.batch-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 /* ── progress ─────────────────────────────────────────────────── */
 .progress { margin-top: 12px; }

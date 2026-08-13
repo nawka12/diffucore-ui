@@ -25,6 +25,11 @@ window.DiffucoreExt = (function () {
   return { tabs, settingsPanels, registerTab, registerSettingsPanel };
 })();
 
+// Modal-a11y bookkeeping lives outside the Alpine state object so DOM nodes
+// never pass through Alpine's reactive proxy (same reason the mask buffers
+// hang off the canvas element instead of the data object).
+const _modalState = { active: null, prevFocus: null };
+
 // ── fetch helper ──────────────────────────────────────────────────
 // fetch + JSON parse that fails loudly. A non-2xx response (e.g. a 500 whose
 // body is an HTML/text error page, not JSON) would otherwise blow up inside
@@ -104,7 +109,6 @@ document.addEventListener('alpine:init', () => {
     dragKey: null,
     maskBrush: 40,
     maskTool: 'brush',   // brush | eraser | rect
-    maskPainted: false,
     maskMax: false,      // fullscreen the input & mask editor
     maskZoom: 1,         // display zoom while maximized (1 = fit)
 
@@ -135,6 +139,7 @@ document.addEventListener('alpine:init', () => {
     cancelling: false,
     progress: { step: 0, total: 0 },
     resultUrl: null,
+    batchResults: [],       // thumbnails for a >1 batch: [{url, seed}] — the last one is shown
     previewUrl: null,
     preview: true,
     info: '',
@@ -683,7 +688,6 @@ document.addEventListener('alpine:init', () => {
         c._painting = false;
         c._dragging = false;
         c._undo = [];
-        this.maskPainted = false;
         this.redrawMask(c);
         this.applyMaskZoom();
       };
@@ -823,7 +827,6 @@ document.addEventListener('alpine:init', () => {
       mctx.lineTo(b.x, b.y);
       mctx.stroke();
       mctx.restore();
-      if (this.maskTool !== 'eraser') this.maskPainted = true;
       this.redrawMask(c);
     },
     fillRectMask(c, a, b) {
@@ -833,12 +836,11 @@ document.addEventListener('alpine:init', () => {
       const mctx = c._mask.getContext('2d');
       mctx.fillStyle = '#fff';
       mctx.fillRect(Math.min(a.x, b.x), Math.min(a.y, b.y), w, h);
-      this.maskPainted = true;
       this.redrawMask(c);
     },
     // Snapshot the mask before a mutating op so it can be undone. The first
-    // snapshot of any chain is the empty mask, so a non-empty undo stack
-    // means something is painted (drives maskPainted after undo).
+    // snapshot of any chain is the empty mask, so the stack itself never
+    // implies painted state — painted-ness is derived from the buffer instead.
     pushUndo(c) {
       const mctx = c._mask.getContext('2d');
       c._undo.push(mctx.getImageData(0, 0, c._mask.width, c._mask.height));
@@ -848,7 +850,6 @@ document.addEventListener('alpine:init', () => {
       const c = this.$refs.maskCanvas;
       if (!c || !c._undo || !c._undo.length) return;
       c._mask.getContext('2d').putImageData(c._undo.pop(), 0, 0);
-      this.maskPainted = c._undo.length > 0;
       this.redrawMask(c);
     },
     invertMask() {
@@ -865,7 +866,6 @@ document.addEventListener('alpine:init', () => {
       ictx.drawImage(m, 0, 0);
       mctx.clearRect(0, 0, m.width, m.height);
       mctx.drawImage(inv, 0, 0);
-      this.maskPainted = true;
       this.redrawMask(c);
     },
     clearMask() {
@@ -873,7 +873,6 @@ document.addEventListener('alpine:init', () => {
       if (!c || !c._base) return;
       this.pushUndo(c);
       c._mask.getContext('2d').clearRect(0, 0, c._mask.width, c._mask.height);
-      this.maskPainted = false;
       this.redrawMask(c);
     },
     // Flatten the transparent mask onto black → the white-on-black PNG the
@@ -888,6 +887,20 @@ document.addEventListener('alpine:init', () => {
       octx.fillRect(0, 0, o.width, o.height);
       octx.drawImage(c._mask, 0, 0);
       return o.toDataURL('image/png');
+    },
+
+    // Whether any painted pixels remain in the mask buffer. `_mask` is
+    // transparent where untouched and opaque white where painted, so one alpha
+    // scan is the source of truth — a sticky boolean can't track erase-to-
+    // empty, undo chains, or a full-mask-then-invert. Called before
+    // generating; a few ms on a 2K canvas, invisible next to the GPU work
+    // that follows.
+    maskHasCoverage(c) {
+      const m = c && c._mask;
+      if (!m) return false;
+      const d = m.getContext('2d').getImageData(0, 0, m.width, m.height).data;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 128) return true;
+      return false;
     },
 
     // ── auto-growing textareas ──────────────────────────────────
@@ -980,7 +993,12 @@ document.addEventListener('alpine:init', () => {
       if (this.mode === 'i2i' && !this.inputImage) { this.flash('Provide an input image'); return; }
       if (this.mode === 'inpaint') {
         if (!this.inputImage) { this.flash('Provide an input image'); return; }
-        if (!this.maskPainted) { this.flash('Paint a mask over the image'); return; }
+        // Authoritative check: the sticky flag can be stale (erased to empty,
+        // undo chain, inverted full mask) while the buffer holds no mask.
+        if (!this.maskHasCoverage(this.$refs.maskCanvas)) {
+          this.flash('Paint a mask over the image');
+          return;
+        }
         this.maskImage = this.exportMask();
       }
       this.busy = true;
@@ -988,6 +1006,7 @@ document.addEventListener('alpine:init', () => {
       this.progress = { step: 0, total: 0 };
       this.previewUrl = null;
       this.info = '';
+      this.batchResults = [];
       try {
         // Seamless OSS: calibrate this steps/size/shift on first use, then
         // generate — all under one click. Re-check status fresh so a just-changed
@@ -1046,7 +1065,15 @@ document.addEventListener('alpine:init', () => {
             else if (ev.type === 'cancelled') nCancel++;
           }
           if (lastDone) {
-            this.resultUrl = lastDone.image_url + '?t=' + Date.now();
+            // Keep every finished image so the strip below can flip through
+            // the batch; the canvas shows the last one (results arrive in
+            // submission order — FIFO completion on the single worker).
+            this.batchResults = results
+              .filter(ev => ev.type === 'done')
+              .map(ev => ({ url: ev.image_url + '?t=' + Date.now(), seed: ev.seed }));
+            this.resultUrl = this.batchResults.length
+              ? this.batchResults[this.batchResults.length - 1].url
+              : lastDone.image_url + '?t=' + Date.now();
             this.info = `Batch: ${nDone} done`
               + (nErr ? `, ${nErr} errored` : '')
               + (nCancel ? `, ${nCancel} cancelled` : '')
@@ -1135,6 +1162,7 @@ document.addEventListener('alpine:init', () => {
       this.progress = { step: 0, total: 0 };
       this.previewUrl = null;
       this.xyzInfo = '';
+      this.batchResults = [];
       const payload = {
         prompt: this.form.prompt, neg: this.form.neg,
         width: this.form.width, height: this.form.height,
@@ -1257,6 +1285,19 @@ document.addEventListener('alpine:init', () => {
         this.flash('Settings saved');
       } catch (e) { this.flash('Could not save settings'); }
     },
+    // Sampler-section auto-save, guarded: two fields form a pair the backend
+    // validates together (cfg_interval_start < cfg_interval_end), and a field
+    // mid-edit is briefly ''/null (Alpine .number) which the backend rejects.
+    // Skip the save while the section is in either state, so a two-field edit
+    // commits once both are set instead of toasting an error on every blur.
+    saveSamplerSettings() {
+      const s = this.settings;
+      const nums = [s.curvature, s.eta_max, s.beta_alpha, s.beta_beta,
+                    s.lq_threshold, s.cfg_interval_start, s.cfg_interval_end];
+      if (nums.some((n) => n == null || n === '' || Number.isNaN(n))) return;
+      if (s.cfg_interval_start >= s.cfg_interval_end) return;
+      this.saveSettings();
+    },
 
     async refreshTeacacheStatus() {
       try { this.teacacheStatus = await fetchJSON('/api/teacache_status'); }
@@ -1303,6 +1344,55 @@ document.addEventListener('alpine:init', () => {
     openSettings() {
       this.settingsOpen = true;
       this.refreshTeacacheStatus();
+    },
+
+    // ── modal a11y ─────────────────────────────────────────────
+    // Overlays (lightbox, settings, upscale popover) get dialog semantics, a
+    // Tab trap, and an `inert` app shell so keyboard focus and screen readers
+    // can't reach the page behind them. Wired via x-effect on each overlay.
+    modalA11y(el, open, label) {
+      if (!el) return;
+      if (open) {
+        if (_modalState.active === label) return;
+        _modalState.active = label;
+        el.setAttribute('role', 'dialog');
+        el.setAttribute('aria-modal', 'true');
+        if (label) el.setAttribute('aria-label', label);
+        _modalState.prevFocus = document.activeElement;
+        const shell = this.$root.querySelector('.shell');
+        if (shell) shell.setAttribute('inert', '');
+        this.$nextTick(() => {
+          const f = el.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+          if (f) f.focus();
+        });
+      } else if (_modalState.active === label) {
+        _modalState.active = null;
+        const shell = this.$root.querySelector('.shell');
+        if (shell) shell.removeAttribute('inert');
+        const prev = _modalState.prevFocus;
+        _modalState.prevFocus = null;
+        // The previously focused element can be hidden by the time we restore
+        // (the gallery→upscale handoff closes the lightbox behind the popover);
+        // .focus() on a display:none element no-ops and drops focus to <body>.
+        // Fall back to the header gear when the original isn't visible.
+        if (prev && prev.isConnected && prev.offsetParent !== null) {
+          prev.focus();
+        } else {
+          const gear = this.$root.querySelector('.topbar .gear');
+          if (gear) gear.focus();
+        }
+      }
+    },
+    // Keep Tab/Shift+Tab cycling inside the open dialog. Focus was moved in on
+    // open, so any Tab while focus is inside bubbles here and gets wrapped.
+    modalTab(e, el) {
+      if (e.key !== 'Tab') return;
+      const list = [...el.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+        .filter(f => !f.disabled && f.offsetParent !== null);
+      if (!list.length) return;
+      const first = list[0], last = list[list.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     },
 
     // Fit the TeaCache rescaling polynomial for the loaded Anima family. Long,
@@ -1408,6 +1498,7 @@ document.addEventListener('alpine:init', () => {
         if (ev.type === 'done') {
           this.previewUrl = null;
           this.resultUrl = ev.image_url + '?t=' + Date.now();
+          this.batchResults = [];   // the upscaled image replaces any batch strip
           this.info = ev.info;
           this.closeUpscale();
           // Surface the result on the Generate tab (no-op when already there),
@@ -1642,7 +1733,6 @@ document.addEventListener('alpine:init', () => {
         return;
       }
       this.maskImage = null;
-      this.maskPainted = false;
       await this._metaLoad;   // wait for this image's metadata on slow links
       this.applyFields(this.selectedFields);
       this.syncOutputSize(this.inputImage);
