@@ -112,6 +112,8 @@ SAMPLERS_SD = [
     "uni_pc",
     "uni_pc_bh2",
     "cogent",
+    "cogent3",
+    "cogent3_pump",
 ]
 _SAMPLERS_SD_ONLY = set()
 SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm" and s not in _SAMPLERS_SD_ONLY]
@@ -130,7 +132,7 @@ SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm" and s not in _SAMPLERS_SD
 # in the @21084d9 rewrite, so the sampler is deterministic now and the flow
 # restriction no longer applies — only the 4-D one does.
 _SAMPLERS_4D_ONLY = {"infinity_nano", "infinity_omega", "infinity_realism",
-                     "infinity_aether"}
+                     "infinity_aether", "cogent3_pump"}
 # euler_ancestral_anneal anneals eta with σ (full ancestral burn-in at high σ,
 # deterministic at low σ); Anima-only, aimed at rectified-flow merges.
 # secant_anneal is that annealed ancestral burn-in handing off to secant's
@@ -156,6 +158,25 @@ _SAMPLERS_4D_ONLY = {"infinity_nano", "infinity_omega", "infinity_realism",
 # ancestral burn-in for stochastic diversity / merge robustness. Its high-order
 # core amplifies injected noise, so it ships a low baked-in eta_max (0.2) and is
 # NOT wired to the shared eta_max panel knob (1.0 over-smooths it). Anima-only.
+# cogent3 is cogent's measured gate carried to third order: the deterministic
+# DPM-Solver++(3M) flow exponential integrator (dpmpp_3m_sde with eta=0, bit-for-
+# bit when both gates are identity) plus the *_anneal family's σ-annealed eta.
+# The 2nd-order term is gated by cogent's psi_1 = max((1+2·rho1)/3, 1−e^-h);
+# the 3rd-order term — a difference of differences, the noisiest quantity in the
+# family — by a new Wiener shrink psi_2 = (2+3·rho2)/5 on the coherence of
+# consecutive second differences, with no floor (worst case reverts to the gated
+# 2nd-order behaviour, so it can never be worse than cogent). Like cogent it is
+# family-agnostic (VE/flow) and prefers 24+ steps.
+# cogent3_pump is cogent3 plus infinity_aether's one load-bearing mechanism,
+# isolated and given a hard low-sigma shutoff: grain scaled by (1 - coherence)
+# added on top of the completed step, so the model must read structure out of it
+# in exactly the regions that have not yet committed. At high sigma that revises
+# coarse properties (mass, pose, proportion — aether's character-stature win);
+# at low sigma the same pump churns texture, which is why aether degrades
+# everything else. Gated to sigma_frac >= 0.45 (ramping from 0.70), amplitude
+# tied to absolute sigma so it scales across families — aether pins both to
+# SD-tuned constants and injects 0.0289 into the *finished* latent on a 24-step
+# flow schedule, 34x what it does on SDXL. 4-D only (2-D structure tensor).
 SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal",
                                   "dpmpp_2m_anneal", "uni_pc_anneal"]
 SAMPLERS_FLUX = [s for s in SAMPLERS_FLOW if s not in _SAMPLERS_4D_ONLY]

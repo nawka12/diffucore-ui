@@ -350,6 +350,76 @@ bugs, just how the model responds:
   which σ placement suits a real model depends on where that model's error lives,
   so it is worth an A/B on your own checkpoint.
 
+- **`cogent3`** is `cogent`'s idea carried to third order: the same measured
+  gate on the 2nd-order term (`psi_1 = max((1+2·rho_1)/3, 1 − e^−h)`) plus a
+  second measured gate on the 3rd-order term — a difference of differences, the
+  noisiest quantity in the family — scaled by `psi_2 = (2+3·rho_2)/5`, the
+  Wiener shrink on the coherence of consecutive *second* differences of the x0
+  history. With both gates pinned to 1 and `eta_max=0` it is bit-for-bit the
+  deterministic DPM-Solver++(3M) flow integrator (`dpmpp_3m_sde` with `eta=0`);
+  the point of the second gate is that on a rough / merged velocity field the
+  3rd-order term damps itself back to cogent's 2nd-order behaviour instead of
+  amplifying the model's error (the failure mode that made 3rd-order samplers
+  "go muddy or break" at low steps). **`psi_2` deliberately has no floor** — the
+  term is never load-bearing, so turning it fully off is not a failure mode —
+  and the first 3rd-order-capable step bootstraps `psi_2` from `psi_1`. Same
+  family knobs as cogent (`eta_max`, shared panel knob; `eta_max=0` is
+  deterministic), one model evaluation per step, all families, prefer 24+
+  steps. Offline benchmarked against a known ground truth
+  (`scripts/ab_cogent3.py`); real-image A/B pending. See `docs/cogent3.md`.
+
+- **`cogent3_pump`** is `cogent3` plus a **high-σ coherence pump** — the one
+  mechanism `infinity_aether` actually owes its coarse-structure strength to,
+  isolated from the band-pass stack it ships with and given a hard low-σ
+  shutoff. Aether adds grain scaled by `1 − C` (the structure-tensor coherence
+  of the denoised prediction) *on top of* a completed step, so the next model
+  call sees a latent noisier than the σ it is handed and has to explain the
+  excess as signal — a structure-generation pump aimed at exactly the regions
+  that have not committed yet, held off the contours that have. At high σ the
+  nearby modes it hops between differ in coarse properties (mass, pose,
+  proportion — why aether reads character stature well); at low σ they differ in
+  texture, which is why the same mechanism turns skin and gradients to mush.
+  So here it is gated: full strength above `sigma_frac` 0.70, ramped to zero at
+  0.45, **off below**, and it lives in the `σ_next != 0` branch so it can never
+  touch the final latent. Two constants are the whole difference from aether,
+  which pins both to SD-tuned absolutes: the *gate* uses the family-invariant
+  `σ` (flow) / `σ/(1+σ)` (VE) coordinate, and the *amplitude* scales with
+  absolute σ. (Measured: on a 24-step `flow` schedule aether's terminal floor
+  injects 0.0289 into the *finished* latent — 34× what the same code does on an
+  SDXL karras schedule, where the tail sits below its `σ > 0.02` gate. Running
+  aether under `beta_mix` or `smoothstep` avoids this, since both land their
+  last σ at 0.003–0.015; under plain `flow` it does not.) `pump_strength=0` is
+  bit-for-bit plain `cogent3`. 4-D only, so not available on FLUX. Same
+  `eta_max` panel knob as the rest of the family, at 28–32 steps. **Scheduler
+  pairing is a real trade, measured on images:** `beta_mix` wins prompt
+  coherency, `smoothstep` wins fine detail. The detail half is explained —
+  beta_mix's final λ steps are 1.90–2.10 against smoothstep's 1.373, 38–53%
+  coarser exactly where fine detail resolves, despite reaching a lower terminal
+  σ (0.0030 vs 0.0086). The coherency half is **not** explained: beta_mix
+  delivers *less* pump energy (0.88×) and fewer high-σ steps. The surviving
+  candidate is that it covers the same λ distance in the pumped band (10.5–10.7
+  for both) in fewer, bigger steps, so each injection gets 10–15% more
+  denoising before the next — a modest effect for a large perceptual gap, so
+  treat it as unproven.
+
+  **In practice the standout is prompt coherency**, not the character stature it
+  was built to chase (that improved too, but it is not the headline). That fits
+  the mechanism better than the original target: stature belongs to an object
+  the model has already decided to draw, so it lives in *coherent* structure the
+  `1 − C` weighting deliberately protects — whereas prompt adherence is about
+  what gets drawn at all in still-ambiguous regions, which is exactly what the
+  pump perturbs, forcing the CFG-guided model to re-answer "what belongs here?"
+  many more times than an accurate solver ever asks. A solver that commits to a
+  partly prompt-compliant layout will then refine *that* layout faithfully; it
+  has no mechanism to restructure. Two knock-on rules: if detail feels soft,
+  **raise** `pump_end` first (shut the pump off earlier — it earns its keep at
+  high σ), and don't set a CFG guidance interval that drops the uncond pass
+  inside the pumped band, since CFG re-deciding is the whole point.
+
+  Offline the coarse-structure gain sits inside noise (the toy never tested
+  prompt adherence); what does reproduce offline is that the low-σ shutoff costs
+  no coverage and gains sharpness over pumping all the way down.
+
 - **`stork2`** (STORK-2, ICLR 2026, arXiv:2505.24210 — clean-room) is a
   deterministic multistep solver built from a stabilized Runge–Kutta–Gegenbauer
   stage cascade driven by Taylor-extrapolated "virtual" stage velocities — still
