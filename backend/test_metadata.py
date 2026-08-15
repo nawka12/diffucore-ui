@@ -287,3 +287,52 @@ def test_format_swarmui_metadata_seed_override():
     import json
     blob = json.loads(md.format_swarmui_metadata(_BASE_GEN, _StubEngine(), seed=777))
     assert blob["sui_image_params"]["seed"] == 777
+
+
+# ── gallery NSFW rating (prompt-derived, drives the blur) ──────────
+
+def test_prompt_rating_tiers_and_false_positive_guards():
+    # Safe prompts stay below R — including substrings that would trip naive
+    # matching ("ass" in "badass", "anal" in "analog", "sex" in "sextant").
+    for p in ("portrait of a woman", "woman in bikini on the beach",
+              "a badass knight", "analog photography", "a sextant at sea",
+              "18-year-old student in class"):
+        assert md.prompt_rating(p) == "PG"
+    # R and up are blur-worthy.
+    for p in ("nude study", "topless portrait", "lingerie photoshoot",
+              "sexy pinup"):
+        assert md.prompt_is_nsfw(p)
+    assert md.prompt_rating("lingerie photoshoot") == "R"
+    assert md.prompt_rating("nsfw, explicit scene") == "X"
+    assert md.prompt_rating("hentai ahegao") == "X"
+    # XXX wins over X when both are present (most-restrictive tier).
+    assert md.prompt_rating("porn with gore") == "XXX"
+    # Underscore-glued tags still count.
+    assert md.prompt_rating("<lora:nsfw_v2:1.0> woman in underwear") == "X"
+    assert md.prompt_rating("nsfw_art, portrait") == "X"
+
+
+def test_prompt_rating_stems_match_word_forms():
+    # Stem entries ("masturbat-") must fire on their inflections. Spelled as a
+    # bare stem with a trailing \b they could never match anything, which
+    # silently punched holes in the fallback rating.
+    assert md.prompt_rating("masturbating") == "X"
+    assert md.prompt_rating("ejaculation") == "X"
+    assert md.prompt_rating("penetrating") == "X"
+    assert md.prompt_rating("seductive pose") == "R"
+    assert md.prompt_rating("necrophilia") == "XXX"
+    assert md.prompt_rating("zoophilia") == "XXX"
+    # "18+" ends in punctuation; a trailing \b would demand a word char after
+    # the "+" and never fire.
+    assert md.prompt_rating("a photo, 18+") == "X"
+    # Stems still can't swallow unrelated words that merely start the same way.
+    for p in ("assassin creed", "classic car", "cumulus clouds",
+              "a scatter plot", "glorious sunset", "analog photography"):
+        assert md.prompt_rating(p) == "PG", p
+
+
+def test_prompt_rating_ignores_negative_prompt():
+    # The negative prompt requests what the image must NOT contain — someone
+    # banning "nude" isn't generating nudity.
+    assert md.prompt_rating("a cat") == "PG"
+    assert md.prompt_rating("a cat\nNegative prompt: nude, gore") == "PG"

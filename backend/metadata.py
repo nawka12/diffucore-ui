@@ -21,6 +21,85 @@ from diffucore import __version__ as _DIFFUCORE_VERSION
 
 _ROOT = Path(__file__).resolve().parent.parent
 
+# ── NSFW content rating (gallery blur) ─────────────────────────────
+# Rating is derived from the generation prompt alone — no tagging, no model —
+# because an output's prompt is the one signal that reliably says what it
+# depicts. Tiered like Civitai's ratings so the gallery can blur "R and up".
+# _RATING_TIERS is ordered most-restrictive first; the first tier with a match
+# wins. Word-boundary regexes keep "ass" from firing on "badass" or "anal" on
+# "analysis". A trailing "-" marks a prefix stem ("masturbat-" covers
+# masturbating/masturbation) — without it a stem would need a word boundary
+# right after it and could never fire. False positives are cheap (a click
+# reveals); false negatives just stay unblurred.
+_RATING_TIERS: tuple = (
+    # XXX — gore and the extremes that make even explicit content a step further.
+    ("XXX", ("guro", "snuff", "necrophil-", "zoophil-", "bestiality", "scat",
+             "coprophag-", "gore", "lolita", "loli", "shota", "lolicon",
+             "shotacon", "underage", "child porn", "rape", "raped")),
+    # X — explicit sexual content.
+    ("X", ("nsfw", "18+", "explicit", "porn", "porno", "pornstar", "sex",
+           "sexual", "sexuality", "intercourse", "penetrat-", "fuck",
+           "fucking", "blowjob", "cunnilingus", "fellatio", "handjob",
+           "masturbat-", "orgasm", "ejaculat-", "cum", "cumshot", "creampie",
+           "pussy", "cock", "dick", "penis", "vagina", "vulva", "clitoris",
+           "anal", "boobjob", "titfuck", "paizuri", "bukkake",
+           "gangbang", "hentai", "ahegao", "incest", "bdsm", "domination",
+           "erotica", "xxx", "x-rated", "hardcore")),
+    # R — nudity / strong suggestion.
+    ("R", ("nude", "nudity", "nudist", "topless", "bottomless", "nipple",
+           "areola", "lingerie", "underwear", "panties", "thong", "cleavage",
+           "sexy", "seduct-", "risque", "skimpy", "scantily", "sensual",
+           "striptease", "burlesque", "naked", "booty", "ass",
+           "spanking")),
+)
+
+
+def _rating_alt(word: str) -> str:
+    """One alternative of a tier's regex, with the right boundaries.
+
+    A trailing "-" makes it a prefix stem (any word continuation matches); a
+    word ending in punctuation ("18+") gets no trailing ``\\b``, which would
+    demand a word character after the "+" and never match.
+    """
+    if word.endswith("-"):
+        return rf"\b{re.escape(word[:-1])}\w*"
+    tail = r"\b" if word[-1].isalnum() else ""
+    return rf"\b{re.escape(word)}{tail}"
+
+
+_RATING_RES: list = [
+    (tier, re.compile("|".join(_rating_alt(w) for w in words), re.IGNORECASE))
+    for tier, words in _RATING_TIERS
+]
+
+
+def prompt_rating(prompt: str) -> str:
+    """Classify a prompt as ``"PG" | "PG13" | "R" | "X" | "XXX"``.
+
+    PG13 when the prompt mentions age-gating or near-adult topics (the
+    boundary is fuzzy; keep anything plausibly safe below R). Only the
+    positive prompt is scanned — the negative prompt requests what the image
+    must NOT contain, so it never counts against an output.
+    """
+    text = prompt or ""
+    # A caller handing over the whole parameters string must not let the
+    # negative prompt (what the image must NOT contain) count against it.
+    text = text.split("\nNegative prompt: ", 1)[0]
+    # Underscores glue words together in prompt tags (<lora:nsfw_v2:1.0>,
+    # nsfw_art_style) — fold them to spaces so \b word boundaries still fire.
+    text = re.sub(r"[_]", " ", text)
+    for tier, res in _RATING_RES:
+        if res.search(text):
+            return tier
+    if re.search(r"\b(?:adult|mature)\b", text, re.IGNORECASE):
+        return "PG13"
+    return "PG"
+
+
+def prompt_is_nsfw(prompt: str) -> bool:
+    """``True`` when :func:`prompt_rating` lands on R or above (blur-worthy)."""
+    return prompt_rating(prompt) in ("R", "X", "XXX")
+
 
 def _git_short(cwd: Path) -> str:
     try:

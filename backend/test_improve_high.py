@@ -285,6 +285,396 @@ def test_gallery_delete_moves_to_trash(monkeypatch, tmp_path):
     assert resp["deleted"] == "01-01-2026/01-123.png"
 
 
+# ── gallery nsfw flags (prompt-derived rating for the blur) ──────────
+
+def _save_with_params(path, params: str) -> None:
+    """Save a tiny PNG whose ``parameters`` chunk carries ``params``."""
+    from PIL.PngImagePlugin import PngInfo
+    meta = PngInfo()
+    meta.add_text("parameters", params)
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(path, pnginfo=meta)
+
+
+def test_gallery_entries_carry_prompt_rating(monkeypatch, tmp_path):
+    import utils
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
+    # Re-save the fixture with generation metadata ("nude" → R → nsfw).
+    _save_with_params(
+        target,
+        "nude woman, portrait\nNegative prompt: landscape\n"
+        "Steps: 20, Sampler: euler, Seed: 1",
+    )
+    server._invalidate_gallery_index()
+    utils.invalidate_outputs_cache()
+
+    images = server.api_gallery()["images"]
+    assert len(images) == 1
+    e = images[0]
+    assert e["nsfw"] is True
+    assert e["rating"] == "R"
+    assert e["url"] == "/outputs/01-01-2026/01-123.png"
+
+    # A clean prompt stays unflagged (and "ass" inside "badass" must not fire).
+    _save_with_params(
+        out / "01-01-2026" / "01-124.png",
+        "a badass cat in a field\nSteps: 20, Sampler: euler, Seed: 2",
+    )
+    utils.invalidate_outputs_cache()
+    images = server.api_gallery()["images"]
+    assert len(images) == 2
+    sfw = next(i for i in images if i["name"] == "01-124.png")
+    assert sfw["nsfw"] is False
+    assert sfw["rating"] == "PG"
+
+    # The search path carries the same flags.
+    hit = server.api_gallery(q="nude")["images"]
+    assert len(hit) == 1 and hit[0]["nsfw"] is True
+
+
+# ── AI NSFW rating: cache, tag jobs, gallery scan ──────────────────
+
+@pytest.fixture
+def _isolated_ratings(monkeypatch, tmp_path):
+    """Point the rating cache at a throwaway file and reset the in-memory copy."""
+    monkeypatch.setattr(server, "_RATINGS_PATH", tmp_path / "ratings.json")
+    monkeypatch.setattr(server, "_RATINGS", None)
+    yield
+    monkeypatch.setattr(server, "_RATINGS", None)
+
+
+def _fake_tagger(rate):
+    class _Fake:
+        loaded = False
+        def load(self): self.loaded = True
+        def unload(self): self.loaded = False
+        def rate_one(self, path): return rate(path)
+    return _Fake()
+
+
+def test_gallery_index_prefers_vision_rating(monkeypatch, tmp_path, _isolated_ratings):
+    import utils
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
+    # Prompt says safe, so without a vision rating the image stays unblurred…
+    _save_with_params(target, "a cat\nSteps: 20, Sampler: euler, Seed: 1")
+    server._invalidate_gallery_index()
+    utils.invalidate_outputs_cache()
+    assert server._gallery_index()[0]["nsfw"] is False
+    # …but a cached vision verdict overrides the prompt.
+    server._store_ratings({"01-01-2026/01-123.png": {
+        "rating": "X", "nsfw": True, "conf": 0.9,
+        "key": server._image_key(target)}})
+    server._invalidate_gallery_index()
+    entry = server._gallery_index()[0]
+    assert entry["rating"] == "X"
+    assert entry["nsfw"] is True
+    # A file that changed since being rated busts the entry (falls back).
+    server._store_ratings({"01-01-2026/01-123.png": {
+        "rating": "X", "nsfw": True, "conf": 0.9, "key": "stale-key"}})
+    server._invalidate_gallery_index()
+    assert server._gallery_index()[0]["nsfw"] is False
+
+
+def test_cached_rating_invalidated_by_decision_version(monkeypatch, tmp_path,
+                                                       _isolated_ratings):
+    # A verdict cached under an older decision layer is stale once the layer
+    # changes — even with the file untouched — so the change takes effect
+    # without stale blur states.
+    import utils
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
+    server._store_ratings({"01-01-2026/01-123.png": {
+        "rating": "X", "nsfw": True, "conf": 0.5, "key": server._image_key(target)}})
+    assert server._cached_rating(target)["rating"] == "X"
+    # Simulate a decision-layer upgrade: the stored verdict is now stale.
+    monkeypatch.setattr(server.tagger_mod, "DECISION_VERSION",
+                        server.tagger_mod.DECISION_VERSION + 1)
+    assert server._cached_rating(target) is None
+    # A fresh re-rate under the new version is current again.
+    server._store_ratings({"01-01-2026/01-123.png": {
+        "rating": "PG", "nsfw": False, "conf": 0.9, "key": server._image_key(target)}})
+    assert server._cached_rating(target)["rating"] == "PG"
+
+
+def test_maybe_auto_rescan_rerates_stale_only(_isolated_queue, monkeypatch,
+                                              tmp_path, _isolated_ratings):
+    import utils
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
+    monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: True)
+    monkeypatch.setitem(server.SETTINGS, "nsfw_blur", True)
+    # Nothing rated → nothing stale → no rescan enqueued.
+    server._maybe_auto_rescan()
+    with server.QUEUE_LOCK:
+        assert len(server.QUEUE) == 0
+    # A current-version entry → still nothing to do.
+    server._store_ratings({"01-01-2026/01-123.png": {
+        "rating": "PG", "nsfw": False, "conf": 0.9, "key": server._image_key(target)}})
+    server._maybe_auto_rescan()
+    with server.QUEUE_LOCK:
+        assert len(server.QUEUE) == 0
+    # A stale-version entry → one re-rate job, lowest priority.
+    monkeypatch.setattr(server.tagger_mod, "DECISION_VERSION",
+                        server.tagger_mod.DECISION_VERSION + 1)
+    server._maybe_auto_rescan()
+    with server.QUEUE_LOCK:
+        job = server.QUEUE[0]
+    assert job.kind == "tag"
+    assert job.priority == -10
+
+
+def test_enqueue_tag_job_gated_by_setting_and_timm(_isolated_queue, monkeypatch,
+                                                   tmp_path, _isolated_ratings):
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: True)
+    monkeypatch.setitem(server.SETTINGS, "nsfw_blur", True)
+    assert server._enqueue_tag_job([target], "Rate") is not None
+    with server.QUEUE_LOCK:
+        job = server.QUEUE[0]
+    assert job.kind == "tag"
+    assert job.priority == -10  # never delays a generation
+    assert job.total == 1
+    # Blur off → nothing is queued (no rating wanted at all).
+    with server.QUEUE_LOCK:
+        server.QUEUE.clear()
+    monkeypatch.setitem(server.SETTINGS, "nsfw_blur", False)
+    assert server._enqueue_tag_job([target], "Rate") is None
+    with server.QUEUE_LOCK:
+        assert len(server.QUEUE) == 0
+    # timm missing → silently falls back to the prompt heuristic.
+    monkeypatch.setitem(server.SETTINGS, "nsfw_blur", True)
+    monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: False)
+    assert server._enqueue_tag_job([target], "Rate") is None
+
+
+def test_tag_job_run_rates_caches_and_invalidates(monkeypatch, tmp_path,
+                                                  _isolated_ratings):
+    import utils
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
+    monkeypatch.setattr(
+        server.tagger_mod, "TAGGER",
+        _fake_tagger(lambda path: {"rating": "R", "nsfw": True, "confidence": 0.9}))
+    monkeypatch.setattr(server, "_push", lambda ev: None)
+    patched = []
+    monkeypatch.setattr(server, "_gallery_index_patch_ratings",
+                        lambda r: patched.append(r))
+    job = server.Job("tag", "rate", lambda j: {})
+    job.total = 1
+    assert server._tag_job_run(job, [target]) == {"rated": 1}
+    # The index is patched in place, not dropped: rebuilding re-opens every PNG
+    # in outputs/, and a rating changes nothing but these two fields.
+    assert len(patched) == 1
+    assert patched[0]["01-01-2026/01-123.png"]["rating"] == "R"
+    entry = server._read_ratings()["01-01-2026/01-123.png"]
+    assert entry["rating"] == "R" and entry["nsfw"] is True
+    assert entry["key"] == server._image_key(target)
+
+
+def test_gallery_index_add_splices_without_rebuilding(monkeypatch, tmp_path,
+                                                      _isolated_ratings):
+    # A save must not drop the index — rebuilding re-opens every PNG under
+    # outputs/ (~1.4 s at 2.3k images), and _save_output runs every generation.
+    import utils
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
+    _save_with_params(target, "a cat\nSteps: 20, Sampler: euler, Seed: 1")
+    server._invalidate_gallery_index()
+    utils.invalidate_outputs_cache()
+    assert len(server._gallery_index()) == 1
+
+    # Reading a PNG now would be a rebuild; make that loud.
+    monkeypatch.setattr(server.md, "read_png_metadata",
+                        lambda p: pytest.fail("rebuilt the index instead of splicing"))
+    newer = out / "01-01-2026" / "01-124.png"
+    _save_with_params(newer, "nude woman\nSteps: 20, Sampler: euler, Seed: 2")
+    server._gallery_index_add(newer, "nude woman\nSteps: 20, Sampler: euler, Seed: 2")
+
+    index = server._gallery_index()
+    assert len(index) == 2
+    # Newest-first, matching scan_outputs().
+    assert index[0]["path"] == "01-01-2026/01-124.png"
+    assert index[0]["prompt"] == "nude woman"
+    assert index[0]["nsfw"] is True and index[0]["rating"] == "R"
+    assert index[1]["path"] == "01-01-2026/01-123.png"
+
+
+def test_gallery_index_add_is_a_noop_while_cold(monkeypatch, tmp_path,
+                                                _isolated_ratings):
+    # Cold index: the next read builds it from disk anyway, so the splice must
+    # not resurrect a half-populated one.
+    import utils
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
+    server._invalidate_gallery_index()
+    server._gallery_index_add(target, "a cat\nSteps: 20")
+    assert server._GALLERY_INDEX is None
+
+
+def test_gallery_index_patch_ratings_updates_in_place(monkeypatch, tmp_path,
+                                                      _isolated_ratings):
+    import utils
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
+    _save_with_params(target, "a cat\nSteps: 20, Sampler: euler, Seed: 1")
+    server._invalidate_gallery_index()
+    utils.invalidate_outputs_cache()
+    assert server._gallery_index()[0]["nsfw"] is False
+
+    server._gallery_index_patch_ratings(
+        {"01-01-2026/01-123.png": {"rating": "X", "nsfw": True},
+         "01-01-2026/not-indexed.png": {"rating": "X", "nsfw": True}})
+    entry = server._gallery_index()[0]
+    assert entry["rating"] == "X" and entry["nsfw"] is True
+    assert entry["prompt"] == "a cat"      # nothing else touched
+    assert len(server._gallery_index()) == 1   # unknown paths are skipped
+
+
+def test_auto_tag_coalesces_into_one_job(_isolated_queue, monkeypatch, tmp_path,
+                                         _isolated_ratings):
+    # One queue row per saved image would put 16 rows behind a batch and 26
+    # behind a 5x5 sweep. Saves accumulate instead, and flush as one job.
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: True)
+    monkeypatch.setitem(server.SETTINGS, "nsfw_blur", True)
+    monkeypatch.setattr(server, "_PENDING_TAG", [])
+    second = out / "01-01-2026" / "01-124.png"
+    Image.new("RGB", (8, 8)).save(second)
+
+    server._maybe_auto_tag(target)
+    server._maybe_auto_tag(second)
+    with server.QUEUE_LOCK:
+        assert len(server.QUEUE) == 0      # nothing queued yet
+
+    server._flush_pending_tags()
+    with server.QUEUE_LOCK:
+        assert len(server.QUEUE) == 1
+        job = server.QUEUE[0]
+    assert job.kind == "tag" and job.total == 2
+    assert job.label == "Rate NSFW (2 images)"
+    assert server._PENDING_TAG == []
+    # Flushing again with nothing pending adds no row.
+    with server.QUEUE_LOCK:
+        server.QUEUE.clear()
+    server._flush_pending_tags()
+    with server.QUEUE_LOCK:
+        assert len(server.QUEUE) == 0
+
+
+def test_pending_tags_wait_for_the_rest_of_the_queue(_isolated_queue, monkeypatch,
+                                                     tmp_path, _isolated_ratings):
+    # Mid-batch, the remaining generate jobs are still queued — flushing then
+    # would produce one tag job per image after all.
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: True)
+    monkeypatch.setitem(server.SETTINGS, "nsfw_blur", True)
+    monkeypatch.setattr(server, "_PENDING_TAG", [])
+    server._maybe_auto_tag(target)
+
+    server._enqueue(server.Job("generate", "gen 2", lambda j: {}))
+    server._flush_pending_tags()
+    with server.QUEUE_LOCK:
+        assert [j.kind for j in server.QUEUE] == ["generate"]
+    assert server._PENDING_TAG == [target]   # still held
+
+    # Once the generation is off the queue, the rating goes in.
+    with server.QUEUE_LOCK:
+        server.QUEUE.clear()
+    server._flush_pending_tags()
+    with server.QUEUE_LOCK:
+        assert [j.kind for j in server.QUEUE] == ["tag"]
+
+
+def test_gallery_scan_requires_blur_and_timm(_isolated_queue, monkeypatch,
+                                             tmp_path, _isolated_ratings):
+    from fastapi import HTTPException
+    _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: True)
+    monkeypatch.setitem(server.SETTINGS, "nsfw_blur", False)
+    with pytest.raises(HTTPException):
+        server.api_gallery_scan()
+    monkeypatch.setitem(server.SETTINGS, "nsfw_blur", True)
+    monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: False)
+    with pytest.raises(HTTPException):
+        server.api_gallery_scan()
+
+
+def test_gallery_scan_enqueues_job_and_skips_rated(_isolated_queue, monkeypatch,
+                                                   tmp_path, _isolated_ratings):
+    import utils
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
+    monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: True)
+    monkeypatch.setitem(server.SETTINGS, "nsfw_blur", True)
+    r = server.api_gallery_scan()
+    assert r["total"] == 1 and r["job"] is not None
+    with server.QUEUE_LOCK:
+        # Same lowest priority as the auto/rescan jobs: a full-gallery scan
+        # takes minutes and must never run ahead of a queued generation.
+        assert server.QUEUE[0].priority == -10
+    # Once rated (unchanged), the scan finds nothing to do.
+    server._store_ratings({"01-01-2026/01-123.png": {
+        "rating": "PG", "nsfw": False, "conf": 0.9,
+        "key": server._image_key(target)}})
+    with server.QUEUE_LOCK:
+        server.QUEUE.clear()
+    r2 = server.api_gallery_scan()
+    assert r2["job"] is None and r2["total"] == 0
+
+
+def test_tagger_status_reports_counts(monkeypatch, tmp_path, _isolated_ratings):
+    import utils
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
+    monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: True)
+    st = server.api_tagger_status()
+    assert st["available"] is True
+    assert st["total"] == 1 and st["rated"] == 0
+    server._store_ratings({"01-01-2026/01-123.png": {
+        "rating": "PG", "nsfw": False, "conf": 0.9,
+        "key": server._image_key(target)}})
+    assert server.api_tagger_status()["rated"] == 1
+    # Stale rows don't count: a stale verdict is exactly what a scan re-does,
+    # so counting it would report "all rated" with a rescan still pending.
+    monkeypatch.setattr(server.tagger_mod, "DECISION_VERSION",
+                        server.tagger_mod.DECISION_VERSION + 1)
+    assert server.api_tagger_status()["rated"] == 0
+    # Nor do rows for images that no longer exist (which could push rated past
+    # total and read as "2400 / 2320 rated").
+    monkeypatch.setattr(server.tagger_mod, "DECISION_VERSION",
+                        server.tagger_mod.DECISION_VERSION - 1)
+    server._store_ratings({"01-01-2026/gone.png": {
+        "rating": "X", "nsfw": True, "conf": 0.9, "key": "whatever"}})
+    st = server.api_tagger_status()
+    assert st["rated"] == 1 and st["total"] == 1
+
+
+def test_tag_job_cancel_keeps_what_it_already_rated(monkeypatch, tmp_path,
+                                                    _isolated_ratings):
+    # A full-gallery scan runs for minutes; cancelling it must persist the
+    # verdicts already computed instead of throwing the work away.
+    import utils
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
+    second = out / "01-01-2026" / "01-124.png"
+    Image.new("RGB", (8, 8)).save(second)
+
+    job = server.Job("tag", "rate", lambda j: {})
+    job.total = 2
+
+    def _rate(path):
+        job.cancel.set()   # cancel arrives right after the first image
+        return {"rating": "R", "nsfw": True, "confidence": 0.9}
+
+    monkeypatch.setattr(server.tagger_mod, "TAGGER", _fake_tagger(_rate))
+    monkeypatch.setattr(server, "_push", lambda ev: None)
+    monkeypatch.setattr(server, "_invalidate_gallery_index", lambda: None)
+    with pytest.raises(server._Cancelled):
+        server._tag_job_run(job, [target, second])
+    assert server._read_ratings()["01-01-2026/01-123.png"]["rating"] == "R"
+
+
 def test_purge_trash_removes_aged_entries(monkeypatch, tmp_path):
     _setup_outputs(tmp_path, monkeypatch)
     trash = tmp_path / "outputs" / ".trash"

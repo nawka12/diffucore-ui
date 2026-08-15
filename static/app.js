@@ -139,6 +139,14 @@ document.addEventListener('alpine:init', () => {
     cancelling: false,
     progress: { step: 0, total: 0 },
     resultUrl: null,
+    // NSFW blur on the Generate page: the fresh result is blurred when rated
+    // R-and-up (prompt-based verdict from the done event, refined by the AI
+    // tagger via "rated" events), until clicked. `genBlur` is the page toggle.
+    genBlur: true,
+    genReveal: false,          // user clicked the blurred result to reveal it
+    resultPath: null,          // outputs/… path of the currently shown result
+    _promptNsfw: {},           // path -> {nsfw, rating} from the done event
+    _visionNsfw: {},           // path -> {nsfw, rating} from the AI tagger (wins)
     batchResults: [],       // thumbnails for a >1 batch: [{url, seed}] — the last one is shown
     previewUrl: null,
     preview: true,
@@ -172,9 +180,14 @@ document.addEventListener('alpine:init', () => {
     // ── settings panel (global, non-per-image knobs) ────────────
     settingsOpen: false,
     settingsTab: 'teacache',
-    settings: { curvature: 0.25, eta_max: 1.0, beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, cfg_interval_start: 0.0, cfg_interval_end: 1.0, vae_tiling: 'auto', metadata_format: 'a1111', gen_defaults: null },
+    settings: { curvature: 0.25, eta_max: 1.0, beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, cfg_interval_start: 0.0, cfg_interval_end: 1.0, vae_tiling: 'auto', metadata_format: 'a1111', gen_defaults: null, nsfw_blur: true },
     teacacheStatus: { loaded: false, calibratable: false, family: null, coefficients: null },
     calibratingTea: false,
+    // WD tagger availability + rating progress (Settings → Gallery).
+    taggerStatus: { available: false, loaded: false, rated: 0, total: 0 },
+    // Id of THIS device's in-flight gallery-scan job (null when idle); its
+    // progress events keep taggerStatus.rated/total live in the Settings panel.
+    scanJob: null,
 
     // ── extensions ──────────────────────────────────────────────
     // `extensions` mirrors /api/extensions (list of installed exts). `extTabs`
@@ -200,6 +213,10 @@ document.addEventListener('alpine:init', () => {
     selectedMeta: '',
     selectedFields: {},
     lightbox: { open: false, index: 0, info: false },
+    // The lightbox shows NSFW-flagged images blurred until the user asks to see
+    // them (click on the image or the Reveal button). Reset on every
+    // navigation/open/close so a revealed image is never carried to the next.
+    lbReveal: false,
     deleteConfirm: false,   // two-click confirm in the lightbox Delete button
 
     // ── metadata reader ─────────────────────────────────────────
@@ -218,6 +235,11 @@ document.addEventListener('alpine:init', () => {
     },
     xyzGrids: [],
     xyzInfo: '',
+    // Grids share one prompt, so one verdict covers the whole sweep; `xyzPath`
+    // is the last grid's output path, so a later "rated" event can refine it.
+    xyzNsfw: null,             // {nsfw, rating} from the done event
+    xyzPath: null,
+    xyzReveal: false,
 
     toast: '',
     toastKind: 'info',     // info | success | error — drives the toast border colour
@@ -275,6 +297,36 @@ document.addEventListener('alpine:init', () => {
       const t = this.progress.total;
       return t > 0 ? Math.round((this.progress.step / t) * 100) : 0;
     },
+    // Verdict for the currently displayed result: the AI tagger's, once it
+    // lands, otherwise the instant prompt-based one from the done event.
+    get resultMeta() {
+      const p = this.resultPath;
+      if (!p) return null;
+      return this._visionNsfw[p] || this._promptNsfw[p] || null;
+    },
+    get resultNsfw() { return !!(this.resultMeta && this.resultMeta.nsfw); },
+    get resultRating() { return this.resultMeta ? this.resultMeta.rating : ''; },
+    get resultBlurred() {
+      return !!(this.genBlur && this.settings.nsfw_blur
+                && this.resultNsfw && !this.genReveal);
+    },
+    // Whether the NSFW blur applies at all right now (page toggle + setting).
+    get blurOn() { return !!(this.genBlur && this.settings.nsfw_blur); },
+    // Batch-strip thumbnail: blurred like a gallery thumbnail, independent of
+    // the canvas reveal — flipping to a thumb shows the big image blurred, so
+    // an unblurred strip would defeat it.
+    batchBlurred(b) {
+      if (!this.blurOn) return false;
+      const m = (b.path && this._visionNsfw[b.path]) || b.nsfw;
+      return !!(m && m.nsfw);
+    },
+    // X/Y/Z sweep: every grid shares the sweep's prompt, so one verdict (the
+    // AI one once it lands) covers them all.
+    get xyzMeta() {
+      return (this.xyzPath && this._visionNsfw[this.xyzPath]) || this.xyzNsfw || null;
+    },
+    get xyzNsfwFlag() { return !!(this.xyzMeta && this.xyzMeta.nsfw); },
+    get xyzBlurred() { return !!(this.blurOn && this.xyzNsfwFlag && !this.xyzReveal); },
     get progressLabel() {
       const t = this.progress.total;
       if (t <= 0) return 'Starting…';
@@ -329,6 +381,12 @@ document.addEventListener('alpine:init', () => {
       this.$watch('progress', apply);
       document.addEventListener('visibilitychange', () => {
         if (!document.hidden && this._titleDone) { this._titleDone = false; apply(); }
+      });
+      // Leaving the Generate tab re-blurs whatever was revealed there, the same
+      // way closing the lightbox does: a reveal is for looking at it now, not a
+      // state that survives a trip through the gallery and back.
+      this.$watch('tab', (t) => {
+        if (t !== 'generate') { this.genReveal = false; this.xyzReveal = false; }
       });
     },
 
@@ -404,12 +462,22 @@ document.addEventListener('alpine:init', () => {
           // tracks THIS device's own job (or one of its in-flight batch jobs),
           // so a queued device isn't shown another device's progress.
           this.runProg = { step: ev.step, total: ev.total };
+          // A gallery-scan rating job also live-updates the Settings badge.
+          if (ev.job === this.scanJob) {
+            this.taggerStatus.rated = ev.step;
+            this.taggerStatus.total = ev.total;
+          }
           if (ev.job === this.myJobId || this._myBatchIds.includes(ev.job))
             this.progress = { step: ev.step, total: ev.total, cell: ev.cell, cells: ev.cells };
           break;
         case 'preview':
           if (ev.job === this.myJobId || this._myBatchIds.includes(ev.job))
             this.previewUrl = ev.image;
+          break;
+        case 'rated':
+          // The AI tagger's verdict for a freshly saved output (per-save
+          // auto-tag). Refines the generate page's prompt-based blur.
+          if (ev.path) this._visionNsfw[ev.path] = { nsfw: !!ev.nsfw, rating: ev.rating };
           break;
         case 'done':
         case 'error':
@@ -1007,6 +1075,10 @@ document.addEventListener('alpine:init', () => {
       this.previewUrl = null;
       this.info = '';
       this.batchResults = [];
+      this.resultPath = null;
+      this.genReveal = false;
+      this._promptNsfw = {};
+      this._visionNsfw = {};
       try {
         // Seamless OSS: calibrate this steps/size/shift on first use, then
         // generate — all under one click. Re-check status fresh so a just-changed
@@ -1070,10 +1142,21 @@ document.addEventListener('alpine:init', () => {
             // submission order — FIFO completion on the single worker).
             this.batchResults = results
               .filter(ev => ev.type === 'done')
-              .map(ev => ({ url: ev.image_url + '?t=' + Date.now(), seed: ev.seed }));
-            this.resultUrl = this.batchResults.length
-              ? this.batchResults[this.batchResults.length - 1].url
-              : lastDone.image_url + '?t=' + Date.now();
+              .map(ev => ({
+                url: ev.image_url + '?t=' + Date.now(),
+                seed: ev.seed,
+                path: ev.path,
+                nsfw: { nsfw: !!ev.nsfw_prompt, rating: ev.prompt_rating },
+              }));
+            for (const ev of results) {
+              if (ev.type === 'done' && ev.path) {
+                this._promptNsfw[ev.path] = { nsfw: !!ev.nsfw_prompt, rating: ev.prompt_rating };
+              }
+            }
+            const shown = this.batchResults[this.batchResults.length - 1];
+            this.resultPath = shown.path;
+            this.genReveal = false;
+            this.resultUrl = shown.url;
             this.info = `Batch: ${nDone} done`
               + (nErr ? `, ${nErr} errored` : '')
               + (nCancel ? `, ${nCancel} cancelled` : '')
@@ -1090,6 +1173,9 @@ document.addEventListener('alpine:init', () => {
           if (ev.type === 'done') {
             this.previewUrl = null;
             this.resultUrl = ev.image_url + '?t=' + Date.now();
+            this.resultPath = ev.path || null;
+            if (ev.path) this._promptNsfw[ev.path] = { nsfw: !!ev.nsfw_prompt, rating: ev.prompt_rating };
+            this.genReveal = false;
             this.info = ev.info;
             this.lastSeed = ev.seed;
           } else if (ev.type === 'cancelled') {
@@ -1162,6 +1248,9 @@ document.addEventListener('alpine:init', () => {
       this.progress = { step: 0, total: 0 };
       this.previewUrl = null;
       this.xyzInfo = '';
+      this.xyzNsfw = null;
+      this.xyzPath = null;
+      this.xyzReveal = false;
       this.batchResults = [];
       const payload = {
         prompt: this.form.prompt, neg: this.form.neg,
@@ -1181,6 +1270,9 @@ document.addEventListener('alpine:init', () => {
         const ev = await this.submitJob('/api/xyz', payload);
         if (ev.type === 'done') {
           this.xyzGrids = ev.grids;
+          this.xyzPath = ev.path || null;
+          this.xyzNsfw = { nsfw: !!ev.nsfw_prompt, rating: ev.prompt_rating };
+          this.xyzReveal = false;
           this.xyzInfo = ev.info;
         } else if (ev.type === 'cancelled') {
           this.xyzInfo = 'Cancelled';
@@ -1304,6 +1396,42 @@ document.addEventListener('alpine:init', () => {
       catch (e) { this.teacacheStatus = { loaded: false, calibratable: false, family: null, coefficients: null }; }
     },
 
+    async refreshTaggerStatus() {
+      try { this.taggerStatus = await fetchJSON('/api/tagger_status'); }
+      catch (e) { this.taggerStatus = { available: false, loaded: false, rated: 0, total: 0 }; }
+    },
+
+    // Rate every gallery image that lacks an AI verdict (one queued job; the
+    // queue panel and the Settings badge show its progress). Resolves on the
+    // job's terminal event.
+    async scanGallery() {
+      if (this.scanJob) { this.flash('Already rating the gallery'); return; }
+      if (this.busy) return;
+      try {
+        const r = await fetchJSON('/api/gallery_scan', { method: 'POST' });
+        if (!r.job) { this.flash('All images already rated'); return; }
+        this.scanJob = r.job;
+        this.flash(`Rating ${r.total} images…`);
+        const ev = await new Promise((resolve) => { this._jobWaiters[r.job] = resolve; });
+        this.scanJob = null;
+        if (ev.type === 'done') {
+          this.flash(`Rated ${r.total} images`);
+          this.refreshTaggerStatus();
+          if (this.tab === 'gallery') this.searchGallery();
+        } else if (ev.type === 'error') {
+          this.flash('Rating failed: ' + ev.message);
+        }
+      } catch (e) {
+        this.scanJob = null;
+        this.flash('' + e);
+      }
+    },
+    // Live scan progress as a percent (for the Settings progress bar).
+    get scanPct() {
+      const t = this.taggerStatus.total;
+      return t > 0 ? Math.min(100, Math.round((this.taggerStatus.rated / t) * 100)) : 0;
+    },
+
     // Seed the Generate form from saved defaults, then re-validate the sampler/
     // scheduler against the current model type (so a default that doesn't apply
     // to the loaded family falls back instead of sticking an invalid value).
@@ -1344,6 +1472,7 @@ document.addEventListener('alpine:init', () => {
     openSettings() {
       this.settingsOpen = true;
       this.refreshTeacacheStatus();
+      this.refreshTaggerStatus();
     },
 
     // ── modal a11y ─────────────────────────────────────────────
@@ -1498,6 +1627,12 @@ document.addEventListener('alpine:init', () => {
         if (ev.type === 'done') {
           this.previewUrl = null;
           this.resultUrl = ev.image_url + '?t=' + Date.now();
+          // Carry the upscale's own verdict over, or the canvas would keep the
+          // *previous* result's blur state — showing an upscaled NSFW image
+          // unblurred (an upscale from the gallery has no previous result).
+          this.resultPath = ev.path || null;
+          if (ev.path) this._promptNsfw[ev.path] = { nsfw: !!ev.nsfw_prompt, rating: ev.prompt_rating };
+          this.genReveal = false;
           this.batchResults = [];   // the upscaled image replaces any batch strip
           this.info = ev.info;
           this.closeUpscale();
@@ -1637,9 +1772,14 @@ document.addEventListener('alpine:init', () => {
     openLightbox(i) {
       this.lightbox.index = i;
       this.lightbox.open = true;
+      this.lbReveal = false;
       this.selectImage(this.gallery[i]);
     },
-    closeLightbox() { this.lightbox.open = false; this.deleteConfirm = false; },
+    closeLightbox() {
+      this.lightbox.open = false;
+      this.deleteConfirm = false;
+      this.lbReveal = false;
+    },
     lbPrev() { this.lbGo(-1); },
     lbNext() { this.lbGo(1); },
     lbGo(d) {
@@ -1647,13 +1787,25 @@ document.addEventListener('alpine:init', () => {
       if (!n) return;
       this.deleteConfirm = false;   // reset the two-click confirm on navigation
       this.lightbox.index = (this.lightbox.index + d + n) % n;
+      this.lbReveal = false;
       this.selectImage(this.gallery[this.lightbox.index]);
+    },
+    // Click-to-reveal for a blurred NSFW image; re-clicking re-blurs. No-op
+    // when the image isn't blurred, so an un-blurred click still selects.
+    reveal() {
+      if (!this.lbReveal && !this.lbBlurred) return;
+      this.lbReveal = !this.lbReveal;
+    },
+    // Whether the current lightbox image is rendered blurred (NSFW + setting on).
+    get lbBlurred() {
+      return !!(this.selected && this.selected.nsfw && this.settings.nsfw_blur);
     },
     lightboxKey(e) {
       if (!this.lightbox.open) return;
       if (e.key === 'Escape') this.closeLightbox();
       else if (e.key === 'ArrowLeft') this.lbPrev();
       else if (e.key === 'ArrowRight') this.lbNext();
+      else if (e.key === 'r' || e.key === 'R') this.reveal();
     },
     lbTouchStart(e) { this._touchX = e.changedTouches[0].clientX; },
     lbTouchEnd(e) {
@@ -1713,6 +1865,7 @@ document.addEventListener('alpine:init', () => {
       // Step to the neighbor (clamp, since idx may now point past the end).
       const nextIdx = Math.min(idx, this.gallery.length - 1);
       this.lightbox.index = nextIdx;
+      this.lbReveal = false;   // same as navigation: never carry a reveal over
       this.selectImage(this.gallery[nextIdx]);
       this.flash('Deleted');
     },

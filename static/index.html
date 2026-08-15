@@ -629,6 +629,10 @@
         <label class="chip toggle preview-toggle" :class="{on: preview}">
           <input type="checkbox" x-model="preview"> Live preview
         </label>
+        <label class="chip toggle preview-toggle" :class="{on: genBlur}"
+               title="Blur freshly generated results rated R-and-up until clicked (needs the gallery blur setting on)">
+          <input type="checkbox" x-model="genBlur"> Blur NSFW
+        </label>
         <div class="progress" x-show="busy">
           <div class="bar"><div class="fill" :style="`transform:scaleX(${progressPct / 100})`"></div></div>
           <span class="progress-label"><span x-show="calibrating">Calibrating (one-time) · </span><span x-text="progressLabel"></span></span>
@@ -649,21 +653,70 @@
         <div class="canvas" :class="{stack: sweeping}">
           <template x-if="sweeping">
             <div class="grids">
-              <template x-for="(url,i) in xyzGrids" :key="i"><img :src="url" class="grid-img" alt="grid"></template>
+              <!-- first in the DOM so the sticky pill stays reachable above a
+                   tall stack of grids -->
+              <div class="grids-hint hint-pill" x-show="blurOn && xyzNsfwFlag && xyzGrids.length">
+                <span class="hint-pill-txt" x-show="xyzBlurred"
+                      x-text="'NSFW (' + ((xyzMeta && xyzMeta.rating) || '?') + ')'"></span>
+                <button type="button" class="eye-btn" @click="xyzReveal = !xyzReveal"
+                        :title="xyzBlurred ? 'Show grids' : 'Blur grids'"
+                        :aria-label="xyzBlurred ? 'Show grids' : 'Blur grids'">
+                  <svg x-show="xyzBlurred" viewBox="0 0 24 24" width="15" height="15" fill="none"
+                       stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"></path>
+                    <circle cx="12" cy="12" r="3"></circle>
+                  </svg>
+                  <svg x-show="!xyzBlurred" viewBox="0 0 24 24" width="15" height="15" fill="none"
+                       stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"></path>
+                    <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"></path>
+                    <line x1="1" y1="1" x2="23" y2="23"></line>
+                  </svg>
+                </button>
+              </div>
+              <template x-for="(url,i) in xyzGrids" :key="i">
+                <img :src="url" class="grid-img" :class="{blur: xyzBlurred}"
+                     @click="xyzReveal = true" alt="grid">
+              </template>
               <img x-show="busy && previewUrl" :src="previewUrl" class="preview-img" alt="preview">
               <div class="placeholder" x-show="xyzGrids.length===0 && !busy">No grid yet.</div>
             </div>
           </template>
           <template x-if="!sweeping && busy && previewUrl"><img :src="previewUrl" class="preview-img" alt="preview"></template>
-          <template x-if="!sweeping && !(busy && previewUrl) && resultUrl"><img :src="resultUrl" alt="result"></template>
+          <template x-if="!sweeping && !(busy && previewUrl) && resultUrl">
+            <div class="result-wrap">
+              <img :src="resultUrl" alt="result" :class="{blur: resultBlurred}"
+                   @click="genReveal = true">
+              <div class="lb-hint hint-pill"
+                   x-show="genBlur && settings.nsfw_blur && resultNsfw">
+                <span class="hint-pill-txt" x-show="resultBlurred"
+                      x-text="'NSFW (' + (resultRating || '?') + ')'"></span>
+                <button type="button" class="eye-btn" @click="genReveal = !genReveal"
+                        :title="resultBlurred ? 'Show image' : 'Blur image'"
+                        :aria-label="resultBlurred ? 'Show image' : 'Blur image'">
+                  <svg x-show="resultBlurred" viewBox="0 0 24 24" width="15" height="15" fill="none"
+                       stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"></path>
+                    <circle cx="12" cy="12" r="3"></circle>
+                  </svg>
+                  <svg x-show="!resultBlurred" viewBox="0 0 24 24" width="15" height="15" fill="none"
+                       stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"></path>
+                    <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"></path>
+                    <line x1="1" y1="1" x2="23" y2="23"></line>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </template>
           <template x-if="!sweeping && !(busy && previewUrl) && !resultUrl"><div class="placeholder">No image yet</div></template>
         </div>
         <div class="batch-strip" x-show="batchResults.length > 1 && !sweeping">
           <template x-for="(b, i) in batchResults" :key="b.url">
             <button type="button" class="batch-thumb" :class="{sel: resultUrl === b.url}"
-                    @click="resultUrl = b.url; lastSeed = b.seed"
+                    @click="resultUrl = b.url; lastSeed = b.seed; resultPath = b.path; genReveal = false"
                     :aria-label="'Show batch image ' + (i + 1)">
-              <img :src="b.url" alt="" loading="lazy">
+              <img :src="b.url" :class="{blur: batchBlurred(b)}" alt="" loading="lazy">
             </button>
           </template>
         </div>
@@ -690,10 +743,13 @@
           <h2 class="gallery-date" x-text="g.label"></h2>
           <div class="gallery-grid">
             <template x-for="item in g.images" :key="item.img.url">
-              <div class="thumb" :class="{sel: selected && selected.url===item.img.url}" @click="openLightbox(item.index)"
+              <div class="thumb" :class="{sel: selected && selected.url===item.img.url, blur: item.img.nsfw && settings.nsfw_blur}"
+                   @click="openLightbox(item.index)"
                    tabindex="0" role="button" :aria-label="'Open ' + item.img.name"
                    @keydown.enter="openLightbox(item.index)" @keydown.space.prevent="openLightbox(item.index)">
-                <img :src="'/api/thumb?path=' + encodeURIComponent(item.img.path)" :alt="item.img.name" loading="lazy">
+                <img class="thumb-img" :src="'/api/thumb?path=' + encodeURIComponent(item.img.path)" :alt="item.img.name" loading="lazy">
+                <span class="nsfw-badge" x-show="item.img.nsfw && settings.nsfw_blur"
+                      :title="'Rated ' + item.img.rating">NSFW</span>
               </div>
             </template>
           </div>
@@ -746,7 +802,29 @@
       <button class="lb-nav prev" x-show="gallery.length>1" @click="lbPrev()" aria-label="Previous image">‹</button>
       <button class="lb-nav next" x-show="gallery.length>1" @click="lbNext()" aria-label="Next image">›</button>
       <div class="lb-stage" @touchstart="lbTouchStart($event)" @touchend="lbTouchEnd($event)">
-        <template x-if="selected"><img class="lb-img" :src="selected.url" alt=""></template>
+        <template x-if="selected">
+          <img class="lb-img" :class="{blur: lbBlurred && !lbReveal}"
+               :src="selected.url" alt="" @click="reveal()">
+        </template>
+        <div class="lb-hint hint-pill" x-show="lbBlurred">
+          <span class="hint-pill-txt" x-show="!lbReveal"
+                x-text="'NSFW (' + (selected ? (selected.rating || '?') : '?') + ')'"></span>
+          <button type="button" class="eye-btn" @click="reveal()"
+                  :title="lbReveal ? 'Blur image' : 'Show image'"
+                  :aria-label="lbReveal ? 'Blur image' : 'Show image'">
+            <svg x-show="!lbReveal" viewBox="0 0 24 24" width="15" height="15" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+            <svg x-show="lbReveal" viewBox="0 0 24 24" width="15" height="15" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"></path>
+              <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"></path>
+              <line x1="1" y1="1" x2="23" y2="23"></line>
+            </svg>
+          </button>
+        </div>
       </div>
       <div class="lb-panel">
         <div class="lb-head">
@@ -790,6 +868,7 @@
             <button :class="{active: settingsTab==='sampler'}" @click="settingsTab='sampler'">Sampler &amp; scheduler</button>
             <button :class="{active: settingsTab==='vae'}" @click="settingsTab='vae'">VAE decode</button>
             <button :class="{active: settingsTab==='metadata'}" @click="settingsTab='metadata'">Metadata</button>
+            <button :class="{active: settingsTab==='gallery'}" @click="settingsTab='gallery'">Gallery</button>
             <button :class="{active: settingsTab==='defaults'}" @click="settingsTab='defaults'">Generate defaults</button>
             <button :class="{active: settingsTab==='extensions'}" @click="settingsTab='extensions'">Extensions</button>
           </nav>
@@ -898,6 +977,51 @@
               <p class="set-foot" x-show="settings.metadata_format==='swarmui'">SwarmUI's
                 <code>sui_image_params</code> JSON blob. Both formats load back into this app.</p>
               <p class="set-foot muted">Applies to new images only; existing images keep their format.</p>
+            </section>
+
+            <!-- Gallery safety -->
+            <section class="settings-sec" x-show="settingsTab==='gallery'">
+              <div class="set-head">
+                <h3>Gallery safety</h3>
+                <span class="set-badge" :class="{teal: settings.nsfw_blur}"
+                      x-text="settings.nsfw_blur ? 'On' : 'Off'"></span>
+                <span class="set-badge" :class="{accent: taggerStatus.available}"
+                      x-text="taggerStatus.available ? 'AI rating' : 'Prompt only'"
+                      :title="taggerStatus.available ? 'WD EVA02-Large Tagger v3' : 'timm not installed — blur uses prompt heuristics'"></span>
+              </div>
+              <p class="set-purpose">Blur gallery thumbnails and lightbox images rated R or above, so
+                NSFW outputs don't show at a glance. Every image is rated by the
+                WD EVA02-Large Tagger v3 (a 315M-param vision model) — a
+                diffusion-capable machine runs it in milliseconds — with the
+                prompt heuristic as fallback.</p>
+              <label class="chip" :class="{on: settings.nsfw_blur}">
+                <input type="checkbox" x-model="settings.nsfw_blur" @change="saveSettings()">
+                Blur R-rated and up
+              </label>
+              <p class="set-foot">New images are rated automatically in the background after each save.
+                Turning the blur off stops rating entirely and frees the model's VRAM.</p>
+              <template x-if="settings.nsfw_blur && taggerStatus.available">
+                <div>
+                  <div class="set-action">
+                    <button class="btn small primary" @click="scanGallery()"
+                            :disabled="busy || scanJob"
+                            x-text="scanJob ? 'Rating…' : 'Rate all images'"></button>
+                    <span class="set-foot inline"
+                          x-text="taggerStatus.total ? (taggerStatus.rated + ' / ' + taggerStatus.total + ' rated') : ''"></span>
+                  </div>
+                  <div class="set-progress" x-show="scanJob">
+                    <div class="set-progress-bar">
+                      <div class="set-progress-fill" :style="'width:' + scanPct + '%'"></div>
+                    </div>
+                    <span class="set-foot inline" x-text="scanPct + '%'"></span>
+                  </div>
+                </div>
+              </template>
+              <p class="set-foot muted" x-show="taggerStatus.available">First rating downloads the
+                model (~1.2 GB) from Hugging Face into its cache; later runs are offline.</p>
+              <p class="set-foot muted" x-show="!taggerStatus.available">Install the optional
+                <code>timm</code> package (included in <code>requirements.txt</code>) to enable
+                AI ratings. Until then, blur falls back to prompt-based detection.</p>
             </section>
 
             <!-- Generate form defaults -->

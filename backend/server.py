@@ -46,6 +46,7 @@ from utils import (
 )
 from xyz_grid import generate_xyz_grid, PARAM_TYPES as XYZ_PARAM_TYPES
 import metadata as md
+import tagger as tagger_mod
 from auth import (
     AuthGate, COOKIE_NAME, load_or_create_token, origin_ok, read_login_token,
     _STATE_CHANGE as _STATE_CHANGE_METHODS,
@@ -152,6 +153,67 @@ def _render_index() -> str:
     ).replace("__EXT_SCRIPTS__", _ext_script_tags())
 _THUMBS_DIR = _ROOT / ".cache" / "thumbs"  # lazily-built gallery-grid thumbnails
 THUMB_MAX = 384  # long-edge px; the grid uses these instead of the full PNGs
+
+# ── AI NSFW ratings (WD tagger, .cache/ratings.json) ─────────────────
+# Every output that's been vision-rated carries a row here, keyed by its
+# gallery path and validated against the file's mtime+size so an overwritten
+# image re-rates instead of reusing a stale verdict. The tagger itself lives
+# in tagger.py and is optional (timm); the prompt heuristic in metadata.py is
+# the fallback for unrated images.
+_RATINGS_PATH = _ROOT / ".cache" / "ratings.json"
+
+_RATINGS: Optional[dict] = None     # path -> {"rating","nsfw","conf","v","key"}
+_RATINGS_LOCK = threading.Lock()
+
+
+def _image_key(path: Path) -> str:
+    """mtime_ns+size fingerprint — same busting idea as the thumb cache."""
+    try:
+        st = path.stat()
+        return f"{st.st_mtime_ns}_{st.st_size}"
+    except OSError:
+        return ""
+
+
+def _read_ratings() -> dict:
+    global _RATINGS
+    if _RATINGS is None:
+        try:
+            _RATINGS = json.loads(_RATINGS_PATH.read_text())
+        except (OSError, ValueError):
+            _RATINGS = {}
+    return _RATINGS
+
+
+def _rating_current(entry: Optional[dict], path: Path) -> bool:
+    """Whether a cached entry still describes ``path``: same file (mtime+size
+    fingerprint) AND a current decision-layer version. A version mismatch —
+    e.g. after the rating logic changed — makes the verdict stale even though
+    the file is untouched, forcing a re-rate."""
+    return bool(entry and entry.get("key") == _image_key(path)
+                and entry.get("v") == tagger_mod.DECISION_VERSION)
+
+
+def _cached_rating(path: Path) -> Optional[dict]:
+    """The vision rating for ``path`` if it's still current on disk."""
+    rel = path.relative_to(OUTPUTS_DIR).as_posix()
+    entry = _read_ratings().get(rel)
+    if not _rating_current(entry, path):
+        return None
+    return {"rating": entry["rating"], "nsfw": entry["nsfw"],
+            "conf": entry.get("conf", 0.0)}
+
+
+def _store_ratings(entries: dict) -> None:
+    """Merge rated entries into the cache, stamp the decision version, and
+    persist atomically."""
+    with _RATINGS_LOCK:
+        cache = _read_ratings()
+        for rel, e in entries.items():
+            e["v"] = tagger_mod.DECISION_VERSION
+            cache[rel] = e
+        _atomic_write_text(_RATINGS_PATH, json.dumps(cache))
+
 
 # ── gallery soft-delete (#3) ──────────────────────────────────────────
 # DELETE /api/gallery moves files here instead of unlink()-ing them, so a
@@ -406,6 +468,11 @@ class Settings(BaseModel):
     metadata_format: str = "a1111"   # "a1111" | "swarmui"
     # Generate-form defaults seeded on load (None = use the app's built-in defaults).
     gen_defaults: Optional[GenDefaults] = None
+    # Gallery content safety: blur thumbnails and the lightbox image of outputs
+    # whose prompt rating is R or above (ratings are derived from the prompt,
+    # see metadata.prompt_rating). Pure display preference — the file is never
+    # touched, and a click reveals the image regardless.
+    nsfw_blur: bool = True
 
 
 class XYZPayload(BaseModel):
@@ -509,16 +576,22 @@ def _save_output(image: Image.Image, gen_kwargs: dict,
     meta_kwargs = {k: v for k, v in gen_kwargs.items() if k != "progress_callback"}
     formatter = (md.format_swarmui_metadata if SETTINGS.get("metadata_format") == "swarmui"
                  else md.format_metadata)
-    meta.add_text("parameters", formatter(meta_kwargs, ENGINE, detailer=detailer,
-                                          upscale=upscale, seed=seed))
+    params = formatter(meta_kwargs, ENGINE, detailer=detailer,
+                       upscale=upscale, seed=seed)
+    meta.add_text("parameters", params)
     image.save(out, pnginfo=meta)
-    # Invalidate the gallery search index so the new image is visible to the next
-    # search without waiting for the day-folder mtime to advance (covers
-    # same-second saves on 1s-mtime filesystems, and standalone upscale saves).
+    # Splice the new image into the gallery search index so it's visible to the
+    # next search without waiting for the day-folder mtime to advance (covers
+    # same-second saves on 1s-mtime filesystems, and standalone upscale saves)
+    # — and without re-opening every other PNG. Same string the rebuild would
+    # read back off disk, so both paths index it identically.
     # Also drop the outputs listing cache so the plain /api/gallery (no query)
     # sees the new file on the next open without re-walking the tree.
-    _invalidate_gallery_index()
+    _gallery_index_add(out, params)
     invalidate_outputs_cache()
+    # Rate the new output in the background (WD tagger) so its gallery entry
+    # carries an AI verdict on the next open — not just the prompt heuristic.
+    _maybe_auto_tag(out)
     return out
 
 
@@ -721,6 +794,12 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
         EXTENSIONS.run_hook("post_save", payload=p, image=image, path=out)
         return {
             "image_url": _output_url(out),
+            # The generate page blurs NSFW results: carry the output path and
+            # the instant prompt-based verdict now; the background AI rating
+            # refines it via a later "rated" SSE event.
+            "path": rel.as_posix(),
+            "nsfw_prompt": md.prompt_is_nsfw(clean_prompt),
+            "prompt_rating": md.prompt_rating(clean_prompt),
             "info": f"{lora_info}{info}  |  inference: {elapsed:.2f}s{upscale_info}{detail_info}  |  saved to {rel}",
             "seed": ENGINE.last_seed,
         }
@@ -762,7 +841,12 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
         for grid in grids:
             out = _save_output(grid, base_kwargs)
             urls.append(_output_url(out))
-        return {"grids": urls, "info": info}
+        return {
+            "grids": urls, "info": info,
+            "path": out.relative_to(OUTPUTS_DIR).as_posix(),
+            "nsfw_prompt": md.prompt_is_nsfw(p.prompt),
+            "prompt_rating": md.prompt_rating(p.prompt),
+        }
     finally:
         if swaps_model and LAST_LOAD_FORM:
             try:
@@ -1013,6 +1097,112 @@ def _enqueue(job: Job) -> None:
     _broadcast_queue()
 
 
+# ── AI NSFW rating jobs (kind "tag") ────────────────────────────────
+# Runs the WD tagger over saved outputs on the shared worker so it never
+# races the GPU, feeds progress to the queue panel, and stores results in the
+# rating cache. Tag jobs have the lowest priority: a rating can always wait
+# behind a generation, never the other way round.
+
+def _tag_job_run(job: Job, paths: List[Path], notify: bool = False) -> dict:
+    """Rate ``paths``, cache the results, and refresh the gallery index.
+
+    ``notify`` broadcasts each verdict as a ``rated`` event so the generate page
+    can swap its prompt-based blur for the AI one. Auto-tag jobs (bounded by a
+    batch or a sweep) set it; a full-gallery scan doesn't — thousands of events
+    for images nobody is looking at, when the gallery just re-reads the index.
+    """
+    tagger_mod.TAGGER.load()
+    total = max(1, job.total or len(paths))
+    rated = 0
+
+    def _flush(entries: dict) -> None:
+        _store_ratings(entries)
+        # A rating changes nothing else about an entry, so patch the index
+        # rather than dropping it and re-opening every PNG in outputs/.
+        _gallery_index_patch_ratings(entries)
+        if notify:
+            for rel, e in entries.items():
+                _push({"type": "rated", "path": rel,
+                       "rating": e["rating"], "nsfw": e["nsfw"]})
+
+    entries: dict = {}
+    for i, p in enumerate(paths):
+        if job.cancel.is_set():
+            # Persist what's already been rated: a full-gallery scan takes
+            # minutes, and cancelling it must not throw that work away.
+            if entries:
+                _flush(entries)
+            raise _Cancelled
+        r = tagger_mod.TAGGER.rate_one(p)
+        if r is not None:
+            entries[p.relative_to(OUTPUTS_DIR).as_posix()] = {
+                "rating": r["rating"], "nsfw": r["nsfw"],
+                "conf": round(r["confidence"], 4), "key": _image_key(p),
+            }
+        job.step = i + 1
+        if i % 8 == 0:  # throttle: a 5k-image scan shouldn't flood the stream
+            _push({"type": "progress", "job": job.id, "step": job.step, "total": total})
+        if len(entries) >= 64:  # checkpoint, so a crash mid-scan keeps progress
+            _flush(entries)
+            rated += len(entries)
+            entries = {}
+    rated += len(entries)
+    if entries:
+        _flush(entries)
+    return {"rated": rated}
+
+
+def _enqueue_tag_job(paths: List[Path], label: str,
+                     notify: bool = False) -> Optional[int]:
+    """Queue a background rating for ``paths``, or None when the feature is
+    off / the tagger isn't installed (the prompt heuristic still covers it)."""
+    if not paths or not SETTINGS.get("nsfw_blur") or not tagger_mod.timm_available():
+        return None
+    job = Job("tag", label, lambda j: _tag_job_run(j, paths, notify=notify),
+              priority=-10)
+    job.total = len(paths)
+    _enqueue(job)
+    return job.id
+
+
+# Outputs saved since the last flush, waiting to be rated as one job. Enqueuing
+# per image would put a queue row (and a queue broadcast) behind every saved
+# file — 16 for a batch, 26 for a 5×5 sweep — burying the panel under the
+# ratings for work the user already watched finish.
+_PENDING_TAG: List[Path] = []
+_PENDING_TAG_LOCK = threading.Lock()
+
+
+def _maybe_auto_tag(path: Path) -> None:
+    """Hook for _save_output: queue a freshly saved image for background rating.
+    Best-effort — a missing tagger silently keeps the prompt rating."""
+    if not SETTINGS.get("nsfw_blur") or not tagger_mod.timm_available():
+        return
+    with _PENDING_TAG_LOCK:
+        _PENDING_TAG.append(path)
+
+
+def _flush_pending_tags() -> None:
+    """Enqueue one rating job for everything saved since the last flush.
+
+    Called by the worker after each job, but only once no other work is left:
+    a batch is N separate generate jobs, so flushing eagerly would still make N
+    tag jobs. Waiting for the queue to drain collapses the whole batch — or the
+    whole sweep — into a single row, and keeps ratings off the GPU's back.
+    """
+    with QUEUE_LOCK:
+        if any(j.kind != "tag" for j in QUEUE):
+            return
+    with _PENDING_TAG_LOCK:
+        paths = _PENDING_TAG[:]
+        _PENDING_TAG.clear()
+    if not paths:
+        return
+    label = (f"Rate NSFW: {paths[0].name}" if len(paths) == 1
+             else f"Rate NSFW ({len(paths)} images)")
+    _enqueue_tag_job(paths, label, notify=True)
+
+
 # ── extension platform ──────────────────────────────────────────────
 # The loader is constructed with callables back into the server's queue and SSE
 # stream so extensions can enqueue GPU-sharing jobs and broadcast events without
@@ -1051,6 +1241,15 @@ def _worker() -> None:
             continue
         job.status = "running"
         _broadcast_queue()
+        # A tag job is the only kind that uses the WD tagger. It stays resident
+        # across jobs (an X/Y/Z grid's per-cell ratings don't reload it N times)
+        # except when the loaded model streams its backbone — the VRAM-tight
+        # mode — where its ~600 MB would OOM the next generation. This reads the
+        # *active* mode, not recommended_offload(): FLUX streams on any card, so
+        # the recommendation would miss exactly the case this guards.
+        if (job.kind != "tag" and tagger_mod.TAGGER.loaded
+                and ENGINE.active_offload == "stream"):
+            tagger_mod.TAGGER.unload()
         try:
             result = job.run(job)
             job.status = "done"
@@ -1071,6 +1270,12 @@ def _worker() -> None:
         finally:
             with QUEUE_LOCK:
                 CURRENT = None
+            # Whatever this job saved gets rated as one job, once the queue has
+            # nothing else to do. Never let it break the worker loop.
+            try:
+                _flush_pending_tags()
+            except Exception as e:  # noqa: BLE001 — best-effort background work
+                log.warning("could not queue background rating: %s", e)
             _broadcast_queue()
 
 
@@ -1204,6 +1409,12 @@ async def _startup():
     global APP_LOOP
     APP_LOOP = asyncio.get_running_loop()
     threading.Thread(target=_worker, daemon=True).start()
+    # A rating-decision upgrade invalidates every cached verdict — re-rate the
+    # gallery in the background so the new logic applies without a manual scan.
+    try:
+        _maybe_auto_rescan()
+    except Exception as e:  # noqa: BLE001 — startup must never fail on this
+        log.warning("[startup] gallery re-rate not enqueued: %s", e)
     # Load every enabled extension and mount its routes/statics into the app.
     # Done at startup (not import) so a manifest edit between imports and the
     # server actually starting is picked up, and so the app object exists.
@@ -1564,6 +1775,9 @@ async def api_upscale(p: UpscalePayload):
         rel = out.relative_to(OUTPUTS_DIR)
         return {
             "image_url": _output_url(out),
+            "path": rel.as_posix(),
+            "nsfw_prompt": md.prompt_is_nsfw(p.prompt),
+            "prompt_rating": md.prompt_rating(p.prompt),
             "info": f"{unote}  |  saved to {rel}",
             "seed": seed,
         }
@@ -1620,7 +1834,74 @@ def api_save_settings(s: Settings):
     # Apply the VAE-tiling choice to the already-loaded model so it takes effect
     # without a reload (future loads pick it up via _do_load).
     ENGINE.apply_vae_tiling(SETTINGS["vae_tiling"] == "always")
+    # Turning the blur off means no rating is wanted — drop the tagger's VRAM
+    # so the next generation gets the whole card.
+    if not SETTINGS["nsfw_blur"]:
+        tagger_mod.TAGGER.unload()
     return SETTINGS
+
+
+# ── AI NSFW rating: status + full-gallery scan ─────────────────────
+
+@app.get("/api/tagger_status")
+def api_tagger_status():
+    """Whether the WD tagger is usable and how many outputs are already rated.
+
+    ``rated`` counts current verdicts for outputs that still exist — not raw
+    cache rows, which would keep counting deleted images and stale (superseded
+    decision-layer) entries and report "everything rated" with a rescan pending.
+    It is exactly ``total`` minus what a scan would re-do."""
+    files = scan_outputs()
+    rated = sum(1 for f in files if _cached_rating(f) is not None)
+    return {"available": tagger_mod.timm_available(),
+            "loaded": tagger_mod.TAGGER.loaded,
+            "rated": rated, "total": len(files)}
+
+
+@app.post("/api/gallery_scan")
+def api_gallery_scan():
+    """Rate every output that lacks a current rating, as one low-priority job.
+
+    Uses the cached outputs list, so it skips already-rated images whose file
+    hasn't changed. Progress streams to the queue panel like any job."""
+    if not SETTINGS.get("nsfw_blur"):
+        raise HTTPException(400, "Enable 'Blur R-rated and up' in Settings first")
+    if not tagger_mod.timm_available():
+        raise HTTPException(400, "The WD tagger needs the optional 'timm' package — pip install timm")
+    paths = []
+    for f in scan_outputs():
+        rel = f.relative_to(OUTPUTS_DIR).as_posix()
+        if not _rating_current(_read_ratings().get(rel), f):
+            paths.append(f)
+    if not paths:
+        return {"job": None, "total": 0}
+    job = Job("tag", f"Rate NSFW gallery ({len(paths)} images)",
+              lambda j: _tag_job_run(j, paths), priority=-10)
+    job.total = len(paths)
+    _enqueue(job)
+    return {"job": job.id, "total": len(paths)}
+
+
+def _maybe_auto_rescan() -> None:
+    """After a decision-layer upgrade (DECISION_VERSION bump) every cached
+    verdict is stale; re-rate the gallery once, at the lowest priority, so the
+    fix applies without the user having to find the button. No-op when the
+    feature is off, timm is missing, or nothing is stale."""
+    if not SETTINGS.get("nsfw_blur") or not tagger_mod.timm_available():
+        return
+    ratings = _read_ratings()
+    if not ratings:
+        return
+    if all(e.get("v") == tagger_mod.DECISION_VERSION for e in ratings.values()):
+        return
+    paths = [f for f in scan_outputs()
+             if not _rating_current(ratings.get(f.relative_to(OUTPUTS_DIR).as_posix()), f)]
+    if not paths:
+        return
+    job = Job("tag", f"Re-rate NSFW gallery ({len(paths)} images)",
+              lambda j: _tag_job_run(j, paths), priority=-10)
+    job.total = len(paths)
+    _enqueue(job)
 
 
 # ── extension management ────────────────────────────────────────────
@@ -1783,21 +2064,27 @@ def api_gallery(q: str = ""):
 
     ``q`` matches case-insensitively across the parsed prompt, negative prompt,
     model name, sampler and scheduler fields. When empty, every output is
-    returned (the existing behaviour). Search uses a cached metadata index that
-    rebuilds when the outputs directory's newest folder mtime advances — so a
-    newly saved image shows up on the next search without a manual refresh."""
+    returned (the existing behaviour). Every entry carries an ``nsfw`` flag (and
+    the underlying ``rating``) derived from the image's prompt metadata, so the
+    frontend can blur R-rated-and-up content without extra requests.
+
+    Both paths read through the cached index so the flag doesn't add a PNG-open
+    per request; the index rebuilds when the outputs directory's newest folder
+    mtime advances — so a newly saved image shows up on the next search without
+    a manual refresh."""
+    def dto(entry):
+        return {
+            "url": f"/outputs/{entry['path']}",
+            "name": entry["name"],
+            "path": entry["path"],
+            "date": entry["date"],
+            "nsfw": entry["nsfw"],
+            "rating": entry["rating"],
+        }
     query = (q or "").strip().lower()
     if not query:
-        return {"images": [
-            {
-                "url": _output_url(f),
-                "name": f.name,
-                "path": f.relative_to(OUTPUTS_DIR).as_posix(),
-                "date": f.parent.name,
-            }
-            for f in scan_outputs()
-        ]}
-    return {"images": _gallery_search(query)}
+        return {"images": [dto(e) for e in _gallery_index()]}
+    return {"images": [dto(e) for e in _gallery_search(query)]}
 
 
 # ── gallery search index ────────────────────────────────────────────
@@ -1813,6 +2100,39 @@ _GALLERY_INDEX_KEY: float = 0.0
 _GALLERY_INDEX_LOCK = threading.Lock()
 
 
+def _outputs_dir_mtime() -> float:
+    """Newest date-folder mtime under outputs/ — the index's freshness key."""
+    try:
+        return max(
+            (d.stat().st_mtime for d in OUTPUTS_DIR.iterdir() if d.is_dir()),
+            default=0.0,
+        )
+    except OSError:
+        return 0.0
+
+
+def _index_entry(f: Path, fields: dict) -> dict:
+    """One index row from a file and its parsed AUTO1111 fields."""
+    # Vision rating (WD tagger) wins when this file has been rated and hasn't
+    # changed since; otherwise fall back to the prompt heuristic.
+    rating = md.prompt_rating(str(fields.get("prompt", "")))
+    vis = _cached_rating(f)
+    if vis:
+        rating = vis["rating"]
+    return {
+        "path": f.relative_to(OUTPUTS_DIR).as_posix(),
+        "name": f.name,
+        "date": f.parent.name,
+        "prompt": str(fields.get("prompt", "")),
+        "neg": str(fields.get("negative_prompt", "")),
+        "model": str(fields.get("model", "")),
+        "sampler": str(fields.get("sampler", "")),
+        "scheduler": str(fields.get("scheduler", "")),
+        "rating": rating,
+        "nsfw": rating in ("R", "X", "XXX"),
+    }
+
+
 def _invalidate_gallery_index() -> None:
     global _GALLERY_INDEX, _GALLERY_INDEX_KEY
     with _GALLERY_INDEX_LOCK:
@@ -1820,32 +2140,55 @@ def _invalidate_gallery_index() -> None:
         _GALLERY_INDEX_KEY = 0.0
 
 
+def _gallery_index_add(path: Path, params: str) -> None:
+    """Splice a just-saved output into the cached index instead of dropping it.
+
+    A rebuild re-opens every PNG under outputs/ (1.4 s at ~2.3k images, and it
+    grows), and _save_output runs on every generation — so invalidating here
+    made the plain gallery open right after generating always pay for a full
+    rebuild. ``params`` is the metadata string we just wrote, so this costs one
+    parse and no file I/O. Newest-first, matching ``scan_outputs()``.
+
+    No-op while the index is cold: the next read builds it from disk anyway.
+    """
+    global _GALLERY_INDEX_KEY
+    with _GALLERY_INDEX_LOCK:
+        if _GALLERY_INDEX is None:
+            return
+        _GALLERY_INDEX.insert(0, _index_entry(path, md.parse_metadata(params)))
+        # Our own save bumped the date folder's mtime; adopt it, or the very
+        # next read would see a newer key and rebuild after all.
+        _GALLERY_INDEX_KEY = _outputs_dir_mtime()
+
+
+def _gallery_index_patch_ratings(ratings: dict) -> None:
+    """Update the rating fields of already-indexed rows, keyed by relative path.
+
+    A tag job changes nothing else about an entry, so a background rating has no
+    reason to force a full rebuild. Rows the index doesn't know about are
+    skipped — it will pick them up when it is next built.
+    """
+    with _GALLERY_INDEX_LOCK:
+        if _GALLERY_INDEX is None:
+            return
+        by_path = {e["path"]: e for e in _GALLERY_INDEX}
+        for rel, r in ratings.items():
+            entry = by_path.get(rel)
+            if entry is not None:
+                entry["rating"] = r["rating"]
+                entry["nsfw"] = bool(r["nsfw"])
+
+
 def _gallery_index() -> list:
     global _GALLERY_INDEX, _GALLERY_INDEX_KEY
-    try:
-        newest = max(
-            (d.stat().st_mtime for d in OUTPUTS_DIR.iterdir() if d.is_dir()),
-            default=0.0,
-        )
-    except OSError:
-        newest = 0.0
+    newest = _outputs_dir_mtime()
     with _GALLERY_INDEX_LOCK:
         if _GALLERY_INDEX is not None and newest <= _GALLERY_INDEX_KEY:
             return _GALLERY_INDEX
         index: list = []
         for f in scan_outputs():
             raw = md.read_png_metadata(str(f))
-            fields = md.parse_metadata(raw) if raw else {}
-            index.append({
-                "path": f.relative_to(OUTPUTS_DIR).as_posix(),
-                "name": f.name,
-                "date": f.parent.name,
-                "prompt": str(fields.get("prompt", "")),
-                "neg": str(fields.get("negative_prompt", "")),
-                "model": str(fields.get("model", "")),
-                "sampler": str(fields.get("sampler", "")),
-                "scheduler": str(fields.get("scheduler", "")),
-            })
+            index.append(_index_entry(f, md.parse_metadata(raw) if raw else {}))
         _GALLERY_INDEX = index
         _GALLERY_INDEX_KEY = newest
         return index
@@ -1860,12 +2203,7 @@ def _gallery_search(query: str) -> list:
              entry["sampler"], entry["scheduler"])
         ).lower()
         if query in haystack:
-            out.append({
-                "url": f"/outputs/{entry['path']}",
-                "name": entry["name"],
-                "path": entry["path"],
-                "date": entry["date"],
-            })
+            out.append(entry)
     return out
 
 

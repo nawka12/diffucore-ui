@@ -395,6 +395,16 @@ class Engine:
         return self._cuda_graphs
 
     @property
+    def active_offload(self) -> "bool | str":
+        """The offload mode the *current* load actually runs with.
+
+        Not the same as :meth:`recommended_offload`, which only reads the card's
+        VRAM: the UI can pick any mode, and FLUX is forced to ``"stream"``
+        whatever the card. Callers deciding whether VRAM is tight (the server
+        parks the NSFW tagger on ``"stream"``) need this one."""
+        return self._offload
+
+    @property
     def applied_loras(self) -> List[str]:
         return list(self._loaded.applied_loras) if self._loaded else []
 
