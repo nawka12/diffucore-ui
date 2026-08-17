@@ -630,7 +630,7 @@
           <input type="checkbox" x-model="preview"> Live preview
         </label>
         <label class="chip toggle preview-toggle" :class="{on: genBlur}"
-               title="Blur freshly generated results rated R-and-up until clicked (needs the gallery blur setting on)">
+               title="Blur freshly generated results rated R-and-up until clicked. Independent of the gallery blur setting — with this on, results are AI-rated either way.">
           <input type="checkbox" x-model="genBlur"> Blur NSFW
         </label>
         <div class="progress" x-show="busy">
@@ -688,7 +688,7 @@
               <img :src="resultUrl" alt="result" :class="{blur: resultBlurred}"
                    @click="genReveal = true">
               <div class="lb-hint hint-pill"
-                   x-show="genBlur && settings.nsfw_blur && resultNsfw">
+                   x-show="blurOn && resultNsfw">
                 <span class="hint-pill-txt" x-show="resultBlurred"
                       x-text="'NSFW (' + (resultRating || '?') + ')'"></span>
                 <button type="button" class="eye-btn" @click="genReveal = !genReveal"
@@ -999,7 +999,8 @@
                 Blur R-rated and up
               </label>
               <p class="set-foot">New images are rated automatically in the background after each save.
-                Turning the blur off stops rating entirely and frees the model's VRAM.</p>
+                Turning the blur off frees the model's VRAM; the Generate page's own
+                <em>Blur NSFW</em> toggle keeps rating the results it blurs.</p>
               <template x-if="settings.nsfw_blur && taggerStatus.available">
                 <div>
                   <div class="set-action">

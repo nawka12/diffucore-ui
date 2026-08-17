@@ -424,28 +424,51 @@ def test_maybe_auto_rescan_rerates_stale_only(_isolated_queue, monkeypatch,
     assert job.priority == -10
 
 
-def test_enqueue_tag_job_gated_by_setting_and_timm(_isolated_queue, monkeypatch,
-                                                   tmp_path, _isolated_ratings):
+def test_enqueue_tag_job_gated_by_timm(_isolated_queue, monkeypatch,
+                                       tmp_path, _isolated_ratings):
     out, target = _setup_outputs(tmp_path, monkeypatch)
     monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: True)
-    monkeypatch.setitem(server.SETTINGS, "nsfw_blur", True)
     assert server._enqueue_tag_job([target], "Rate") is not None
     with server.QUEUE_LOCK:
         job = server.QUEUE[0]
     assert job.kind == "tag"
     assert job.priority == -10  # never delays a generation
     assert job.total == 1
-    # Blur off → nothing is queued (no rating wanted at all).
-    with server.QUEUE_LOCK:
-        server.QUEUE.clear()
-    monkeypatch.setitem(server.SETTINGS, "nsfw_blur", False)
-    assert server._enqueue_tag_job([target], "Rate") is None
-    with server.QUEUE_LOCK:
-        assert len(server.QUEUE) == 0
     # timm missing → silently falls back to the prompt heuristic.
-    monkeypatch.setitem(server.SETTINGS, "nsfw_blur", True)
     monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: False)
     assert server._enqueue_tag_job([target], "Rate") is None
+    # Whether a rating is *wanted* is the caller's call — the gallery blur
+    # setting alone no longer decides it (see the blur_check test below).
+    monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: True)
+    monkeypatch.setitem(server.SETTINGS, "nsfw_blur", False)
+    assert server._enqueue_tag_job([target], "Rate") is not None
+
+
+def test_auto_tag_wanted_by_either_blur_surface(_isolated_queue, monkeypatch,
+                                                tmp_path, _isolated_ratings):
+    # The gallery setting and the Generate page's own "Blur NSFW" toggle are
+    # independent; either one asking for a verdict is enough to rate the save.
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: True)
+    monkeypatch.setattr(server, "_PENDING_TAG", [])
+
+    # Gallery blur off and the page not blurring → no rating wanted.
+    monkeypatch.setitem(server.SETTINGS, "nsfw_blur", False)
+    server._maybe_auto_tag(target, blur_check=False)
+    assert server._PENDING_TAG == []
+    # Gallery blur off but the page will blur the result → rate it anyway.
+    server._maybe_auto_tag(target, blur_check=True)
+    assert server._PENDING_TAG == [target]
+    # Gallery blur on → rated regardless of the page toggle.
+    server._PENDING_TAG.clear()
+    monkeypatch.setitem(server.SETTINGS, "nsfw_blur", True)
+    server._maybe_auto_tag(target, blur_check=False)
+    assert server._PENDING_TAG == [target]
+    # timm missing → nothing to run, whoever asked.
+    server._PENDING_TAG.clear()
+    monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: False)
+    server._maybe_auto_tag(target, blur_check=True)
+    assert server._PENDING_TAG == []
 
 
 def test_tag_job_run_rates_caches_and_invalidates(monkeypatch, tmp_path,

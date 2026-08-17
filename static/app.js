@@ -307,11 +307,13 @@ document.addEventListener('alpine:init', () => {
     get resultNsfw() { return !!(this.resultMeta && this.resultMeta.nsfw); },
     get resultRating() { return this.resultMeta ? this.resultMeta.rating : ''; },
     get resultBlurred() {
-      return !!(this.genBlur && this.settings.nsfw_blur
-                && this.resultNsfw && !this.genReveal);
+      return !!(this.blurOn && this.resultNsfw && !this.genReveal);
     },
-    // Whether the NSFW blur applies at all right now (page toggle + setting).
-    get blurOn() { return !!(this.genBlur && this.settings.nsfw_blur); },
+    // Whether the NSFW blur applies at all right now. The Generate page has its
+    // own toggle, independent of the gallery setting — and it rides along as
+    // `blur_check` on every request, so the server AI-rates what this page is
+    // going to blur even when the gallery blurs nothing.
+    get blurOn() { return !!this.genBlur; },
     // Batch-strip thumbnail: blurred like a gallery thumbnail, independent of
     // the canvas reveal — flipping to a thumb shows the big image blurred, so
     // an unblurred strip would defeat it.
@@ -1104,6 +1106,7 @@ document.addEventListener('alpine:init', () => {
           input_image: this.mode !== 't2i' ? this.inputImage : null,
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
           preview: this.preview,
+          blur_check: this.blurOn,
           detail_enabled: this.detail.enabled,
           detail_models: this.detail.models,
           detail_neg: this.detail.neg,
@@ -1265,6 +1268,7 @@ document.addEventListener('alpine:init', () => {
         y_type: this.axes.y.type, y_vals: this.axisValues(this.axes.y),
         z_type: this.axes.z.type, z_vals: this.axisValues(this.axes.z),
         preview: this.preview,
+        blur_check: this.blurOn,
       };
       try {
         const ev = await this.submitJob('/api/xyz', payload);
@@ -1622,6 +1626,7 @@ document.addEventListener('alpine:init', () => {
           teacache_calibrated: this.form.teacacheCalibrated,
           teacache_forecast: this.form.teacacheForecast,
           preview: this.preview,
+          blur_check: this.blurOn,
         };
         const ev = await this.submitJob('/api/upscale', payload);
         if (ev.type === 'done') {

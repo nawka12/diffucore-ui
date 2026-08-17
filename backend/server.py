@@ -25,6 +25,7 @@ import threading
 import time
 from collections import deque
 from datetime import date
+from functools import partial
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -349,6 +350,7 @@ class GeneratePayload(BaseModel):
     input_image: Optional[str] = None   # base64 / data-URL
     mask_image: Optional[str] = None
     preview: bool = True                 # stream live latent previews while sampling
+    blur_check: bool = False             # the requesting page will blur this result — rate it even if the gallery blur is off
 
     # ── detailer (ADetailer-style passes run after the main image) ──
     # Each entry is one detection model + its own prompt; the rest is shared.
@@ -399,6 +401,7 @@ class UpscalePayload(BaseModel):
     teacache_calibrated: bool = True
     teacache_forecast: str = "hermite"
     preview: bool = True
+    blur_check: bool = False             # see GeneratePayload.blur_check
 
     @model_validator(mode="after")
     def _overlap_fits(self):
@@ -496,6 +499,7 @@ class XYZPayload(BaseModel):
     z_type: str = "None"
     z_vals: str = ""
     preview: bool = True                 # stream live latent previews per cell
+    blur_check: bool = False             # see GeneratePayload.blur_check
 
 
 class CancelPayload(BaseModel):
@@ -561,14 +565,16 @@ def _output_url(path: Path) -> str:
 def _save_output(image: Image.Image, gen_kwargs: dict,
                  detailer: Optional[dict] = None,
                  upscale: Optional[dict] = None,
-                 seed: Optional[int] = None) -> Path:
+                 seed: Optional[int] = None,
+                 blur_check: bool = False) -> Path:
     """Save an image to outputs/ with AUTO1111 metadata; return its path.
 
     Used for single generations and for each individual X/Y/Z cell. ``detailer``,
     when given, is appended to the ``parameters`` line as ADetailer-compatible
     keys so the post-gen detailer settings can be restored later. ``seed``
     overrides ``ENGINE.last_seed`` for a standalone upscale, which has no
-    generation of its own to inherit a seed from.
+    generation of its own to inherit a seed from. ``blur_check`` carries the
+    requesting page's "Blur NSFW" toggle through to the auto-rating.
     """
     seed = ENGINE.last_seed if seed is None else seed
     out = next_output_path(seed)
@@ -591,7 +597,7 @@ def _save_output(image: Image.Image, gen_kwargs: dict,
     invalidate_outputs_cache()
     # Rate the new output in the background (WD tagger) so its gallery entry
     # carries an AI verdict on the next open — not just the prompt heuristic.
-    _maybe_auto_tag(out)
+    _maybe_auto_tag(out, blur_check)
     return out
 
 
@@ -787,7 +793,8 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
         )
         image = gctx.image
 
-        out = _save_output(image, gen_kwargs, detailer=detailer_meta, upscale=upscale_meta)
+        out = _save_output(image, gen_kwargs, detailer=detailer_meta,
+                           upscale=upscale_meta, blur_check=p.blur_check)
         rel = out.relative_to(OUTPUTS_DIR)
         # post_save: fire-and-forget notification that the PNG is on disk; an
         # extension might mirror it elsewhere, log it, etc.
@@ -833,13 +840,13 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
             p.x_type, p.x_vals, p.y_type, p.y_vals, p.z_type, p.z_vals,
             progress_callback=on_progress,
             preview_callback=on_preview if p.preview else None,
-            save_callback=_save_output,
+            save_callback=partial(_save_output, blur_check=p.blur_check),
         )
         # base_kwargs was mutated in-place by generate_xyz_grid (prompt cleaned,
         # base seed resolved), so it carries the right params for the grid metadata.
         urls = []
         for grid in grids:
-            out = _save_output(grid, base_kwargs)
+            out = _save_output(grid, base_kwargs, blur_check=p.blur_check)
             urls.append(_output_url(out))
         return {
             "grids": urls, "info": info,
@@ -1154,9 +1161,12 @@ def _tag_job_run(job: Job, paths: List[Path], notify: bool = False) -> dict:
 
 def _enqueue_tag_job(paths: List[Path], label: str,
                      notify: bool = False) -> Optional[int]:
-    """Queue a background rating for ``paths``, or None when the feature is
-    off / the tagger isn't installed (the prompt heuristic still covers it)."""
-    if not paths or not SETTINGS.get("nsfw_blur") or not tagger_mod.timm_available():
+    """Queue a background rating for ``paths``, or None when there's nothing to
+    do / the tagger isn't installed (the prompt heuristic still covers it).
+
+    Whether a rating is *wanted* is the caller's call — the gallery blur setting
+    isn't the only thing that asks for one (see :func:`_maybe_auto_tag`)."""
+    if not paths or not tagger_mod.timm_available():
         return None
     job = Job("tag", label, lambda j: _tag_job_run(j, paths, notify=notify),
               priority=-10)
@@ -1173,10 +1183,15 @@ _PENDING_TAG: List[Path] = []
 _PENDING_TAG_LOCK = threading.Lock()
 
 
-def _maybe_auto_tag(path: Path) -> None:
+def _maybe_auto_tag(path: Path, blur_check: bool = False) -> None:
     """Hook for _save_output: queue a freshly saved image for background rating.
-    Best-effort — a missing tagger silently keeps the prompt rating."""
-    if not SETTINGS.get("nsfw_blur") or not tagger_mod.timm_available():
+    Best-effort — a missing tagger silently keeps the prompt rating.
+
+    Two surfaces want the verdict, and either one is enough: the gallery blur
+    setting, and the requesting page's own "Blur NSFW" toggle (``blur_check``),
+    which blurs the fresh result whether or not the gallery blurs anything.
+    """
+    if not (SETTINGS.get("nsfw_blur") or blur_check) or not tagger_mod.timm_available():
         return
     with _PENDING_TAG_LOCK:
         _PENDING_TAG.append(path)
@@ -1771,7 +1786,8 @@ async def api_upscale(p: UpscalePayload):
         # whatever ran before it, so name and tag the output with the seed the
         # tile passes actually used.
         seed = ENGINE.last_upscale_seed
-        out = _save_output(image, gen_kwargs, upscale=upscale_meta, seed=seed)
+        out = _save_output(image, gen_kwargs, upscale=upscale_meta, seed=seed,
+                           blur_check=p.blur_check)
         rel = out.relative_to(OUTPUTS_DIR)
         return {
             "image_url": _output_url(out),
@@ -1834,8 +1850,9 @@ def api_save_settings(s: Settings):
     # Apply the VAE-tiling choice to the already-loaded model so it takes effect
     # without a reload (future loads pick it up via _do_load).
     ENGINE.apply_vae_tiling(SETTINGS["vae_tiling"] == "always")
-    # Turning the blur off means no rating is wanted — drop the tagger's VRAM
-    # so the next generation gets the whole card.
+    # Turning the gallery blur off means nothing needs a rating right now — drop
+    # the tagger's VRAM so the next generation gets the whole card. A generate
+    # with its own "Blur NSFW" on (blur_check) loads it again on demand.
     if not SETTINGS["nsfw_blur"]:
         tagger_mod.TAGGER.unload()
     return SETTINGS

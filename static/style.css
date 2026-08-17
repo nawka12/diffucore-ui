@@ -478,11 +478,16 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 }
 .canvas img { max-width: 100%; max-height: 78vh; display: block; }
 /* NSFW result on the Generate page: blur + click-to-reveal (mirrors the
-   lightbox treatment; the hint pill is the shared .lb-hint). */
+   lightbox treatment; the hint pill is the shared .lb-hint).
+   The radius scales with the viewport: this image renders up to 78vh tall, so a
+   fixed px blur that hides a small result leaves a big one legible. vmin tracks
+   the render size; the clamp keeps a tiny window from under-blurring and a huge
+   one from melting the whole canvas. scale() then crops the transparent edge
+   fade the (now much wider) blur leaves behind — .canvas is overflow:hidden. */
 .result-wrap { position: relative; }
 .result-wrap img.blur {
-  filter: blur(28px) brightness(0.6) saturate(1.6);
-  transform: scale(1.12);
+  filter: blur(clamp(32px, 6vmin, 80px)) brightness(0.6) saturate(1.6);
+  transform: scale(1.35);
   cursor: zoom-in;
   transition: filter 150ms ease;
 }
@@ -565,8 +570,8 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 /* Strip thumbs stay blurred whatever the canvas shows — clicking one flips the
    canvas to that (blurred) image, so an unblurred strip would defeat the blur. */
 .batch-thumb img.blur {
-  filter: blur(8px) brightness(0.75) saturate(1.5);
-  transform: scale(1.3);           /* hide the un-blurred edge ring */
+  filter: blur(12px) brightness(0.75) saturate(1.5);
+  transform: scale(1.45);          /* hide the un-blurred edge ring */
 }
 
 /* ── progress ─────────────────────────────────────────────────── */
@@ -751,8 +756,8 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .thumb.sel { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(232,160,101,0.2); }
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .thumb.blur .thumb-img {
-  filter: blur(18px) brightness(0.75) saturate(1.5);
-  transform: scale(1.25);          /* hide the un-blurred edge ring */
+  filter: blur(26px) brightness(0.75) saturate(1.5);
+  transform: scale(1.4);           /* hide the un-blurred edge ring */
   transition: filter 150ms ease;
 }
 .nsfw-badge {
@@ -805,6 +810,10 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   justify-content: center;
   padding: 16px;
   touch-action: pan-y;
+  /* A blurred .lb-img is scaled past the stage bounds to crop its edge fade;
+     clip it here so it can't smear over the info bar below. The close/nav
+     buttons are siblings, so they stay reachable. */
+  overflow: hidden;
 }
 .lb-img {
   max-width: 100%;
@@ -814,9 +823,11 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   user-select: none;
   -webkit-user-drag: none;
 }
+/* Viewport-scaled radius, same reasoning as .result-wrap img.blur — the
+   lightbox fills the screen, so this is the largest render in the app. */
 .lb-img.blur {
-  filter: blur(28px) brightness(0.6) saturate(1.6);
-  transform: scale(1.12);          /* hide the un-blurred edge ring */
+  filter: blur(clamp(32px, 6vmin, 80px)) brightness(0.6) saturate(1.6);
+  transform: scale(1.35);          /* hide the un-blurred edge ring */
   cursor: zoom-in;
   transition: filter 150ms ease;
 }
@@ -1216,7 +1227,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
    No scale() here — .canvas.stack is overflow:visible, and blur() already fades
    the edges to transparent rather than leaving a sharp ring. */
 .grid-img.blur {
-  filter: blur(24px) brightness(0.6) saturate(1.6);
+  filter: blur(clamp(32px, 6vmin, 80px)) brightness(0.6) saturate(1.6);
   cursor: zoom-in;
   transition: filter 150ms ease;
 }
