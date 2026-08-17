@@ -211,9 +211,18 @@ SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
 # plunges at the end — at 50 flow steps it puts 7 sigmas below σ_max/2 where
 # normal puts 13. Spend it on structure, not texture. Starts at σ_max, so
 # flow-safe; all families. Upstream pairs it with infinity_omega.
+# pump_dual is a two-band schedule for cogent3_pump: a step-dense pumped band
+# (pump_share=0.85 of the run above pump_end=0.45 — the pump's hard cutoff —
+# 27 injections at 32 steps against flow's 26 and beta_mix's 21, each one a CFG
+# re-deciding round for the prompt), then a short refinement band that stops
+# where flow stops, σ(t=1/steps). That terminus is the whole trick: running to
+# the σ table floor (0.003, what beta / beta_mix / normal / infinity do) costs
+# the 3M exponential core 2.6× on the offline benchmark and 16× at 8 steps,
+# and it is the depth that hurts, not the final step size. Anima-only for now.
 SCHEDULERS_ANIMA = ["flow", "flow_dyn", "oss", "sgm_uniform", "simple",
                     "normal", "infinity", "infinity_htds", "kl_optimal",
-                    "linear_quadratic", "smoothstep", "beta", "beta_mix"]
+                    "linear_quadratic", "smoothstep", "beta", "beta_mix",
+                    "pump_dual"]
 SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple", "normal",
                    "infinity", "infinity_htds", "kl_optimal", "linear_quadratic"]
 
