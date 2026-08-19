@@ -79,6 +79,15 @@ LORA_PROMPT_RE = re.compile(r"<lora:([^:]+):([^>]+)>")
 # The flow families (Anima, FLUX) drive everything except "ddpm" (a VP/VE-only
 # ancestral sampler); the rest are flow-aware or model-agnostic. These lists must
 # stay in sync with the pipelines' _ANIMA_SAMPLERS / _FLUX_SAMPLERS.
+# sa_solver is SA-Solver (Xue et al., NeurIPS 2023, arXiv:2309.05019): a
+# multi-step stochastic Adams predictor-corrector in half-logSNR space, data-
+# prediction form. Each step corrects the current latent from the x0 history,
+# then predicts the next with exponential-integrator coefficients; the SDE form
+# re-injects seeded Gaussian noise on a middle (20%-80%) band of the schedule
+# (eta<=0 is the deterministic ODE). Flow-aware (VE + flow), so it is offered
+# for every family; strong at low step counts (SOTA few-step FID in the paper).
+# sa_solver_pece adds the final re-evaluation of the corrected state (Predict-
+# Evaluate-Correct-Evaluate), one extra NFE per corrected step for accuracy.
 SAMPLERS_SD = [
     "euler",
     "euler_ancestral",
@@ -107,6 +116,8 @@ SAMPLERS_SD = [
     "er_sde",
     "ddpm",
     "lcm",
+    "sa_solver",
+    "sa_solver_pece",
     "secant",
     "exp_heun_2_x0",
     "uni_pc",
@@ -182,8 +193,13 @@ SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal",
 SAMPLERS_FLUX = [s for s in SAMPLERS_FLOW if s not in _SAMPLERS_4D_ONLY]
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
-                 "sgm_uniform", "simple", "normal", "infinity", "infinity_htds",
-                 "ddim_uniform", "linear_quadratic"]
+                 "align_your_steps", "sgm_uniform", "simple", "normal",
+                 "infinity", "infinity_htds", "ddim_uniform", "linear_quadratic"]
+# align_your_steps is the AYS schedule (Sabour et al., ICML 2024,
+# arXiv:2404.14507): the paper's per-family optimized 10-step noise tables
+# (SD1.5 / SDXL), extended to any step count by log-linear interpolation — the
+# authors' own recipe. Best in the few-step regime (~10-20 steps); SD/SDXL only
+# (the tables are VE-scale), and zero-terminal-SNR models degrade to karras.
 # "oss" is a calibrated optimal-stepsize schedule: it needs a one-time
 # calibration for the exact (model, steps, resolution, shift) before it works.
 # The UI's OSS panel runs that calibration (Engine.calibrate_oss) and writes the

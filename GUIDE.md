@@ -297,6 +297,17 @@ bugs, just how the model responds:
   `uni_pc_bh2` the `bh2` variant (often a touch better at very low steps); both
   default to 3rd order and ramp the order down over the final steps.
 
+- **`sa_solver` / `sa_solver_pece`** (SA-Solver, Xue et al., NeurIPS 2023,
+  arXiv:2309.05019) are a stochastic Adams *predictor-corrector* multistep in
+  half-logSNR space, one of ComfyUI's core few-step workhorses. Each step first
+  re-derives the current latent from the x0 history (the corrector — more
+  accurate than the raw prediction), then predicts the next latent with
+  exponential-integrator coefficients; the SDE form re-injects seeded Gaussian
+  noise on a middle 20–80% band of the schedule, and `eta=0` makes it the pure
+  deterministic ODE. Offered for every family (flow-aware, like the DPM++
+  family). `sa_solver_pece` adds the final "E" — a re-evaluation of the
+  corrected state — for a few extra NFEs of accuracy.
+
 - **`uni_pc_anneal`** is the *stochastic* sibling of `uni_pc`: the same UniPC
   predictor-corrector core plus a light, σ-annealed ancestral noise term (noise at
   high σ, vanishing as σ→0) for stochastic sample diversity and a shot at the
