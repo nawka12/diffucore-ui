@@ -217,7 +217,33 @@ real checkpoint before treating the bottom of the table as settled.
   other member of this family. Use 24+ steps.
 - On a *clean* model with heavy churn the gate over-damps slightly, because
   injected noise and model error both lower `rho` and it cannot tell them apart.
-  Separating them would need a lag-2 inner product (`<D_i, D_{i−2}>` shares no
-  noise term), which needs 4 x0 estimates of history — untested.
+  **A lag-2 inner product does not fix this** — an earlier version of this line
+  said it would, and that claim was wrong twice over (derivation in
+  `COGENT-IMPROVE.md`). `<D_i, D_{i−2}>` does drop the shared noise term, but
+  the shrink it yields is the same `S/(S + 2v)` that `(1 + 2·rho)/3` already
+  computes *exactly* — the "collapses to a straight line" substitution above is
+  an identity, not a linearisation — and `v` is the **total** x0-error energy
+  either way, so no lag separates the two contributions. Measured on the model's
+  own toy, both lag-2 forms are unbiased but noisier than the shipped shrink
+  (+19% s.d. for the scale-invariant cosine, +56% for the ratio) and need a
+  fourth x0 estimate where this gate needs three. The ratio form is also not
+  scale-invariant: on the production `flow`/shift-3.0/28-step schedule it reads
+  0.60 at σ≈0.19 and 0.45 at σ≈0.10 (0.52 after this floor) on a perfectly
+  clean, perfectly straight trajectory, where this gate correctly returns 1.0.
+- What the gate does *not* report but could for free: the noise energy itself.
+  Under the same model `v = (‖D_i‖² − <D_i, D_{i−1}>)/3`, from quantities
+  `_coherence_gate` already forms — no extra reduction, and no extra history
+  either, since it spans the same three x0 estimates the gate already keeps.
+  Untested, and note the identity holds only where the derivation's `Δf_i ≈
+  Δf_{i−1}` does. With non-stationary increments the exact expectation of the
+  *statistic* picks up a signal term:
+
+      E[3·v_est] = ‖Δf_i‖² − <Δf_i, Δf_{i−1}> + v_i + 2·v_{i−1}
+
+  so a calibration test that scores `v_est` against `v` alone will report that
+  signal term as estimator bias.
+- Actually separating *injected* noise from *model* error needs the denoiser's
+  noise gain `∂x0/∂x`, which is a Jacobian rather than a scalar and is not free;
+  a longer lag cannot substitute for it.
 - `psi` is one scalar per batch sample. Per-channel gating is plausible on 4-D
   latents and untried.

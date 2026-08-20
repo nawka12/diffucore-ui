@@ -66,9 +66,10 @@ keep its correction whatever the SNR reading.
 The second difference does not have that failure mode. `rho_2` measures whether
 the *curvature itself* is consistent — which is precisely the condition for
 extrapolating it to be trustworthy — and a coarse step does not change that:
-drop the 3rd-order term and the step reverts to the gated 2nd-order update,
-which is `cogent`'s behaviour, already load-bearing. So the honest rule is
-"the 3rd-order term is optional; the data can turn it off completely". A floor
+drop the 3rd-order term and the step reverts to the 3M core's gated 2nd-order
+update — the same class of correction `cogent` leans on, already load-bearing
+(not the identical update, though; see §4). So the honest rule is "the 3rd-order
+term is optional; the data can turn it off completely". A floor
 would pin `psi_2` up exactly where the term is most dangerous (coarse steps on
 a rough model), which is the one place it must be allowed to go to zero.
 
@@ -79,12 +80,12 @@ gate needs four (a second difference to compare `E_i` against). On that one
 step `cogent3` bootstraps `psi_2 = psi_1` — "rate the new term by the best
 trust signal we have" — instead of running it ungated.
 
-## 4. Degradation invariants (tested)
+## 4. Degradation invariants (tested, except as marked)
 
 | pin | result |
 |---|---|
 | `psi_1 = psi_2 ≡ 1`, `eta_max=0` | bit-for-bit `dpmpp_3m_sde(eta=0)` (the deterministic 3M core) |
-| `psi_2 ≡ 0` | gated 2nd-order-only; per-step the `cogent` behaviour, never worse |
+| `psi_2 ≡ 0` | the 3M core's gated 2nd-order update. **Not** `sample_cogent`, and *untested*: `d1` keeps its `(d1_0 − d1_1)·r0/(r0+r1)` extrapolation, and 3M's `phi_2 = expm1(−h_eta)/h_eta + 1` differs from cogent's `0.5·(1 − e^(−h_eta))` at 2nd order in `h_eta` — measured 3.8e−04 apart at 16 steps. This row previously claimed "per-step the `cogent` behaviour, never worse"; the equivalence is false and "never worse" was never tested. The only test that pins `psi_2 = 0` (`test_cogent3_third_order_term_actually_fires`) asserts the opposite direction — that the pinned run *differs* from the live one |
 | `eta_max = 0` | deterministic; no noise drawn (seed-independent) |
 | any | final σ→0 step lands on the x0 estimate |
 
