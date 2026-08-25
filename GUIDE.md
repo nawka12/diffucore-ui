@@ -377,7 +377,22 @@ bugs, just how the model responds:
   family knobs as cogent (`eta_max`, shared panel knob; `eta_max=0` is
   deterministic), one model evaluation per step, all families, prefer 24+
   steps. Offline benchmarked against a known ground truth
-  (`scripts/ab_cogent3.py`); real-image A/B pending. See `docs/cogent3.md`.
+  (`scripts/ab_cogent3.py`). See `docs/cogent3.md`.
+
+  **Cogent4 is the optional per-channel form of these measured gates.** In
+  **Settings → Sampler & scheduler defaults → Cogent gate**, `global`
+  keeps the original gate and remains the default; `per-channel`
+  estimates a separate shrink for every latent channel over its spatial axes.
+  It applies to `cogent`, `cogent3`, and `cogent3_pump`, and the selected arm is
+  written to PNG metadata as `Gate reduce`. It needs a 4-D spatial latent
+  (SD/SDXL or Anima); token-packed FLUX falls back to the global gate. The
+  offline toy gives Cogent4 a
+  small deterministic win at every tested step count and a rough-model win at
+  8–16 steps, but a loss at 24–32. On the real-image review sheets the plain
+  `cogent3` cells were ties; the clear visual win was
+  `cogent3_pump` + `beta` at 24 steps, where per-channel produced the more
+  coherent dress and arms. Treat it as a checkpoint/step-dependent option, not
+  a universal upgrade.
 
 - **`cogent3_pump`** is `cogent3` plus a **high-σ coherence pump** — the one
   mechanism `infinity_aether` actually owes its coarse-structure strength to,

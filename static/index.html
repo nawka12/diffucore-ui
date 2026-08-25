@@ -921,6 +921,12 @@
                 <label class="field"><span>eta_max</span>
                   <input type="number" step="0.05" min="0" max="1" x-model.number="settings.eta_max">
                   <span class="field-tag">anneal samplers · cogent · cogent3 · cogent3_pump</span></label>
+                <label class="field"><span>Cogent gate</span>
+                  <select x-model="settings.gate_reduce">
+                    <option value="all">global</option>
+                    <option value="per_channel">per-channel</option>
+                  </select>
+                  <span class="field-tag">cogent · cogent3 · cogent3_pump</span></label>
                 <label class="field"><span>beta α</span>
                   <input type="number" step="0.1" min="0.05" x-model.number="settings.beta_alpha">
                   <span class="field-tag">beta scheduler</span></label>
@@ -942,6 +948,10 @@
               <p class="set-foot">Guidance interval: apply CFG only between these fractions of the sampling
                 run. Outside the band the negative-prompt pass is skipped, saving a full model pass per
                 skipped step. 0 / 1 = every step. Anima + SD/SDXL (FLUX has no CFG pass).</p>
+              <p class="set-foot">Per-channel gives each latent channel its own measured coherence gate.
+                Global keeps the original single-gate path and remains the default; per-channel also applies
+                to <code>cogent3_pump</code>, where the clearest review win was at 24 steps. Token-packed
+                FLUX latents fall back to the global gate.</p>
             </section>
 
             <!-- VAE decode -->

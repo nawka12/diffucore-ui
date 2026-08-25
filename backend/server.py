@@ -27,7 +27,7 @@ from collections import deque
 from datetime import date
 from functools import partial
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Literal, Optional
 
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Request, HTTPException
@@ -445,7 +445,9 @@ class Settings(BaseModel):
     that aren't per-image. Defaults mirror the submodule's, so an unset settings
     file leaves generation behaviour unchanged. Applied at generation time when
     the active sampler/scheduler uses them (see ``_run_generation``)."""
-    # Anima sampler/scheduler knobs.
+    # Cogent gate reduction applies on every family that offers the sampler.
+    gate_reduce: Literal["all", "per_channel"] = "all"
+    # Remaining sampler/scheduler knobs are Anima-specific.
     curvature: float = 0.25       # secant / secant_anneal x0 extrapolation strength
     eta_max: float = 1.0          # secant_anneal / euler_ancestral_anneal / cogent ancestral noise
     beta_alpha: float = 0.6       # beta scheduler Beta(α, β) — low-t (σ→0) density
@@ -632,6 +634,12 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             preview_callback=on_preview if p.preview else None,
         )
 
+        # Cogent4 is the per-channel reduction of cogent's measured coherence
+        # gate. Keep the shipped global path as the default, but forward the
+        # explicit UI choice on every family where a cogent sampler is offered.
+        if p.sampler in ("cogent", "cogent3", "cogent3_pump"):
+            common["gate_reduce"] = SETTINGS["gate_reduce"]
+
         # Global sampler/scheduler knobs from the settings panel (Anima only).
         # Inject only the ones the active sampler/scheduler actually consumes, so
         # they round-trip into PNG metadata without polluting it with unused keys.
@@ -704,6 +712,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                     negative_prompt=clean_neg,
                     steps=int(p.steps), cfg_scale=float(p.cfg),
                     sampler=p.sampler, scheduler=p.scheduler,
+                    gate_reduce=SETTINGS["gate_reduce"],
                     seed=int(p.seed),
                     teacache_thresh=float(p.upscale_teacache),
                     teacache_use_coeffs=bool(p.teacache_calibrated),
@@ -742,6 +751,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                         strength=float(p.detail_strength),
                         steps=int(p.steps), cfg_scale=float(p.cfg),
                         sampler=p.sampler, scheduler=p.scheduler,
+                        gate_reduce=SETTINGS["gate_reduce"],
                         dilation=int(p.detail_dilation), padding=int(p.detail_padding),
                         blur=int(p.detail_blur), max_det=int(p.detail_max),
                         seed=int(p.seed),
@@ -824,6 +834,7 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
         width=int(p.width), height=int(p.height),
         steps=int(p.steps), cfg_scale=float(p.cfg),
         sampler=p.sampler, scheduler=p.scheduler,
+        gate_reduce=SETTINGS["gate_reduce"],
         seed=int(p.seed), shift=float(p.shift),
         teacache_thresh=float(p.teacache),
         teacache_use_coeffs=bool(p.teacache_calibrated),
@@ -1763,6 +1774,7 @@ async def api_upscale(p: UpscalePayload):
             prompt=p.prompt, negative_prompt=p.neg,
             steps=int(p.steps), cfg_scale=float(p.cfg),
             sampler=p.sampler, scheduler=p.scheduler,
+            gate_reduce=SETTINGS["gate_reduce"],
             seed=int(p.seed),
             teacache_thresh=float(p.teacache),
             teacache_use_coeffs=bool(p.teacache_calibrated),
@@ -1781,6 +1793,7 @@ async def api_upscale(p: UpscalePayload):
             prompt=p.prompt, negative_prompt=p.neg,
             steps=int(p.steps), cfg_scale=float(p.cfg),
             sampler=p.sampler, scheduler=p.scheduler,
+            gate_reduce=SETTINGS["gate_reduce"],
         )
         # A standalone upscale isn't a generation: ENGINE.last_seed still holds
         # whatever ran before it, so name and tag the output with the seed the

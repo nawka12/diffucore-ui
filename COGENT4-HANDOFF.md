@@ -1,5 +1,12 @@
 # COGENT4 handoff — what is left before this is release-able
 
+> **Completed 2026-08-20.** Cogent4 is now live under **Settings → Sampler &
+> scheduler defaults → Cogent gate** as the default-off `per-channel (Cogent4)`
+> option. The deciding human review, explicit pump coupling, metadata plumbing,
+> live HTTP generation, and fresh byte-identical default pin are recorded in the
+> final section of `COGENT-IMPROVE-IMPLEMENTED.md`. The remainder of this file is
+> the historical pre-release handoff and should not be treated as current status.
+
 *Written 2026-08-20 for whoever picks this up next. Read this first, then
 `COGENT-IMPROVE.md` (the design record and its five review passes) and
 `COGENT-IMPROVE-IMPLEMENTED.md` (what was built and every measurement).

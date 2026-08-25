@@ -524,3 +524,75 @@ test, or it does not ship.
   plumbing the knob the way `curvature` is plumbed (4 pipelines, `engine.py`,
   `server.py`, `index.html`, `app.js`), which the approved disposition does not
   authorize on the evidence so far.
+
+---
+
+## Cogent4 release and UI plumbing — completed 2026-08-20
+
+**[CDX]**
+
+This section supersedes the preceding section's status paragraph. Cogent4 is
+now reachable as a default-off UI option; the original global Cogent3 path is
+still the default.
+
+### 1. Deciding human review
+
+The three production sheets named above were reviewed at full resolution. The
+verdict is narrow rather than universal:
+
+- `cogent3 × flow` and `cogent3 × beta_mix`, 8/16/24/32 steps: no reliable
+  preference;
+- `cogent3_pump × beta`, 8 and 16 steps: no reliable preference;
+- `cogent3_pump × beta`, 24 steps: **per-channel wins** on garment and arm
+  coherence—the global arm has an asymmetric black under-dress/sleeve structure,
+  while per-channel resolves a coherent white dress and two clean arms;
+- `cogent3_pump × beta`, 32 steps: no reliable preference.
+
+This is a human verdict on one paired seed, not a proxy score or a claim that
+per-channel is generally better. Combined with the toy's negative 24/32 cells,
+it supports an opt-in switch and does not support replacing the global default.
+
+### 2. Shipped behavior
+
+**Settings → Sampler & scheduler defaults → Cogent gate** exposes:
+
+- `global (Cogent3)` → `gate_reduce="all"` (default);
+- `per-channel (Cogent4)` → `gate_reduce="per_channel"`.
+
+The option flows through text-to-image, image-to-image, inpaint, Anima's two
+internal generation paths, the engine, normal generation, X/Y/Z sweeps, stacked
+detailer passes, and both embedded and standalone tiled upscaling. It applies to
+`cogent`, `cogent3`, and `cogent3_pump` on 4-D latents; token-packed FLUX uses
+the sampler's documented global fallback.
+
+The pump coupling is deliberate: one switch moves the gates in
+`cogent3_pump` too. That is the highest-variance measured cell and also the only
+clear visual win, so silently pinning the pump to the global gate would discard
+the evidence that justified exposure. The UI copy and `GUIDE.md` state this.
+
+Every Cogent-family image now records `Gate reduce: all|per_channel` in A1111
+metadata or `sui_extra_data.gate_reduce` in SwarmUI metadata. Unrelated samplers
+do not receive the field.
+
+### 3. Release verification
+
+- CPU: the full sampler + Cogent4 public-plumbing suites pass (**201 passed**);
+  focused server/settings/metadata checks pass (**35 passed**); Python compileall
+  and `node --check static/app.js` are clean.
+- Real-model default pin was forced to regenerate after the plumbing change:
+
+  ```
+  sha256[:12]  ref 77c4345d6805   now 77c4345d6805   identical: True
+  max |pixel delta| = 0
+  ```
+
+- Live HTTP/UI smoke: the running settings API returned the old-file-compatible
+  default `gate_reduce="all"`; the rendered index contained the Cogent4 selector;
+  switching it to `per_channel` through `/api/settings` and submitting an
+  8-step, 512×512 `cogent3 × flow` generation produced
+  `outputs/2026-08-20/00002-1234.png`. Its PNG metadata contains
+  `Gate reduce: per_channel`. The persisted setting was restored to `all` after
+  the check.
+
+**Release status: complete.** Cogent4 is live in the UI as a measured,
+reproducible, default-off experiment; Cogent3's prior output remains unchanged.

@@ -1,9 +1,10 @@
 # `cogent3`: the measured gate, carried to third order
 
 *Status: implemented in diffucore (`sample_cogent3`), offline-green (unit tests),
-benchmarked against an analytically-known ground truth (`scripts/ab_cogent3.py`).
-No real-image A/B yet. This document states only what the measurements support —
-including the things that did not work.*
+benchmarked against an analytically-known ground truth (`scripts/ab_cogent3.py`),
+and real-image A/B'd. Its optional per-channel Cogent4 gate is exposed in the UI
+default-off. This document states only what the measurements support — including
+the things that did not work.*
 
 ## Summary
 
@@ -175,3 +176,32 @@ grow. `beta`, `beta_mix`, `kl_optimal`, `normal`, `infinity` and
 `infinity_htds` land coarser minimum λ-steps and are markedly worse — for
 `cogent3` *and* for `cogent` alike, so the ranking is the core's, not the
 gate's.
+
+## 7. Cogent4: the optional per-channel gate
+
+`gate_reduce="per_channel"` changes both measured gates from one shrink per
+batch sample to one shrink per latent channel, each estimated over the spatial
+axes. `"all"` is the original Cogent3 reduction and remains the default. The
+option is available in **Settings → Sampler & scheduler defaults → Cogent gate**
+for `cogent`, `cogent3`, and `cogent3_pump`; the setting deliberately moves the
+pump sampler too, and every Cogent-family PNG records the active reduction as
+`Gate reduce`. Per-channel reduction needs a 4-D spatial latent; token-packed
+FLUX inputs use the documented global fallback.
+
+Evidence is mixed and the UI presents this as an option, not a replacement. On
+the analytic toy, per-channel is about 1–2% better deterministically at every
+tested step count and wins the rough-model metric at 8/12/16 steps, then loses
+at 24/32. The real-image objective test could not rank the arms because changing
+the gate reshuffles stochastic trajectories and the model has no stable
+high-step reference image. Human review of the paired production sheets found:
+
+- `cogent3 × flow` and `cogent3 × beta_mix`, 8/16/24/32 steps: no reliable
+  preference;
+- `cogent3_pump × beta`, 8 and 16 steps: no reliable preference;
+- `cogent3_pump × beta`, 24 steps: per-channel clearly improves dress and arm
+  coherence;
+- `cogent3_pump × beta`, 32 steps: no reliable preference.
+
+That narrow result is enough to make the measured arm available without making
+a universal quality claim. Full measurements and the failed reference metric
+are recorded in `COGENT-IMPROVE-IMPLEMENTED.md`.

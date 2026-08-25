@@ -33,6 +33,13 @@ from PIL import Image
 import server
 
 
+def test_cogent4_setting_defaults_global_and_rejects_unknown_modes():
+    assert server.Settings().gate_reduce == "all"
+    assert server.Settings(gate_reduce="per_channel").gate_reduce == "per_channel"
+    with pytest.raises(ValueError):
+        server.Settings(gate_reduce="bogus")
+
+
 # ── #1 + #8: opt-in pip + install routed through the job queue ───────
 
 def test_install_payload_pip_deps_defaults_off():

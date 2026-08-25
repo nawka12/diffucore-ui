@@ -119,6 +119,23 @@ def test_deepcache_off_leaves_toggle_untouched():
     assert "deepcache" not in fields
 
 
+def test_cogent4_gate_reduce_is_recorded_in_both_metadata_formats():
+    """The gate changes seeded output, so both writers must preserve the arm."""
+    import json
+
+    gen = {**_BASE_GEN, "sampler": "cogent3_pump", "gate_reduce": "per_channel"}
+    a1111 = md.parse_metadata(md.format_metadata(gen, _StubEngine()))
+    swarm = json.loads(md.format_swarmui_metadata(gen, _StubEngine()))
+    assert a1111["gate_reduce"] == "per_channel"
+    assert swarm["sui_extra_data"]["gate_reduce"] == "per_channel"
+
+
+def test_gate_reduce_metadata_is_scoped_to_cogent_samplers():
+    """An internal default passed to another sampler must not pollute its metadata."""
+    gen = {**_BASE_GEN, "sampler": "euler", "gate_reduce": "all"}
+    assert "gate_reduce" not in md.parse_metadata(md.format_metadata(gen, _StubEngine()))
+
+
 # ── SwarmUI format ──────────────────────────────────────────────────
 
 def test_swarmui_blob_shape_and_ids():

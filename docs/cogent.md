@@ -69,8 +69,12 @@ psi = (1 + 2·rho) / 3
 `rho = 1` (clean, straight trajectory) ⇒ `psi = 1`, the undamped coefficient.
 `rho = −1/2` (pure noise — the floor of this model) ⇒ `psi = 0`, no correction.
 
-It is reduced per batch sample over the whole latent, so the cosine is estimated
-from tens of thousands of elements and is a precise statistic, not a noisy one.
+By default it is reduced per batch sample over the whole latent, so the cosine
+is estimated from tens of thousands of elements and is a precise statistic, not
+a noisy one. The optional Cogent4 mode (`gate_reduce="per_channel"`, exposed as
+**Settings → Sampler & scheduler defaults → Cogent gate**) instead reduces over
+the spatial axes and gives every 4-D latent channel its own shrink. The original
+global reduction remains the default; non-4-D latents fall back to it.
 
 **It works.** Measured on the toy below, mean `rho` over a 16-step run:
 
