@@ -339,11 +339,13 @@
               <div class="slider-head"><span>Decision rule</span>
                 <select x-model="form.teacacheRule">
                   <option value="drift">Input drift (TeaCache, calibratable)</option>
-                  <option value="easy">Output change (EasyCache, no calibration)</option>
+                  <option value="easy">Output change (EasyCache, experimental)</option>
                 </select></div>
               <p class="sub">What decides a skip. TeaCache accumulates drift of the timestep-modulated
-                block input; EasyCache accumulates the model's own predicted output change, which
-                reacts to ancestral noise injections and is meant to transfer across samplers.</p>
+                block input; EasyCache accumulates the model's own predicted output change. On this
+                repo's Anima setups EasyCache measured <em>worse</em> at matched skip counts and its τ
+                does not transfer between ancestral and multistep samplers — keep Input drift unless
+                you are experimenting (see the guide).</p>
               <label class="chip toggle" :class="{on: form.teacacheCalibrated}"
                      x-show="form.teacacheRule === 'drift'">
                 <input type="checkbox" x-model="form.teacacheCalibrated"> Use calibrated coefficients</label>

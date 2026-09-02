@@ -683,6 +683,51 @@ speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
   TaylorSeer there if you're chasing exactness. Images written before this
   option record TaylorSeer in their metadata and restore with it.
 
+- **Decision rule (dropdown, "Input drift" by default) — the EasyCache option is
+  experimental and measured to be worse.** The rule decides *when* to skip, and
+  is independent of the forecast basis above (which decides what a skip
+  outputs). **Input drift** is TeaCache's own rule, described throughout this
+  section. **Output change** is EasyCache ([arXiv:2507.02860](https://arxiv.org/abs/2507.02860)):
+  it measures the model's transformation rate on computed steps and accumulates
+  a *predicted output change* per step, recomputing once that reaches the
+  threshold (which it reads as the paper's τ; calibration does not apply and its
+  chip is hidden). It is kept as an option because the theory is sound and it may
+  suit samplers not tested here — but on this repo's Anima setups the drift rule
+  won, so **leave this on Input drift unless you are experimenting**. Measured at
+  768², CFG 4.5, three seeds, RMSE against the same config's uncached image:
+
+  | config | drift | easy (matched skips) |
+  |---|---|---|
+  | `secant_anneal`/`beta_mix`/32 | 4 skips, RMSE **1.6**, 1.06× | 7 skips, RMSE 19.4, 1.20× |
+  | `secant_anneal`/`beta_mix`/32 | 15 skips, RMSE 28.9, 1.59× | 13 skips, RMSE 30.5, 1.52× |
+  | `euler_ancestral`/`flow`/28 | 12 skips, RMSE 24.0, 1.53× | 13 skips, RMSE 29.8, 1.64× |
+  | `cogent3_pump`/`beta_mix`/28 | 2 skips, RMSE 11.3, 1.04× | 4 skips, RMSE **10.9**, 1.12× |
+  | `dpmpp_2m`/`flow`/25 | 19 skips, RMSE 45.8 | 17 skips, RMSE 119.4 |
+
+  Two things are worth knowing if you do experiment with it. **The paper's τ is
+  the wrong scale for Anima**: 0.05 skips *nothing* here — the useful range is
+  roughly **0.2–0.9** on ancestral samplers and around **0.05** on `dpmpp_2m`, so
+  it does not transfer across that divide the way it is supposed to. And the
+  skips it does buy land in the wrong place: the predicted change falls
+  monotonically along an ancestral trajectory, so the rule spends its whole
+  budget recomputing early and puts **every skip in the low-noise half**, where
+  fine detail is being resolved. The one place it beat the drift rule on all
+  three seeds is `cogent3_pump` at τ 0.4 (and, on one seed, `dpmpp_2m` at τ 0.05,
+  which gets a slightly wider usable window than it has under drift) — small
+  wins, not a reason to switch. Images written before this option record `drift`
+  in their metadata and restore with it.
+
+- **Uncond threshold scale (Settings → TeaCache, default 1 = off).** Multiplies
+  the threshold for the *negative-prompt* cache stream only, so it skips more
+  than the positive one. Off by default and worth understanding before raising:
+  the uncond pass is not the less important one. At CFG *s* the guided velocity
+  is `v_uncond + s·(v_cond − v_uncond)`, so an error in the uncond branch enters
+  with weight `|1 − s|` — 3.5 at CFG 4.5, against the positive branch's 4.5. It
+  is only empirically *smoother*, which is why it already skips more than the
+  cond stream at an equal threshold (measured here: it skipped on 4.9% more
+  steps than the cond stream did, across 88 cached runs). Raise it only if your
+  own A/B says the extra skips cost nothing.
+
 - **When to turn calibration off.** Calibration is fit on a single *deterministic
   Euler* trajectory over the flow schedule, so it matches deterministic samplers
   best. Stochastic / second-order samplers — e.g. `secant_anneal` on the `beta`
