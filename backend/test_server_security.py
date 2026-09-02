@@ -47,6 +47,16 @@ def test_generate_payload_rejects_runaway_steps():
     assert server.GeneratePayload(steps=200, width=8192, cfg=0.0).steps == 200
 
 
+def test_teacache_uncond_scale_is_a_bounded_setting():
+    """Settings-level, not a form field: bounded at [1, 4] and defaulting off."""
+    assert server.Settings().teacache_uncond_scale == 1.0
+    assert server.Settings(teacache_uncond_scale=2.5).teacache_uncond_scale == 2.5
+    for bad in (0.5, 4.5):
+        with pytest.raises(ValidationError):
+            server.Settings(teacache_uncond_scale=bad)
+    assert not hasattr(server.GeneratePayload(), "teacache_uncond_scale")
+
+
 def test_teacache_rule_is_an_enum():
     """The rule reaches the pipeline verbatim, so an unknown one must be a 422
     at the API edge rather than a ValueError mid-generation."""

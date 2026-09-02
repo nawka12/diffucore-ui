@@ -920,6 +920,25 @@
                   </details>
                 </div>
               </template>
+
+              <div class="slider">
+                <div class="slider-head"><span>Uncond threshold scale</span>
+                  <input type="number" x-model.number="settings.teacache_uncond_scale"
+                         min="1" max="4" step="0.1" @change="saveTeacacheSettings()"></div>
+                <input type="range" x-model.number="settings.teacache_uncond_scale"
+                       min="1" max="4" step="0.1" @change="saveTeacacheSettings()">
+                <p class="set-purpose">Multiplies the threshold for the negative-prompt cache stream
+                  only, so it skips more than the positive one. 1 = both streams share the threshold.</p>
+                <details class="set-more">
+                  <summary>Why this is not a free win</summary>
+                  <p>At CFG <em>s</em> the guided velocity is
+                    <code>v_uncond + s·(v_cond − v_uncond)</code>, so an error in the uncond pass
+                    enters with weight <code>|1 − s|</code> — 3.5 at CFG 4.5, against the positive
+                    branch's 4.5. The uncond stream is not less important, only smoother, and at an
+                    equal threshold it already skips more. Raise this only if an A/B says the extra
+                    skips cost nothing.</p>
+                </details>
+              </div>
             </section>
 
             <!-- Sampler & scheduler knobs -->

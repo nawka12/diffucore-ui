@@ -493,6 +493,12 @@ class Settings(BaseModel):
     # (Kynkäänniemi et al., 2024). (0, 1) = guide every step (off).
     cfg_interval_start: float = Field(0.0, ge=0.0, lt=1.0)
     cfg_interval_end: float = Field(1.0, gt=0.0, le=1.0)
+    # Multiplies the TeaCache threshold for the *uncond* stream only (Anima).
+    # The uncond pass is not the less important one -- at CFG s an error in it
+    # enters the guided velocity with weight |1-s| against the cond branch's s
+    # -- but it is empirically smoother, so a looser threshold may buy forwards
+    # for free. 1.0 = both streams share the threshold (off).
+    teacache_uncond_scale: float = Field(1.0, ge=1.0, le=4.0)
 
     @model_validator(mode="after")
     def _cfg_interval_ordered(self):
@@ -747,6 +753,13 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             if (ivl_start, ivl_end) != (0.0, 1.0) and ivl_start < ivl_end:
                 common["cfg_interval_start"] = ivl_start
                 common["cfg_interval_end"] = ivl_end
+
+        # Looser threshold on the uncond cache stream (settings panel). Anima
+        # only -- TeaCache is Anima-only -- and injected only when non-default,
+        # like the interval above, so metadata stays clean.
+        uncond_scale = float(SETTINGS["teacache_uncond_scale"])
+        if uncond_scale != 1.0 and p.teacache > 0:
+            common["teacache_uncond_scale"] = uncond_scale
 
         if p.mode == "i2i":
             if not p.input_image:

@@ -242,6 +242,10 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
         fields.append(f"TeaCache forecast: {gen_kwargs.get('teacache_forecast', 'hermite')}")
         # Likewise: absent means the image predates the rule choice (drift).
         fields.append(f"TeaCache rule: {gen_kwargs.get('teacache_rule', 'drift')}")
+        # Settings-level, so written for the record but never restored on load
+        # (same handling as the CFG interval line above).
+        if gen_kwargs.get("teacache_uncond_scale", 1.0) != 1.0:
+            fields.append(f"TeaCache uncond scale: {gen_kwargs['teacache_uncond_scale']}")
     if gen_kwargs.get("deepcache_interval", 1) > 1:
         fields.append(f"DeepCache: {gen_kwargs['deepcache_interval']}")
     if detailer:
@@ -345,6 +349,8 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
         extra["teacache"] = f"{gen_kwargs['teacache_thresh']}{raw}"
         extra["teacache_forecast"] = gen_kwargs.get("teacache_forecast", "hermite")
         extra["teacache_rule"] = gen_kwargs.get("teacache_rule", "drift")
+        if gen_kwargs.get("teacache_uncond_scale", 1.0) != 1.0:
+            extra["teacache_uncond_scale"] = gen_kwargs["teacache_uncond_scale"]
     if gen_kwargs.get("deepcache_interval", 1) > 1:
         extra["deepcache"] = gen_kwargs["deepcache_interval"]
     if detailer:

@@ -121,6 +121,17 @@ def test_teacache_rule_absent_restores_drift():
     assert "teacacheRule" not in _roundtrip(_BASE_GEN)
 
 
+def test_teacache_uncond_scale_written_only_when_set():
+    """A settings-level knob: written for the record when raised, absent at the
+    1.0 default, and never restored onto the form (like the CFG interval)."""
+    gen = {**_BASE_GEN, "teacache_thresh": 0.15}
+    assert "TeaCache uncond scale" not in md.format_metadata(gen, _StubEngine())
+    gen2 = {**gen, "teacache_uncond_scale": 2.0}
+    assert "TeaCache uncond scale: 2.0" in md.format_metadata(gen2, _StubEngine())
+    assert md.format_swarmui_metadata(gen2, _StubEngine()).count("teacache_uncond_scale") == 1
+    assert "teacacheUncondScale" not in _roundtrip(gen2)
+
+
 def test_deepcache_roundtrips():
     fields = _roundtrip({**_BASE_GEN, "deepcache_interval": 3})
     assert fields["deepcacheOn"] is True

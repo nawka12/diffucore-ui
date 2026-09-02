@@ -191,7 +191,7 @@ document.addEventListener('alpine:init', () => {
     // ── settings panel (global, non-per-image knobs) ────────────
     settingsOpen: false,
     settingsTab: 'teacache',
-    settings: { curvature: 0.25, eta_max: 1.0, gate_reduce: 'all', beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, cfg_interval_start: 0.0, cfg_interval_end: 1.0, vae_tiling: 'auto', metadata_format: 'a1111', gen_defaults: null, nsfw_blur: true },
+    settings: { curvature: 0.25, eta_max: 1.0, gate_reduce: 'all', beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, cfg_interval_start: 0.0, cfg_interval_end: 1.0, teacache_uncond_scale: 1.0, vae_tiling: 'auto', metadata_format: 'a1111', gen_defaults: null, nsfw_blur: true },
     teacacheStatus: { loaded: false, calibratable: false, family: null, coefficients: null },
     calibratingTea: false,
     // WD tagger availability + rating progress (Settings → Gallery).
@@ -1405,6 +1405,13 @@ document.addEventListener('alpine:init', () => {
                     s.lq_threshold, s.cfg_interval_start, s.cfg_interval_end];
       if (nums.some((n) => n == null || n === '' || Number.isNaN(n))) return;
       if (s.cfg_interval_start >= s.cfg_interval_end) return;
+      this.saveSettings();
+    },
+    // Same guard for the TeaCache tab's lone number field: mid-edit it is
+    // briefly ''/null, which the backend rejects.
+    saveTeacacheSettings() {
+      const v = this.settings.teacache_uncond_scale;
+      if (v == null || v === '' || Number.isNaN(v)) return;
       this.saveSettings();
     },
 
