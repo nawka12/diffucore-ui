@@ -751,8 +751,26 @@ pass is skipped entirely: each skipped step costs half as much.
 - `0 / 0.75` is a good first try: full guidance while composition and palette
   form, conditioned-only for the final quarter, where CFG mostly sharpens what's
   already decided. At 12 steps on Anima that measured ~1.12× end-to-end.
-- The paper's headline result is raising **start** above 0 (skip guidance at the
-  *highest* noise), which can improve quality as well as speed — worth an A/B.
+- **Raising `start` above 0 is a further free speedup — measured, and the
+  recommended tuning.** This is the paper's headline direction (skip guidance at
+  the *highest* noise). Measured at 768², 3 seeds × 2 prompts × `secant_anneal`
+  and `cogent3_pump`, TeaCache off, against `0 / 1`:
+
+  | interval | speedup |
+  |---|---|
+  | `0 / 0.75` (today's suggestion) | 1.13× |
+  | `0.1 / 0.75` | 1.19× |
+  | `0.2 / 0.75` | **1.25×** |
+
+  No visible quality loss at either start value, on any seed — including on a
+  deliberately *short* prompt, which is where Anima's reliance on its LLM
+  conditioning made a loss most likely. What does change is the **composition**:
+  guidance at high noise is what decides framing and pose, so raising `start`
+  gives you a genuinely different sample from the same seed, and on the detailed
+  prompt a composition tag like `full body` held less reliably at `0.2` than at
+  `0.1`. So: **`0.1 / 0.75` if you lean on composition tags or want to stay near
+  your existing seeds, `0.2 / 0.75` for the most speed.** The shipped default is
+  still `0 / 1` (off) — these are your knobs to set.
 - Applies to Anima and SD/SDXL (t2i, img2img, inpaint) and composes with
   TeaCache. FLUX is guidance-distilled (no CFG pass), so it's unaffected. When
   active it's recorded in PNG metadata as `CFG interval: start-end`.

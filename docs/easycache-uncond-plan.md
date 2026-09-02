@@ -1,6 +1,42 @@
 # EasyCache decision rule + cheaper uncond pass — implementation plan
 
-> Status: **planned 2026-09-02, not started.** Written for an executor agent.
+> Status: **executed 2026-09-02.** Parts A, B1 and B2 shipped; B3 rejected on
+> its own instrumentation. Summary of what the plan's gates actually returned:
+>
+> - **A (EasyCache rule) — shipped, A/B FAILED, `drift` stays the default.** The
+>   rule is a Generate-panel dropdown and is marked experimental. A5 returned
+>   0/3 pass criteria. The paper's τ is the wrong scale for Anima (0.05 skips
+>   *nothing*; useful range ≈0.2–0.9 ancestral, ≈0.05 on `dpmpp_2m`). The
+>   ε-budget transfer the rule promises is real — Σε = 11.07/11.17/11.37 across
+>   the three ancestral configs, within 3 % — but the deterministic canary's
+>   budget is 17× smaller (0.67), so one τ can't span the divide, and because ε
+>   falls monotonically along an ancestral trajectory the rule puts **every skip
+>   in the low-σ half**, where detail resolves. At matched skips drift wins:
+>   `secant_anneal` 4 skips @ RMSE 1.6 vs easy's 7 @ 19.4; the canary degrades
+>   2.6× faster (119 vs 46). Narrow easy wins: `cogent3_pump` τ 0.4 (3/3 seeds)
+>   and `dpmpp_2m` τ 0.05 (1 seed). Harness `scripts/ab_teacache_rule.py`,
+>   memory `easycache-rule-measured-worse`.
+> - **B1 (interval start > 0) — measured, recommendation made, default not
+>   flipped** (as instructed). vs (0,1): (0,0.75) ×1.13, (0.1,0.75) ×1.19,
+>   (0.2,0.75) **×1.25**. No visible quality loss at either start on any seed,
+>   including the short prompt. It changes *composition* (that is what high-σ
+>   guidance decides), and `full body` held less reliably at 0.2 than 0.1 ⇒
+>   recommend **(0.1, 0.75)**, or (0.2, 0.75) for max speed. Harness
+>   `scripts/ab_cfg_interval_start.py`.
+> - **B2 (uncond threshold scale) — knob shipped, its A/B NOT run.**
+>   Settings → TeaCache, 1.0–4.0, default 1.0 = off.
+> - **B3 (uncond follows cond) — NOT built, per the plan's own gate.** Across 88
+>   cached runs the uncond stream computed while the cond stream skipped on 92
+>   of 1870 uncond calls = **4.9 %**, below the 10 % threshold.
+>
+> Deviations from the plan worth knowing: payload validation uses
+> `Literal["drift","easy"]` rather than a `field_validator` (the `gate_reduce`
+> precedent already in `Settings`, same 4xx); the warm-up axis was measured on
+> one config instead of crossed with τ, since the paper's τ skipped nothing and
+> the axis was moot; and `fa2_turing` + `compile` are mutually exclusive
+> (pre-existing loader guard), so the compile smoke ran on sdpa — it passed.
+>
+> Original plan follows unchanged. Written for an executor agent.
 > Origin: the Anima speed research of the same date (items 2 and 3 of the
 > ledger; report at https://claude.ai/code/artifact/44858fdc-097d-45b5-833b-d2f07f132b02,
 > memory `anima-speed-research-2026-09`). Everything below is grounded in the
