@@ -327,16 +327,29 @@
               <p class="sub">Skips transformer work on low-change steps. Higher skips more: faster, lower fidelity.</p>
               <details class="set-more">
                 <summary>Choosing a threshold</summary>
-                <p>The threshold bounds accumulated per-step change, so the safe value depends on
-                  sampler and steps. High step counts with single-step or secant samplers stay
-                  near-lossless up to ~0.3–0.5; few-step multistep samplers (dpmpp_2m) need 0.01
-                  or less.</p>
+                <p x-show="form.teacacheRule === 'drift'">The threshold bounds accumulated per-step
+                  change, so the safe value depends on sampler and steps. High step counts with
+                  single-step or secant samplers stay near-lossless up to ~0.3–0.5; few-step
+                  multistep samplers (dpmpp_2m) need 0.01 or less.</p>
+                <p x-show="form.teacacheRule === 'easy'">The threshold is τ, the predicted relative
+                  output change allowed to accumulate before a recompute: 0.05 is the paper
+                  default, 0.02 conservative, 0.10 aggressive. It is meant to hold across samplers
+                  and step counts without retuning.</p>
               </details>
-              <label class="chip toggle" :class="{on: form.teacacheCalibrated}">
+              <div class="slider-head"><span>Decision rule</span>
+                <select x-model="form.teacacheRule">
+                  <option value="drift">Input drift (TeaCache, calibratable)</option>
+                  <option value="easy">Output change (EasyCache, no calibration)</option>
+                </select></div>
+              <p class="sub">What decides a skip. TeaCache accumulates drift of the timestep-modulated
+                block input; EasyCache accumulates the model's own predicted output change, which
+                reacts to ancestral noise injections and is meant to transfer across samplers.</p>
+              <label class="chip toggle" :class="{on: form.teacacheCalibrated}"
+                     x-show="form.teacacheRule === 'drift'">
                 <input type="checkbox" x-model="form.teacacheCalibrated"> Use calibrated coefficients</label>
-              <p class="sub">Maps the threshold through the fitted curve (Settings → TeaCache) so it
-                tracks true per-step change. When off, the raw estimate maps differently; re-tune
-                the threshold.</p>
+              <p class="sub" x-show="form.teacacheRule === 'drift'">Maps the threshold through the
+                fitted curve (Settings → TeaCache) so it tracks true per-step change. When off, the
+                raw estimate maps differently; re-tune the threshold.</p>
               <div class="slider-head"><span>Forecast basis</span>
                 <select x-model="form.teacacheForecast">
                   <option value="hermite">HiCache (Hermite, order 2)</option>

@@ -47,6 +47,17 @@ def test_generate_payload_rejects_runaway_steps():
     assert server.GeneratePayload(steps=200, width=8192, cfg=0.0).steps == 200
 
 
+def test_teacache_rule_is_an_enum():
+    """The rule reaches the pipeline verbatim, so an unknown one must be a 422
+    at the API edge rather than a ValueError mid-generation."""
+    for model in (server.GeneratePayload, server.DetailPayload,
+                  server.UpscalePayload, server.XYZPayload):
+        assert model().teacache_rule == "drift"
+        assert model(teacache_rule="easy").teacache_rule == "easy"
+        with pytest.raises(ValidationError):
+            model(teacache_rule="bogus")
+
+
 def test_xyz_and_upscale_payloads_bounded():
     with pytest.raises(ValidationError):
         server.XYZPayload(steps=201)

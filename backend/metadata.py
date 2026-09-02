@@ -240,6 +240,8 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
         # Written whenever TeaCache ran, so the absence of the key means the
         # image predates the hermite forecast (i.e. it was taylor).
         fields.append(f"TeaCache forecast: {gen_kwargs.get('teacache_forecast', 'hermite')}")
+        # Likewise: absent means the image predates the rule choice (drift).
+        fields.append(f"TeaCache rule: {gen_kwargs.get('teacache_rule', 'drift')}")
     if gen_kwargs.get("deepcache_interval", 1) > 1:
         fields.append(f"DeepCache: {gen_kwargs['deepcache_interval']}")
     if detailer:
@@ -342,6 +344,7 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
         raw = "" if gen_kwargs.get("teacache_use_coeffs", True) else " (raw)"
         extra["teacache"] = f"{gen_kwargs['teacache_thresh']}{raw}"
         extra["teacache_forecast"] = gen_kwargs.get("teacache_forecast", "hermite")
+        extra["teacache_rule"] = gen_kwargs.get("teacache_rule", "drift")
     if gen_kwargs.get("deepcache_interval", 1) > 1:
         extra["deepcache"] = gen_kwargs["deepcache_interval"]
     if detailer:
@@ -623,6 +626,9 @@ def workspace_fields(meta: dict) -> dict:
             # that so the params reproduce the image, not the current default.
             fc = str(meta.get("teacache_forecast", "taylor")).strip()
             out["teacacheForecast"] = fc if fc in ("hermite", "taylor") else "hermite"
+            # Absent on pre-EasyCache images, which all used the drift rule.
+            rl = str(meta.get("teacache_rule", "drift")).strip()
+            out["teacacheRule"] = rl if rl in ("drift", "easy") else "drift"
     # DeepCache is only written when it ran: "DeepCache: <interval>". Absent
     # means off — additive, like TeaCache above.
     dc = meta.get("deepcache")

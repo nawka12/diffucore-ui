@@ -93,6 +93,7 @@ document.addEventListener('alpine:init', () => {
       width: 1024, height: 1024,
       strength: 0.6, shift: 3.0,
       teacacheOn: false, teacache: 0.15, teacacheCalibrated: true, teacacheForecast: 'hermite',
+      teacacheRule: 'drift',
       deepcacheOn: false, deepcache: 2,
     },
     // Batch count: >1 submits N generate jobs at once. With a pinned seed each
@@ -1112,6 +1113,7 @@ document.addEventListener('alpine:init', () => {
           teacache: this.form.teacacheOn ? this.form.teacache : 0,
           teacache_calibrated: this.form.teacacheCalibrated,
           teacache_forecast: this.form.teacacheForecast,
+          teacache_rule: this.form.teacacheRule,
           deepcache: this.form.deepcacheOn ? this.form.deepcache : 1,
           input_image: this.mode !== 't2i' ? this.inputImage : null,
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
@@ -1274,6 +1276,7 @@ document.addEventListener('alpine:init', () => {
         teacache: this.form.teacacheOn ? this.form.teacache : 0,
         teacache_calibrated: this.form.teacacheCalibrated,
         teacache_forecast: this.form.teacacheForecast,
+        teacache_rule: this.form.teacacheRule,
         x_type: this.axes.x.type, x_vals: this.axisValues(this.axes.x),
         y_type: this.axes.y.type, y_vals: this.axisValues(this.axes.y),
         z_type: this.axes.z.type, z_vals: this.axisValues(this.axes.z),
@@ -1635,6 +1638,7 @@ document.addEventListener('alpine:init', () => {
           teacache: this.upscaleForm.teacache,
           teacache_calibrated: this.form.teacacheCalibrated,
           teacache_forecast: this.form.teacacheForecast,
+          teacache_rule: this.form.teacacheRule,
           preview: this.preview,
           blur_check: this.blurOn,
         };
@@ -1753,6 +1757,7 @@ document.addEventListener('alpine:init', () => {
           teacache: this.detailForm.teacache,
           teacache_calibrated: this.form.teacacheCalibrated,
           teacache_forecast: this.form.teacacheForecast,
+          teacache_rule: this.form.teacacheRule,
           preview: this.preview,
           blur_check: this.blurOn,
         };
@@ -2063,6 +2068,7 @@ document.addEventListener('alpine:init', () => {
       const keys = ['prompt', 'neg', 'steps', 'cfg', 'sampler', 'scheduler',
                     'seed', 'shift', 'strength', 'width', 'height',
                     'teacacheOn', 'teacache', 'teacacheCalibrated', 'teacacheForecast',
+                    'teacacheRule',
                     'deepcacheOn', 'deepcache'];
       for (const k of keys) if (f[k] !== undefined) this.form[k] = f[k];
       // The metadata may come from another family's image (an SD sampler while

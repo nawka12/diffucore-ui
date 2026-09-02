@@ -106,6 +106,21 @@ def test_teacache_forecast_absent_restores_taylor():
     assert fields["teacacheForecast"] == "taylor"
 
 
+def test_teacache_rule_roundtrips():
+    """Both skip-decision rules survive the A1111 and SwarmUI round-trips."""
+    for rule in ("drift", "easy"):
+        gen = {**_BASE_GEN, "teacache_thresh": 0.15, "teacache_rule": rule}
+        assert _roundtrip(gen)["teacacheRule"] == rule
+        assert _roundtrip_swarm(gen)["teacacheRule"] == rule
+
+
+def test_teacache_rule_absent_restores_drift():
+    """Pre-EasyCache images carry no rule key and all used the drift rule."""
+    assert md.workspace_fields({"teacache": "0.15"})["teacacheRule"] == "drift"
+    # Off entirely -> nothing restored, as for the forecast (additive).
+    assert "teacacheRule" not in _roundtrip(_BASE_GEN)
+
+
 def test_deepcache_roundtrips():
     fields = _roundtrip({**_BASE_GEN, "deepcache_interval": 3})
     assert fields["deepcacheOn"] is True
