@@ -20,8 +20,9 @@ network/share flags, architecture, and status.
   comparison.
 - **Prompt-based LoRA loading** — embed `<lora:name:mult>` directly in your
   prompt to load adapters on the fly.
-- **Detailer** — an ADetailer-style toggle that detects faces/hands with a YOLO
-  model and inpaints each region at native resolution after generation. Works on
+- **Detailer** — an ADetailer-style toggle (and a standalone "Detail" action on
+  any result or gallery image) that detects faces/hands with a YOLO model and
+  inpaints each region at native resolution after generation. Works on
   UNet (SD/SDXL) and DiT (Anima, FLUX) backbones.
 - **Tiled upscaler** — an Ultimate-SD-Upscale-style toggle (and a standalone
   "Upscale" action on any result or gallery image) that enlarges 2×/4× by
@@ -713,8 +714,9 @@ pass is skipped entirely: each skipped step costs half as much.
 
 ### Detailer (after generate)
 
-Enable **Detailer** in the Generate view to run an ADetailer-style refinement
-pass on each result. A YOLO model detects regions (faces, hands, …); each is
+Enable **Detailer** in the Generate view, or use the standalone **Detail**
+button on a result or any gallery image, to run an ADetailer-style refinement
+pass. A YOLO model detects regions (faces, hands, …); each is
 cropped, inpainted at the model's native resolution, and composited back — the
 fix for soft, low-detail small faces. Unlike ADetailer it drives Diffucore's
 own inpaint, so it works for **UNet (SD/SDXL)** and **DiT (Anima, FLUX)** alike.
@@ -723,6 +725,11 @@ own inpaint, so it works for **UNet (SD/SDXL)** and **DiT (Anima, FLUX)** alike.
 then a hand model); each runs in sequence, refining the previous result, and
 carries its own optional prompt (blank reuses the main prompt). Confidence,
 denoise strength, and the mask padding / blur / dilation are shared across passes.
+
+**The standalone button refines an image that already exists** — a finished
+result, or any PNG in the gallery — without re-sampling it. It opens with the
+Generate-view detailer settings pre-filled, and a gallery image supplies its own
+sampler/steps/CFG from its metadata so the passes match how it was made.
 
 **Denoise strength is model-aware** — the flow-matching DiTs (Anima, FLUX)
 front-load high σ, so a given strength turns into far more effective noise than
@@ -753,6 +760,21 @@ detail-costly on a low-denoise refine, so leave it off (or low) for the sharpest
 result. Tile size, overlap, denoise, and an optional per-pass prompt (blank
 reuses the main prompt) round out the controls; all upscale settings are written
 into the output PNG's metadata.
+
+### Re-running the post passes is cheap
+
+The upscaler and the detailer run *after* sampling and don't change the base
+image, so generating, then enabling one of them and hitting **Generate** again,
+reuses the base you already have instead of re-sampling it. The same holds while
+you re-tune them: change the detailer strength or the upscale denoise, hit
+Generate, and only the post passes run.
+
+This needs a **locked seed** — `-1` means "give me a new image", so it always
+samples. A random-seed run still stores its base under the seed it landed on, so
+clicking ♻ (recycle) and then adding a post pass is a reuse, not a second
+generation. Anything that changes the base — a word in the prompt, the step
+count, the size, a LoRA, a sampler knob, loading a different model — samples
+fresh, as before.
 
 ### Sweep parameters (X/Y/Z)
 

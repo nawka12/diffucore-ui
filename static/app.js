@@ -134,6 +134,16 @@ document.addEventListener('alpine:init', () => {
     upscalePopover: { open: false, busy: false },
     upscaleForm: { scale: 2.0, denoise: 0.35, tile: 1024, overlap: 128, prompt: '', teacache: 0.0, base: '' },
 
+    // ── standalone detailer popover (from result / lightbox) ─────
+    detailPopover: { open: false, busy: false },
+    detailForm: {
+      models: [{ model: '', prompt: '' }],
+      prompt: '', neg: '',
+      confidence: 0.3, strength: 0.4,
+      dilation: 4, padding: 32, blur: 4, maxDet: 0,
+      teacache: 0.0,
+    },
+
     // ── generation output ───────────────────────────────────────
     busy: false,
     cancelling: false,
@@ -1657,6 +1667,120 @@ document.addEventListener('alpine:init', () => {
         this.info = 'Error: ' + e;
       } finally {
         this.upscalePopover.busy = false;
+        this.busy = false;
+        this.cancelling = false;
+        this.previewUrl = null;
+      }
+    },
+
+    // ── standalone detailer ──────────────────────────────────────
+    // Mirrors the upscale popover: refine an image that already exists instead
+    // of re-sampling it. Works on any gallery PNG, so it needs no seed lock.
+    addDetailFormModel() {
+      this.detailForm.models.push({ model: this.detailerChoices[0], prompt: '' });
+    },
+    removeDetailFormModel(i) {
+      this.detailForm.models.splice(i, 1);
+      if (!this.detailForm.models.length) this.addDetailFormModel();
+    },
+    async openDetail() {
+      let fromGallery = false;
+      if (this.lightbox.open && this.selected) {
+        await this._metaLoad;                    // metadata may still be in flight
+        this._detailSrc = { url: this.selected.url, meta: this.selectedFields };
+        fromGallery = true;
+      } else if (this.resultUrl) {
+        this._detailSrc = { url: this.resultUrl, meta: null };
+      } else {
+        this._detailSrc = null;
+      }
+      // Seed the popover from the Generate-tab detailer panel, so the settings
+      // you already tuned there carry over.
+      const meta = this._detailSrc && this._detailSrc.meta;
+      this.detailForm.models = this.detail.models.map(dm => ({ ...dm }));
+      if (!this.detailForm.models.length) this.addDetailFormModel();
+      for (const dm of this.detailForm.models) {
+        if (!dm.model) dm.model = this.detailerChoices[0];
+      }
+      this.detailForm.prompt = (meta && meta.prompt) || this.form.prompt;
+      this.detailForm.neg = this.detail.neg || (meta && meta.neg) || this.form.neg;
+      this.detailForm.confidence = this.detail.confidence;
+      this.detailForm.strength = this.detail.strength;
+      this.detailForm.dilation = this.detail.dilation;
+      this.detailForm.padding = this.detail.padding;
+      this.detailForm.blur = this.detail.blur;
+      this.detailForm.maxDet = this.detail.maxDet;
+      if (fromGallery) { this.closeLightbox(); this.tab = 'generate'; }
+      this.detailPopover.open = true;
+      this.detailPopover.busy = false;
+    },
+    closeDetail() { this.detailPopover.open = false; },
+    async runDetail() {
+      const src = this._detailSrc;
+      if (!src) { this.flash('No image to detail'); return; }
+      if (!this.modelLoaded) { this.flash('Load a model first'); return; }
+      const models = this.detailForm.models.filter(dm => dm.model && !dm.model.startsWith('('));
+      if (!models.length) { this.flash('Pick at least one detection model'); return; }
+      this.closeDetail();   // reveal the Generate-tab progress bar + live preview
+      this.busy = true;
+      this.progress = { step: 0, total: 0 };
+      this.previewUrl = null;
+      try {
+        const blob = await (await fetch(src.url)).blob();
+        const inputImage = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result);
+          r.onerror = rej;
+          r.readAsDataURL(blob);
+        });
+        // Refine params describe the source: a gallery image's own metadata
+        // (over the form as a fallback), or the live form for a fresh result.
+        const refine = src.meta ? { ...this.form, ...src.meta } : this.form;
+        const payload = {
+          input_image: inputImage,
+          models,
+          prompt: this.detailForm.prompt,
+          neg: this.detailForm.neg,
+          confidence: this.detailForm.confidence,
+          strength: this.detailForm.strength,
+          dilation: this.detailForm.dilation,
+          padding: this.detailForm.padding,
+          blur: this.detailForm.blur,
+          max_det: this.detailForm.maxDet,
+          steps: refine.steps, cfg: refine.cfg,
+          sampler: refine.sampler, scheduler: refine.scheduler,
+          seed: refine.seed,
+          teacache: this.detailForm.teacache,
+          teacache_calibrated: this.form.teacacheCalibrated,
+          teacache_forecast: this.form.teacacheForecast,
+          preview: this.preview,
+          blur_check: this.blurOn,
+        };
+        const ev = await this.submitJob('/api/detail', payload);
+        if (ev.type === 'done') {
+          this.previewUrl = null;
+          this.resultUrl = ev.image_url + '?t=' + Date.now();
+          // Carry the detail run's own verdict over, or the canvas would keep
+          // the previous result's blur state.
+          this.resultPath = ev.path || null;
+          if (ev.path) this._promptNsfw[ev.path] = { nsfw: !!ev.nsfw_prompt, rating: ev.prompt_rating };
+          this.genReveal = false;
+          this.batchResults = [];   // the detailed image replaces any batch strip
+          this.info = ev.info;
+          this.closeLightbox();
+          this.tab = 'generate';
+          this.flash('Detailer done');
+        } else if (ev.type === 'cancelled') {
+          this.previewUrl = null;
+          this.info = 'Detailer cancelled';
+        } else if (ev.type === 'error') {
+          this.info = 'Error: ' + ev.message;
+          this.flash(ev.message);
+        }
+      } catch (e) {
+        this.info = 'Error: ' + e;
+      } finally {
+        this.detailPopover.busy = false;
         this.busy = false;
         this.cancelling = false;
         this.previewUrl = null;

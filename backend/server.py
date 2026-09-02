@@ -13,11 +13,13 @@ from __future__ import annotations
 import asyncio
 import atexit
 import base64
+import hashlib
 import io
 import itertools
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import tempfile
@@ -382,6 +384,35 @@ class GeneratePayload(BaseModel):
         return self
 
 
+class DetailPayload(BaseModel):
+    """Standalone detailer — input image + all params the detailer passes need.
+
+    The post-gen counterpart lives on ``GeneratePayload``; this one refines an
+    image that already exists (a finished result, or any gallery PNG) without
+    re-sampling it.
+    """
+    input_image: str = ""
+    models: List[DetailerModel] = []
+    prompt: str = ""                     # fallback for a pass with no prompt of its own
+    neg: str = ""
+    confidence: float = Field(0.3, ge=0.0, le=1.0)
+    strength: float = Field(0.4, ge=0.0, le=1.0)
+    dilation: int = Field(4, ge=0, le=128)
+    padding: int = Field(32, ge=0, le=512)
+    blur: int = Field(4, ge=0, le=64)
+    max_det: int = Field(0, ge=0, le=1000)                 # 0 = all detections
+    steps: int = Field(25, ge=1, le=200)
+    cfg: float = Field(6.0, ge=0.0, le=50.0)
+    sampler: str = "dpmpp_2m"
+    scheduler: str = "karras"
+    seed: int = Field(-1, ge=-1, le=2**63 - 1)
+    teacache: float = Field(0.0, ge=0.0, le=1.0)
+    teacache_calibrated: bool = True
+    teacache_forecast: str = "hermite"
+    preview: bool = True
+    blur_check: bool = False             # see GeneratePayload.blur_check
+
+
 class UpscalePayload(BaseModel):
     """Standalone upscale — input image + all params the tiled upscaler needs."""
     input_image: str = ""
@@ -603,6 +634,51 @@ def _save_output(image: Image.Image, gen_kwargs: dict,
     return out
 
 
+# ── base-image cache ────────────────────────────────────────────────
+# The upscaler and the detailer run *after* sampling and don't change the base
+# image, so toggling or re-tuning them and hitting Generate again re-samples an
+# image we already have. Keep the last base (pre-upscale, pre-detailer,
+# pre-``post_generate``) in memory keyed by everything that decides it; a
+# matching payload skips straight to the post passes.
+#
+# One slot: every generation overwrites it, so the memory cost is one image.
+# Only the worker thread touches it (jobs run one at a time), so no lock.
+_BASE_CACHE: "dict[str, tuple[Image.Image, str]]" = {}
+
+
+def _fingerprint_value(v):
+    """JSON-safe stand-in for one generation kwarg. Images are hashed by pixels
+    so an i2i/inpaint source is compared by content, not by object identity."""
+    if isinstance(v, Image.Image):
+        return ["image", v.mode, v.size, hashlib.sha256(v.tobytes()).hexdigest()]
+    return v
+
+
+def _base_fingerprint(gen_kwargs: dict, mode: str,
+                      loras: "list[tuple[str, float]]") -> str:
+    """Identity of the base image ``gen_kwargs`` would sample.
+
+    Built from the kwargs actually handed to the engine (minus the callbacks,
+    which don't affect pixels) so it can't drift from the real call as new
+    sampler knobs are threaded through.
+
+    Two things the kwargs alone don't carry: ``ENGINE.weights_epoch`` (which
+    model is loaded) and ``loras`` — the engine is handed the *stripped* prompt,
+    so without the parsed ``<lora:…>`` tags two prompts that differ only in
+    their LoRAs would share a key.
+    """
+    parts = {
+        "mode": mode,
+        "epoch": ENGINE.weights_epoch,
+        "loras": sorted((str(n), float(m)) for n, m in loras),
+        "kwargs": {k: _fingerprint_value(v) for k, v in sorted(gen_kwargs.items())
+                   if k not in ("progress_callback", "preview_callback")},
+    }
+    return hashlib.sha256(
+        json.dumps(parts, sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+
 # ── generation (ported from the old _generate_with_loras) ───────────
 
 def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
@@ -694,7 +770,27 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             gen_fn = ENGINE.generate_t2i
 
         t0 = time.perf_counter()
-        image, info = gen_fn(**gen_kwargs)
+        # Reuse the last base image when nothing that decides it has changed —
+        # i.e. the user only toggled or re-tuned the upscaler/detailer below.
+        # A seed of -1 asks for a *new* image, so it never reads the cache; it
+        # still writes one, under the seed it resolved to, so recycling that
+        # seed and re-running the post passes is a hit.
+        fp = _base_fingerprint(gen_kwargs, p.mode, loras) if p.seed != -1 else None
+        cached = _BASE_CACHE.get(fp) if fp else None
+        # The cache owns a private copy and hands out private copies: the post
+        # passes return new images, but a ``post_generate`` extension is free to
+        # draw on the one it's given, which would otherwise poison the entry.
+        if cached is not None:
+            base, info = cached
+            image, seed = base.copy(), int(p.seed)
+        else:
+            image, info = gen_fn(**gen_kwargs)
+            seed = ENGINE.last_seed
+            if fp is None and seed >= 0:
+                fp = _base_fingerprint({**gen_kwargs, "seed": seed}, p.mode, loras)
+            if fp is not None:
+                _BASE_CACHE.clear()
+                _BASE_CACHE[fp] = (image.copy(), info)
 
         # Upscaler (tiled, post-gen): run first, on the base image, so the
         # detailer below refines at the upscaled resolution and gets the final
@@ -804,7 +900,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
         image = gctx.image
 
         out = _save_output(image, gen_kwargs, detailer=detailer_meta,
-                           upscale=upscale_meta, blur_check=p.blur_check)
+                           upscale=upscale_meta, seed=seed, blur_check=p.blur_check)
         rel = out.relative_to(OUTPUTS_DIR)
         # post_save: fire-and-forget notification that the PNG is on disk; an
         # extension might mirror it elsewhere, log it, etc.
@@ -818,7 +914,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             "nsfw_prompt": md.prompt_is_nsfw(clean_prompt),
             "prompt_rating": md.prompt_rating(clean_prompt),
             "info": f"{lora_info}{info}  |  inference: {elapsed:.2f}s{upscale_info}{detail_info}  |  saved to {rel}",
-            "seed": ENGINE.last_seed,
+            "seed": seed,
         }
     finally:
         if loras:
@@ -1811,6 +1907,89 @@ async def api_upscale(p: UpscalePayload):
             "seed": seed,
         }
     job = Job("upscale", f"upscale {p.scale}x", run)
+    _enqueue(job)
+    return {"job": job.id}
+
+
+@app.post("/api/detail")
+async def api_detail(p: DetailPayload):
+    err = _teacache_cuda_graphs_conflict(p.teacache)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    active = [dm for dm in p.models if dm.model and not dm.model.startswith("(")]
+    if not active:
+        raise HTTPException(status_code=400, detail="Pick at least one detection model")
+
+    def run(job: Job) -> dict:
+        if not ENGINE.loaded_name:
+            raise RuntimeError("Load a model first")
+        if not ENGINE.can_inpaint:
+            raise RuntimeError("Detailer needs inpaint, unavailable for this model")
+        on_progress, on_preview = _make_callbacks(job)
+        image = _decode_image(p.input_image)
+        # Resolve once, up front: the detailer doesn't record the seed it picked
+        # (unlike upscale's ``last_upscale_seed``), and the output name and
+        # metadata below need it. Sharing it across stacked passes also makes a
+        # random-seed run reproducible from its own metadata.
+        seed = int(p.seed) if p.seed >= 0 else random.randrange(2 ** 32 - 1)
+        notes, applied = [], []
+        for dm in active:
+            # Same per-pass guard as the post-gen path: one failing detector
+            # must not lose the refinements the earlier passes already made.
+            try:
+                image, dnote = ENGINE.detail(
+                    image,
+                    detector_path=str(detector_path(dm.model)),
+                    prompt=dm.prompt.strip() or p.prompt,
+                    negative_prompt=p.neg,
+                    confidence=float(p.confidence),
+                    strength=float(p.strength),
+                    steps=int(p.steps), cfg_scale=float(p.cfg),
+                    sampler=p.sampler, scheduler=p.scheduler,
+                    gate_reduce=SETTINGS["gate_reduce"],
+                    dilation=int(p.dilation), padding=int(p.padding),
+                    blur=int(p.blur), max_det=int(p.max_det),
+                    seed=seed,
+                    teacache_thresh=float(p.teacache),
+                    teacache_use_coeffs=bool(p.teacache_calibrated),
+                    teacache_forecast=p.teacache_forecast,
+                    progress_callback=on_progress,
+                    preview_callback=on_preview if p.preview else None,
+                )
+                notes.append(f"{dm.model}: {dnote.replace('Detailer: ', '')}")
+                applied.append(dm)
+            except Exception as e:  # noqa: BLE001 — surface it, keep the image
+                notes.append(f"⚠ {dm.model} FAILED: {e}")
+        if not applied:
+            raise RuntimeError("; ".join(notes))
+        detailer_meta = {
+            "models": [{"model": dm.model, "prompt": dm.prompt} for dm in applied],
+            "neg": p.neg,
+            "confidence": p.confidence,
+            "strength": p.strength,
+            "dilation": p.dilation,
+            "padding": p.padding,
+            "blur": p.blur,
+            "maxDet": p.max_det,
+        }
+        gen_kwargs = dict(
+            prompt=p.prompt, negative_prompt=p.neg,
+            steps=int(p.steps), cfg_scale=float(p.cfg),
+            sampler=p.sampler, scheduler=p.scheduler,
+        )
+        out = _save_output(image, gen_kwargs, detailer=detailer_meta, seed=seed,
+                           blur_check=p.blur_check)
+        rel = out.relative_to(OUTPUTS_DIR)
+        return {
+            "image_url": _output_url(out),
+            "path": rel.as_posix(),
+            "nsfw_prompt": md.prompt_is_nsfw(p.prompt),
+            "prompt_rating": md.prompt_rating(p.prompt),
+            "info": "detailer [" + "; ".join(notes) + f"]  |  saved to {rel}",
+            "seed": seed,
+        }
+
+    job = Job("detail", f"detail {len(active)} pass(es)", run)
     _enqueue(job)
     return {"job": job.id}
 

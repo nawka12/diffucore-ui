@@ -399,6 +399,7 @@ class Engine:
         self._attention = "sdpa"
         self._last_seed: int = -1
         self._last_upscale_seed: int = -1
+        self._weights_epoch: int = 0
         self._anima_defaults_applied: bool = False
         self._ckpt_cache: "OrderedDict[str, LoadedModel]" = OrderedDict()
 
@@ -432,6 +433,21 @@ class Engine:
     @property
     def applied_loras(self) -> List[str]:
         return list(self._loaded.applied_loras) if self._loaded else []
+
+    @property
+    def weights_epoch(self) -> int:
+        """Counter bumped whenever the loaded weights change identity.
+
+        Incremented on every load, restore, unload, and permanent LoRA fuse.
+        Callers that cache a *result* keyed on generation parameters (the
+        server's base-image cache) fold this in, so a model swap can't serve an
+        image the current weights would no longer produce.
+
+        Deliberately *not* bumped by ``apply_temp_loras``/``clear_temp_loras``:
+        those bracket every generation whose prompt carries ``<lora:…>`` tags,
+        so a bump would make the epoch churn once per run and defeat any cache
+        keyed on it. Callers key the requested LoRA set separately."""
+        return self._weights_epoch
 
     @property
     def last_seed(self) -> int:
@@ -948,6 +964,7 @@ class Engine:
         if self._loaded is not None:
             del self._loaded.model
             self._loaded = None
+            self._weights_epoch += 1
         self._reclaim_memory()
 
     # ── conditioning cache ─────────────────────────────────────────
@@ -957,6 +974,7 @@ class Engine:
         structurally impossible; LoRA changes clear it in place (below)."""
         if self._loaded is not None:
             self._loaded.model.cond_cache = ConditioningCache()
+            self._weights_epoch += 1
 
     def _invalidate_cond_cache(self) -> None:
         """Drop cached conditioning after a LoRA change. LoRAs can patch the text
@@ -1077,6 +1095,7 @@ class Engine:
         report = apply_lora(self._loaded.model, str(path), multiplier=multiplier)
         self._loaded.applied_loras.append(lora_name)
         self._invalidate_cond_cache()  # LoRA patches the TE/adapter → cached embeds stale
+        self._weights_epoch += 1       # fused in permanently: a new set of weights
         return f"Applied {lora_name}: {report}"
 
     def clear_loras(self) -> str:
