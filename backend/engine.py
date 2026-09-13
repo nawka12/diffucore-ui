@@ -105,6 +105,7 @@ SAMPLERS_SD = [
     "ipndm_v",
     "res_multistep",
     "res_multistep_ancestral",
+    "lumen",
     "gradient_estimation",
     "stork2",
     "infinity",
@@ -188,6 +189,17 @@ _SAMPLERS_4D_ONLY = {"infinity_nano", "infinity_omega", "infinity_realism",
 # tied to absolute sigma so it scales across families — aether pins both to
 # SD-tuned constants and injects 0.0289 into the *finished* latent on a 24-step
 # flow schedule, 34x what it does on SDXL. 4-D only (2-D structure tensor).
+# lumen is galpt/infinity-diffusion's LUMEN geometric solver (branch
+# sampler/lumen-geometric-solver), a deterministic second-order multistep at one
+# evaluation per step. Its integrator is res_multistep's — upstream derives it
+# as a closed-form integral in log-sigma, which collapses to the same phi-weighted
+# correction — so what "lumen" actually offers over "res_multistep" is three
+# stability guards layered on top: a damping scale that shrinks the correction
+# when the x0 estimate jumps between steps, plain Euler on the last two
+# non-terminal steps, and a fallback to Euler on any step whose correction
+# outweighs 40% of its own Euler displacement. All of them cost nothing, all of
+# them are conservative, so expect it to read as res_multistep with a calmer
+# tail rather than as a different sampler. Family-agnostic.
 SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal",
                                   "dpmpp_2m_anneal", "uni_pc_anneal"]
 SAMPLERS_FLUX = [s for s in SAMPLERS_FLOW if s not in _SAMPLERS_4D_ONLY]

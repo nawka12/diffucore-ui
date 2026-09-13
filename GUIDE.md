@@ -628,6 +628,52 @@ bugs, just how the model responds:
   `infinity_omega` (whose detail gain is also strongest at high sigma) — just
   reach for it to spend steps on structure, not on texture.
 
+- **`lumen`** is the same project's newest branch
+  (`sampler/lumen-geometric-solver`, MIT): a deterministic second-order
+  multistep at one model evaluation per step, all families. Upstream derives it
+  by writing the ODE in `y = x/σ` and `u = log σ`, taking the x0 estimate linear
+  in `u` from one step of history, and integrating that in closed form — an
+  Euler step minus `κ · slope · (ρ − log ρ − 1)`.
+
+  **That correction is the one `res_multistep` already takes.** The closed-form
+  log-σ integral and the exponential integrator's `φ` functions are two
+  derivations of the same second-order multistep method, and with `lumen`'s
+  guards switched off the two land on the same latent to float64 round-off (a
+  test pins this). So the honest description is not "a new solver" but
+  "`res_multistep` with three no-cost stability guards":
+
+  * **Damping** — the correction is scaled by `κ = min(1, 0.8·mean|D| /
+    mean|ΔD|)`, so a step where the x0 estimate jumps gets a smaller
+    second-order term. It is step-size-blind: at high step counts `mean|ΔD|`
+    shrinks on its own and `κ` sits at 1, so this only bites at low steps and
+    high σ.
+  * **Euler tail** — the last two non-terminal steps take the plain Euler step,
+    keeping the extrapolation off the schedule's steepest `log σ` jumps as
+    σ → 0.
+  * **Magnitude guard** — any step whose damped correction averages more than
+    40% of its own Euler displacement falls back to Euler.
+
+  All three are conservative and none costs an evaluation, so expect `lumen` to
+  read as `res_multistep` with a calmer tail rather than as a different sampler
+  — closer to Euler where the trajectory is rough, identical to `res_multistep`
+  where it is smooth. Upstream's synthetic-probe table reports +1.4 to +6.9 dB
+  PSNR over *Euler* at 8–32 steps, which is the gap you would expect from any
+  second-order multistep and is not a measurement against `res_multistep`,
+  `dpmpp_2m` or `uni_pc`. Upstream also refuses flow and velocity checkpoints;
+  that restriction does not carry over here, because this port is only ever
+  handed an x0 denoiser and rectified flow satisfies the same `dx/dσ = (x−x0)/σ`
+  the derivation starts from.
+
+  Offline, on a smooth toy ODE against a converged reference, the **Euler tail
+  is the whole difference**: switch it off and `lumen` lands on `res_multistep`,
+  while damping and the magnitude guard change nothing (they only fire at high
+  σ, where the correction is small relative to the step). Keeping the tail costs
+  ~5× terminal error at 20 steps, because the last steps are exactly where the
+  x0 estimate is moving fastest and the second-order term earns the most. That
+  toy cannot show what the tail is *for* — a real denoiser's terminal overshoot,
+  which upstream tuned it against — so this is a reason to A/B it, not a verdict.
+  Image-quality A/B against `res_multistep` and `dpmpp_2m` is pending.
+
 ### TeaCache — faster Anima sampling
 
 **TeaCache** (opt-in, Anima only) skips recomputing the 28-block DiT on steps
