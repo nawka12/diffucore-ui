@@ -191,7 +191,7 @@ document.addEventListener('alpine:init', () => {
     // ── settings panel (global, non-per-image knobs) ────────────
     settingsOpen: false,
     settingsTab: 'teacache',
-    settings: { curvature: 0.25, eta_max: 1.0, gate_reduce: 'all', beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, cfg_interval_start: 0.0, cfg_interval_end: 1.0, teacache_uncond_scale: 1.0, vae_tiling: 'auto', metadata_format: 'a1111', gen_defaults: null, nsfw_blur: true },
+    settings: { curvature: 0.25, eta_max: 1.0, gate_reduce: 'all', beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, cfg_interval_start: 0.0, cfg_interval_end: 1.0, teacache_uncond_scale: 1.0, vae_tiling: 'auto', metadata_format: 'a1111', gen_defaults: null, nsfw_blur: true, blur_min_rating: 'R' },
     teacacheStatus: { loaded: false, calibratable: false, family: null, coefficients: null },
     calibratingTea: false,
     // WD tagger availability + rating progress (Settings → Gallery).
@@ -315,7 +315,15 @@ document.addEventListener('alpine:init', () => {
       if (!p) return null;
       return this._visionNsfw[p] || this._promptNsfw[p] || null;
     },
-    get resultNsfw() { return !!(this.resultMeta && this.resultMeta.nsfw); },
+    // Whether an image of this rating is blurred: at or above the tier picked
+    // in Settings → Gallery. Decided here from the rating, not the server's
+    // `nsfw` flag (fixed at R-and-up), so changing the tier needs no re-rate.
+    blurs(rating) {
+      const order = ['PG', 'PG13', 'R', 'X', 'XXX'];
+      const i = order.indexOf(rating);
+      return i >= 0 && i >= order.indexOf(this.settings.blur_min_rating || 'R');
+    },
+    get resultNsfw() { return !!(this.resultMeta && this.blurs(this.resultMeta.rating)); },
     get resultRating() { return this.resultMeta ? this.resultMeta.rating : ''; },
     get resultBlurred() {
       return !!(this.blurOn && this.resultNsfw && !this.genReveal);
@@ -331,14 +339,14 @@ document.addEventListener('alpine:init', () => {
     batchBlurred(b) {
       if (!this.blurOn) return false;
       const m = (b.path && this._visionNsfw[b.path]) || b.nsfw;
-      return !!(m && m.nsfw);
+      return !!(m && this.blurs(m.rating));
     },
     // X/Y/Z sweep: every grid shares the sweep's prompt, so one verdict (the
     // AI one once it lands) covers them all.
     get xyzMeta() {
       return (this.xyzPath && this._visionNsfw[this.xyzPath]) || this.xyzNsfw || null;
     },
-    get xyzNsfwFlag() { return !!(this.xyzMeta && this.xyzMeta.nsfw); },
+    get xyzNsfwFlag() { return !!(this.xyzMeta && this.blurs(this.xyzMeta.rating)); },
     get xyzBlurred() { return !!(this.blurOn && this.xyzNsfwFlag && !this.xyzReveal); },
     get progressLabel() {
       const t = this.progress.total;
@@ -1939,7 +1947,7 @@ document.addEventListener('alpine:init', () => {
     },
     // Whether the current lightbox image is rendered blurred (NSFW + setting on).
     get lbBlurred() {
-      return !!(this.selected && this.selected.nsfw && this.settings.nsfw_blur);
+      return !!(this.selected && this.blurs(this.selected.rating) && this.settings.nsfw_blur);
     },
     lightboxKey(e) {
       if (!this.lightbox.open) return;

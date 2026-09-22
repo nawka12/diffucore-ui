@@ -40,6 +40,16 @@ def test_cogent4_setting_defaults_global_and_rejects_unknown_modes():
         server.Settings(gate_reduce="bogus")
 
 
+
+def test_blur_min_rating_defaults_to_r_and_rejects_unknown_tiers():
+    assert server.Settings().blur_min_rating == "R"
+    for tier in ("PG13", "R", "X"):
+        assert server.Settings(blur_min_rating=tier).blur_min_rating == tier
+    # XXX is not offered: the AI rater never outputs it, so it would blur nothing.
+    for bad in ("XXX", "PG", "pg13"):
+        with pytest.raises(ValueError):
+            server.Settings(blur_min_rating=bad)
+
 # ── #1 + #8: opt-in pip + install routed through the job queue ───────
 
 def test_install_payload_pip_deps_defaults_off():

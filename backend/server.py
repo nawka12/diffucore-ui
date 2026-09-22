@@ -518,6 +518,11 @@ class Settings(BaseModel):
     # see metadata.prompt_rating). Pure display preference — the file is never
     # touched, and a click reveals the image regardless.
     nsfw_blur: bool = True
+    # Lowest rating that gets blurred, here and by the Generate page's own
+    # toggle. The frontend compares each image's rating against it, so a change
+    # applies at once, without re-rating. No "XXX" option: the AI rater never
+    # outputs XXX (only the prompt placeholder does), so it would blur nothing.
+    blur_min_rating: Literal["PG13", "R", "X"] = "R"
 
 
 class XYZPayload(BaseModel):

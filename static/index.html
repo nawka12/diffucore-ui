@@ -645,7 +645,7 @@
           <input type="checkbox" x-model="preview"> Live preview
         </label>
         <label class="chip toggle preview-toggle" :class="{on: genBlur}"
-               title="Blur freshly generated results rated R-and-up until clicked. Independent of the gallery blur setting — with this on, results are AI-rated either way.">
+               title="Blur freshly generated results at or above the rating chosen in Settings → Gallery until clicked. Independent of the gallery blur setting — with this on, results are AI-rated either way.">
           <input type="checkbox" x-model="genBlur"> Blur NSFW
         </label>
         <div class="progress" x-show="busy">
@@ -759,12 +759,12 @@
           <h2 class="gallery-date" x-text="g.label"></h2>
           <div class="gallery-grid">
             <template x-for="item in g.images" :key="item.img.url">
-              <div class="thumb" :class="{sel: selected && selected.url===item.img.url, blur: item.img.nsfw && settings.nsfw_blur}"
+              <div class="thumb" :class="{sel: selected && selected.url===item.img.url, blur: blurs(item.img.rating) && settings.nsfw_blur}"
                    @click="openLightbox(item.index)"
                    tabindex="0" role="button" :aria-label="'Open ' + item.img.name"
                    @keydown.enter="openLightbox(item.index)" @keydown.space.prevent="openLightbox(item.index)">
                 <img class="thumb-img" :src="'/api/thumb?path=' + encodeURIComponent(item.img.path)" :alt="item.img.name" loading="lazy">
-                <span class="nsfw-badge" x-show="item.img.nsfw && settings.nsfw_blur"
+                <span class="nsfw-badge" x-show="blurs(item.img.rating) && settings.nsfw_blur"
                       :title="'Rated ' + item.img.rating">NSFW</span>
               </div>
             </template>
@@ -1035,15 +1035,21 @@
                       x-text="taggerStatus.available ? 'AI rating' : 'Prompt only'"
                       :title="taggerStatus.available ? 'WD EVA02-Large Tagger v3' : 'timm not installed — blur uses prompt heuristics'"></span>
               </div>
-              <p class="set-purpose">Blur gallery thumbnails and lightbox images rated R or above, so
+              <p class="set-purpose">Blur gallery thumbnails and lightbox images at or above a chosen rating, so
                 NSFW outputs don't show at a glance. Every image is rated by the
                 WD EVA02-Large Tagger v3 (a 315M-param vision model) — a
                 diffusion-capable machine runs it in milliseconds — with the
                 prompt heuristic as fallback.</p>
               <label class="chip" :class="{on: settings.nsfw_blur}">
                 <input type="checkbox" x-model="settings.nsfw_blur" @change="saveSettings()">
-                Blur R-rated and up
+                Blur NSFW
               </label>
+              <label class="field"><span>Blur from</span>
+                <select x-model="settings.blur_min_rating" @change="saveSettings()">
+                  <option value="PG13">PG-13 and up (suggestive too)</option>
+                  <option value="R">R and up (nudity, default)</option>
+                  <option value="X">X and up (explicit)</option>
+                </select></label>
               <p class="set-foot">New images are rated automatically in the background after each save.
                 Turning the blur off frees the model's VRAM; the Generate page's own
                 <em>Blur NSFW</em> toggle keeps rating the results it blurs.</p>
