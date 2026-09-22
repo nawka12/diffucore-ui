@@ -49,6 +49,26 @@ def test_moona_case_explicit_head_without_corroboration_deescalates():
     assert "de_escalated" in reason
 
 
+def test_explicit_head_backed_by_questionable_deescalates_to_r_not_pg():
+    # Real misses from a full-gallery scan: explicit-headed, no strong tags,
+    # nipples just under HARD_TAG_THRESH — the old rule dropped them to PG/PG13
+    # (unblurred). A questionable head >= 0.5 must hold them at R.
+    for ratings, hard in (([0.0167, 0.0032, 0.5269, 0.8179], [0.298]),
+                          ([0.0443, 0.0121, 0.6226, 0.5762], [0.063]),
+                          ([0.0244, 0.0044, 0.6729, 0.6401], [0.345])):
+        tier, _, reason = _decide(ratings, hard_probs=hard)
+        assert tier == "R", ratings
+        assert "de_escalated" in reason
+
+
+def test_explicit_head_with_weak_questionable_still_deescalates_to_pg():
+    # Real false alarm from the same scan: a failed, unrecognisable generation
+    # with explicit 0.49 / questionable 0.38 — stays unblurred.
+    tier, _, reason = _decide([0.1682, 0.0371, 0.3784, 0.4875], hard_probs=[0.07])
+    assert tier == "PG"
+    assert "de_escalated" in reason
+
+
 def test_explicit_with_strong_corroboration_stays_explicit():
     # Explicit head + lingerie → blurred (genuinely NSFW).
     tier, _, reason = _decide([0.05, 0.10, 0.10, 0.90], strong_probs=[0.9])

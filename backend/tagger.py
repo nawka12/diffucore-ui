@@ -46,12 +46,13 @@ NSFW_TIERS = ("R", "X")
 # own content tags against its rating head:
 #   * any hard explicit tag (anatomy/sex) ≥ HARD_TAG_THRESH  →  forced X
 #   * explicit-headed but zero suggestive/nudity tags  →  de-escalated (the
-#     stylized-VTuber false positive: bare shoulders, choker, no anatomy tags)
+#     stylized-VTuber false positive: bare shoulders, choker, no anatomy tags),
+#     but never below R when the questionable head agrees (≥ 0.5)
 #   * otherwise the rating sigmoids are logit-normalised with a temperature
 #     and cascaded down to R / PG13 / PG.
 # DECISION_VERSION stamps every cached verdict; a bump invalidates the whole
 # cache so a logic change forces a re-rate instead of serving stale verdicts.
-DECISION_VERSION = 2
+DECISION_VERSION = 3
 HARD_TAG_THRESH = 0.35   # ≥ this probability on any hard tag → explicit
 SOFT_TAG_THRESH = 0.25   # corroborating evidence for R/PG13 escalation
 SOFTMAX_TEMP = 0.7       # temperature on the logit-normalised rating head
@@ -112,7 +113,13 @@ def decide_rating(rating_scores: np.ndarray, tag_scores: np.ndarray,
     # cleavage/bikini fire on plenty of SFW anime and must not force a blur.
     if s_expl >= 0.40 or r_expl >= 0.70:
         if n_strong == 0:
-            tier = "PG13" if (n_soft or s_sens > 0.30) else "PG"
+            # A questionable head that also fires is evidence on its own: the
+            # real misses scored 0.53–0.67 there (anatomy tags just under the
+            # hard cutoff), the false positives ≤ 0.38. Land on R, not PG.
+            if r_ques >= 0.50:
+                tier = "R"
+            else:
+                tier = "PG13" if (n_soft or s_sens > 0.30) else "PG"
             return tier, conf, "de_escalated"
         return "X", conf, "explicit"
     if s_ques >= 0.40 or r_ques >= 0.60 or (s_expl + s_ques >= 0.50 and (n_strong or n_soft)):
