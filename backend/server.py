@@ -696,6 +696,59 @@ def _base_fingerprint(gen_kwargs: dict, mode: str,
 
 # ── generation (ported from the old _generate_with_loras) ───────────
 
+def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
+    """Settings-panel engine kwargs for one generation with this sampler/scheduler.
+
+    Shared by a plain generation and every X/Y/Z cell (per cell, since Sampler
+    and Scheduler can be axes), so a cell samples exactly what the Generate page
+    would with the same settings. A knob left out falls back to the engine's own
+    default, which is not the panel's.
+    """
+    knobs: dict = {}
+
+    # Cogent4 is the per-channel reduction of cogent's measured coherence
+    # gate. Keep the shipped global path as the default, but forward the
+    # explicit UI choice on every family where a cogent sampler is offered.
+    if sampler in ("cogent", "cogent3", "cogent3_pump"):
+        knobs["gate_reduce"] = SETTINGS["gate_reduce"]
+
+    # Global sampler/scheduler knobs from the settings panel (Anima only).
+    # Inject only the ones the active sampler/scheduler actually consumes, so
+    # they round-trip into PNG metadata without polluting it with unused keys.
+    if ENGINE.loaded_family == "anima":
+        if sampler in ("secant", "secant_anneal"):
+            knobs["curvature"] = float(SETTINGS["curvature"])
+        if sampler in ("secant_anneal", "euler_ancestral_anneal", "dpmpp_2m_anneal", "cogent", "cogent3", "cogent3_pump"):
+            knobs["eta_max"] = float(SETTINGS["eta_max"])
+        # uni_pc_anneal omitted on purpose: it uses its own low baked-in
+        # eta_max (0.2); the shared 1.0 panel default over-smooths it.
+        if scheduler == "beta":
+            knobs["beta_alpha"] = float(SETTINGS["beta_alpha"])
+            knobs["beta_beta"] = float(SETTINGS["beta_beta"])
+        if scheduler == "linear_quadratic":
+            knobs["lq_threshold"] = float(SETTINGS["lq_threshold"])
+
+    # CFG guidance interval (settings panel): skip the uncond forward outside
+    # the [start, end) step-fraction band. Applies wherever a real CFG pass
+    # runs (Anima + SD/SDXL); FLUX is guidance-distilled, so it's skipped.
+    # Injected only when non-default so metadata stays clean.
+    if ENGINE.loaded_family not in ("flux1", "flux2"):
+        ivl_start = float(SETTINGS["cfg_interval_start"])
+        ivl_end = float(SETTINGS["cfg_interval_end"])
+        if (ivl_start, ivl_end) != (0.0, 1.0) and ivl_start < ivl_end:
+            knobs["cfg_interval_start"] = ivl_start
+            knobs["cfg_interval_end"] = ivl_end
+
+    # Looser threshold on the uncond cache stream (settings panel). Anima
+    # only -- TeaCache is Anima-only -- and injected only when non-default,
+    # like the interval above, so metadata stays clean.
+    uncond_scale = float(SETTINGS["teacache_uncond_scale"])
+    if uncond_scale != 1.0 and teacache > 0:
+        knobs["teacache_uncond_scale"] = uncond_scale
+
+    return knobs
+
+
 def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                     on_preview: Optional[Callable] = None) -> dict:
     if not ENGINE.loaded_name:
@@ -725,46 +778,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             progress_callback=on_progress,
             preview_callback=on_preview if p.preview else None,
         )
-
-        # Cogent4 is the per-channel reduction of cogent's measured coherence
-        # gate. Keep the shipped global path as the default, but forward the
-        # explicit UI choice on every family where a cogent sampler is offered.
-        if p.sampler in ("cogent", "cogent3", "cogent3_pump"):
-            common["gate_reduce"] = SETTINGS["gate_reduce"]
-
-        # Global sampler/scheduler knobs from the settings panel (Anima only).
-        # Inject only the ones the active sampler/scheduler actually consumes, so
-        # they round-trip into PNG metadata without polluting it with unused keys.
-        if ENGINE.loaded_family == "anima":
-            if p.sampler in ("secant", "secant_anneal"):
-                common["curvature"] = float(SETTINGS["curvature"])
-            if p.sampler in ("secant_anneal", "euler_ancestral_anneal", "dpmpp_2m_anneal", "cogent", "cogent3", "cogent3_pump"):
-                common["eta_max"] = float(SETTINGS["eta_max"])
-            # uni_pc_anneal omitted on purpose: it uses its own low baked-in
-            # eta_max (0.2); the shared 1.0 panel default over-smooths it.
-            if p.scheduler == "beta":
-                common["beta_alpha"] = float(SETTINGS["beta_alpha"])
-                common["beta_beta"] = float(SETTINGS["beta_beta"])
-            if p.scheduler == "linear_quadratic":
-                common["lq_threshold"] = float(SETTINGS["lq_threshold"])
-
-        # CFG guidance interval (settings panel): skip the uncond forward outside
-        # the [start, end) step-fraction band. Applies wherever a real CFG pass
-        # runs (Anima + SD/SDXL); FLUX is guidance-distilled, so it's skipped.
-        # Injected only when non-default so metadata stays clean.
-        if ENGINE.loaded_family not in ("flux1", "flux2"):
-            ivl_start = float(SETTINGS["cfg_interval_start"])
-            ivl_end = float(SETTINGS["cfg_interval_end"])
-            if (ivl_start, ivl_end) != (0.0, 1.0) and ivl_start < ivl_end:
-                common["cfg_interval_start"] = ivl_start
-                common["cfg_interval_end"] = ivl_end
-
-        # Looser threshold on the uncond cache stream (settings panel). Anima
-        # only -- TeaCache is Anima-only -- and injected only when non-default,
-        # like the interval above, so metadata stays clean.
-        uncond_scale = float(SETTINGS["teacache_uncond_scale"])
-        if uncond_scale != 1.0 and p.teacache > 0:
-            common["teacache_uncond_scale"] = uncond_scale
+        common.update(_settings_knobs(p.sampler, p.scheduler, p.teacache))
 
         if p.mode == "i2i":
             if not p.input_image:
@@ -955,7 +969,6 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
         width=int(p.width), height=int(p.height),
         steps=int(p.steps), cfg_scale=float(p.cfg),
         sampler=p.sampler, scheduler=p.scheduler,
-        gate_reduce=SETTINGS["gate_reduce"],
         seed=int(p.seed), shift=float(p.shift),
         teacache_thresh=float(p.teacache),
         teacache_use_coeffs=bool(p.teacache_calibrated),
@@ -974,12 +987,16 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
             progress_callback=on_progress,
             preview_callback=on_preview if p.preview else None,
             save_callback=partial(_save_output, blur_check=p.blur_check),
+            cell_knobs=lambda sampler, scheduler: _settings_knobs(
+                sampler, scheduler, p.teacache),
         )
         # base_kwargs was mutated in-place by generate_xyz_grid (prompt cleaned,
         # base seed resolved), so it carries the right params for the grid metadata.
+        grid_kwargs = {**base_kwargs,
+                       **_settings_knobs(p.sampler, p.scheduler, p.teacache)}
         urls = []
         for grid in grids:
-            out = _save_output(grid, base_kwargs, blur_check=p.blur_check)
+            out = _save_output(grid, grid_kwargs, blur_check=p.blur_check)
             urls.append(_output_url(out))
         return {
             "grids": urls, "info": info,

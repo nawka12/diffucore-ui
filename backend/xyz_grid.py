@@ -250,6 +250,7 @@ def generate_xyz_grid(
     progress_callback: Callable[..., None] | None = None,
     preview_callback: Callable[[Image.Image], None] | None = None,
     save_callback: Callable[[Image.Image, dict], None] | None = None,
+    cell_knobs: Callable[[str, str], dict] | None = None,
 ) -> tuple[list[Image.Image], str]:
     """Generate XYZ plot grid(s).
 
@@ -271,6 +272,10 @@ def generate_xyz_grid(
     save_callback : callable or None
         Called as ``(image, kwargs)`` for each successfully generated cell so
         the caller can persist individual images.
+    cell_knobs : callable or None
+        Called as ``(sampler, scheduler)`` for each cell; its dict is merged
+        into that cell's kwargs — the settings-panel knobs a plain generation
+        gets, chosen per cell since Sampler and Scheduler can be axes.
 
     Returns
     -------
@@ -385,6 +390,9 @@ def generate_xyz_grid(
                                 last_loras = None
                         else:
                             kwargs[_PARAM_MAP[a_type]] = a_val
+
+                    if cell_knobs is not None:
+                        kwargs.update(cell_knobs(kwargs["sampler"], kwargs["scheduler"]))
 
                     # Re-derive this cell's prompt LoRAs; only re-fuse when the
                     # set actually changed (a cheap no-op for non-S/R sweeps).
