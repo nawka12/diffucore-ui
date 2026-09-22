@@ -709,7 +709,7 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
     # Cogent4 is the per-channel reduction of cogent's measured coherence
     # gate. Keep the shipped global path as the default, but forward the
     # explicit UI choice on every family where a cogent sampler is offered.
-    if sampler in ("cogent", "cogent3", "cogent3_pump"):
+    if sampler in ("cogent", "cogent3", "cogent3_pump", "reprise"):
         knobs["gate_reduce"] = SETTINGS["gate_reduce"]
 
     # Global sampler/scheduler knobs from the settings panel (Anima only).
@@ -718,7 +718,8 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
     if ENGINE.loaded_family == "anima":
         if sampler in ("secant", "secant_anneal"):
             knobs["curvature"] = float(SETTINGS["curvature"])
-        if sampler in ("secant_anneal", "euler_ancestral_anneal", "dpmpp_2m_anneal", "cogent", "cogent3", "cogent3_pump"):
+        if sampler in ("secant_anneal", "euler_ancestral_anneal", "dpmpp_2m_anneal", "cogent", "cogent3", "cogent3_pump",
+                       "reprise"):
             knobs["eta_max"] = float(SETTINGS["eta_max"])
         # uni_pc_anneal omitted on purpose: it uses its own low baked-in
         # eta_max (0.2); the shared 1.0 panel default over-smooths it.
