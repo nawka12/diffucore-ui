@@ -126,6 +126,7 @@ SAMPLERS_SD = [
     "cogent",
     "cogent3",
     "cogent3_pump",
+    "cogent3_pump_rate",
 ]
 _SAMPLERS_SD_ONLY = set()
 SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm" and s not in _SAMPLERS_SD_ONLY]
@@ -144,7 +145,7 @@ SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm" and s not in _SAMPLERS_SD
 # in the @21084d9 rewrite, so the sampler is deterministic now and the flow
 # restriction no longer applies — only the 4-D one does.
 _SAMPLERS_4D_ONLY = {"infinity_nano", "infinity_omega", "infinity_realism",
-                     "infinity_aether", "cogent3_pump"}
+                     "infinity_aether", "cogent3_pump", "cogent3_pump_rate"}
 # euler_ancestral_anneal anneals eta with σ (full ancestral burn-in at high σ,
 # deterministic at low σ); Anima-only, aimed at rectified-flow merges.
 # secant_anneal is that annealed ancestral burn-in handing off to secant's
@@ -189,6 +190,12 @@ _SAMPLERS_4D_ONLY = {"infinity_nano", "infinity_omega", "infinity_realism",
 # tied to absolute sigma so it scales across families — aether pins both to
 # SD-tuned constants and injects 0.0289 into the *finished* latent on a 24-step
 # flow schedule, 34x what it does on SDXL. 4-D only (2-D structure tensor).
+# cogent3_pump_rate is cogent3_pump with the pump scaled to the step size. The
+# plain pump adds a fixed amount per step, so fewer steps means less pump (30
+# pump_dual steps deliver ~0.8x the 50-step dose); this one scales each
+# injection by the exact OU variance of its lambda-step, calibrated so a
+# pump_dual@50 band step gets exactly the plain amount. Same dose at any step
+# count. Made for pump_taper at ~30 steps.
 # lumen is galpt/infinity-diffusion's LUMEN geometric solver (branch
 # sampler/lumen-geometric-solver), a deterministic second-order multistep at one
 # evaluation per step. Its integrator is res_multistep's — upstream derives it
@@ -247,10 +254,18 @@ SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
 # the σ table floor (0.003, what beta / beta_mix / normal / infinity do) costs
 # the 3M exponential core 2.6× on the offline benchmark and 16× at 8 steps,
 # and it is the depth that hurts, not the final step size. Anima-only for now.
+# pump_taper is pump_dual cut for ~30 steps, from measurements of the 50-step
+# run: the refinement tail shrinks to 4 steps at 30 (swapping 50-step's 8-step
+# tail for 4 on the same scene moved pixels by RMSE ~11/255), and the pumped
+# band's steps start at the 50-step density (0.12 lambda) where the x0
+# prediction changes fastest (sigma 0.98-0.9, as CFG switches on) and widen to
+# 0.35 lambda near the 0.45 cutoff, where it changes ~10x slower. Pair with
+# cogent3_pump_rate. With a step-fraction CFG interval, use end 0.8 (0.75 stops
+# CFG at sigma ~0.69 on this grid).
 SCHEDULERS_ANIMA = ["flow", "flow_dyn", "oss", "sgm_uniform", "simple",
                     "normal", "infinity", "infinity_htds", "kl_optimal",
                     "linear_quadratic", "smoothstep", "beta", "beta_mix",
-                    "pump_dual"]
+                    "pump_dual", "pump_taper"]
 SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple", "normal",
                    "infinity", "infinity_htds", "kl_optimal", "linear_quadratic"]
 

@@ -447,6 +447,45 @@ bugs, just how the model responds:
   prompt adherence); what does reproduce offline is that the low-σ shutoff costs
   no coverage and gains sharpness over pumping all the way down.
 
+- **`cogent3_pump_rate` + the `pump_taper` scheduler** aim to get the look of
+  `cogent3_pump` + `pump_dual` at 50 steps in about **30 steps**. Both come from
+  measurements of that 50-step run:
+
+  *The tail can be short.* Replaying the 50-step run and swapping only its
+  refinement tail (σ < 0.45) on the same scene: 8 steps down to σ 0.058 vs 5
+  steps down to 0.094 was judged "almost identical" (RMSE ~5/255). 4 steps moved
+  it ~11/255 and 3 steps ~17/255. 2 steps visibly thickened and darkened line
+  art.
+
+  *The band's work is at the top.* The model's x0 prediction changes fastest
+  where CFG switches on (σ ≈ 0.98) and through σ ≈ 0.9, and about 10× slower by
+  σ 0.7–0.45. `pump_dual` spaces its band evenly in λ, so at 30 steps the top
+  gets 0.19 λ per step instead of the 50-step run's 0.115.
+
+  So `pump_taper` keeps `pump_dual`'s layout (burn-in step, pumped band down to
+  σ 0.45, tail ending at `flow`'s σ(t = 1/steps)), with two changes. The tail is
+  about 13% of the run (4 steps at 30). The band's steps start at the 50-step
+  density (0.12 λ) and widen to 0.35 λ at the knee.
+
+  *The pump dose depends on step count.* `cogent3_pump` adds a fixed amount of
+  noise per step, so fewer steps means less pump: 30 `pump_dual` steps deliver
+  about 0.8× the 50-step dose. `cogent3_pump_rate` scales each injection by the
+  exact variance of an Ornstein–Uhlenbeck step of that λ size, calibrated so a
+  `pump_dual`@50 band step gets exactly today's amount. It delivers the same dose
+  at any step count, including `pump_taper`'s wider lower-band steps. Everything
+  else is `cogent3_pump`, with the same panel knobs.
+
+  **Set the CFG interval end to 0.8 with `pump_taper`.** The interval is a
+  fraction of the *steps*, and the tapered grid packs more steps at high σ, so
+  0.75 stops CFG at σ ≈ 0.69 (vs 0.555 on `pump_dual`@50). 0.8 stops it at
+  ≈ 0.54.
+
+  **Status: the design is measured, the result is not.** Each piece was
+  measured separately, but `cogent3_pump_rate` + `pump_taper` @30 has not yet
+  been judged against the 50-step run across seeds. On one seed, whether small
+  accessories came out right depended on the noise draw even at 50 and 100
+  steps, so judge coherency over several seeds.
+
 - **`stork2`** (STORK-2, ICLR 2026, arXiv:2505.24210 — clean-room) is a
   deterministic multistep solver built from a stabilized Runge–Kutta–Gegenbauer
   stage cascade driven by Taylor-extrapolated "virtual" stage velocities — still

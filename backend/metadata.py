@@ -217,7 +217,7 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     if "cfg_interval_start" in gen_kwargs:
         fields.append(f"CFG interval: {gen_kwargs['cfg_interval_start']}-"
                       f"{gen_kwargs.get('cfg_interval_end', 1.0)}")
-    if (gen_kwargs.get("sampler") in ("cogent", "cogent3", "cogent3_pump")
+    if (gen_kwargs.get("sampler") in ("cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate")
             and "gate_reduce" in gen_kwargs):
         fields.append(f"Gate reduce: {gen_kwargs['gate_reduce']}")
     fields.append(f"Seed: {engine.last_seed if seed is None else seed}")
@@ -341,7 +341,7 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
     if "cfg_interval_start" in gen_kwargs:
         extra["cfg_interval"] = (f"{gen_kwargs['cfg_interval_start']}-"
                                  f"{gen_kwargs.get('cfg_interval_end', 1.0)}")
-    if (gen_kwargs.get("sampler") in ("cogent", "cogent3", "cogent3_pump")
+    if (gen_kwargs.get("sampler") in ("cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate")
             and "gate_reduce" in gen_kwargs):
         extra["gate_reduce"] = gen_kwargs["gate_reduce"]
     if gen_kwargs.get("teacache_thresh", 0):
