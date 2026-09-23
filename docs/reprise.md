@@ -1,5 +1,15 @@
 # `reprise`: a Restart-contracted UniPC sampler
 
+> **2026-09-23: `reprise` was removed.** On real images at matched model calls
+> it never beat plain `cogent3_pump`. `cogent3_pump` + `pump_dual` at 50 steps
+> beat `reprise` at 32 steps (also 50 calls) with `eta_max` 1.0, and they tied at
+> 0.2. The cause is structural. All the extra calls land in draft passes that
+> the next jump throws away (it keeps 0.25·x), so the final image comes from one
+> pass at 32-step density. At `eta_max` 1.0 a single pass already replaces ~92 %
+> of the band's noise variance, so the restarts mostly repeat what the
+> ancestral noise already does. Restart sampling was designed for an ODE inner
+> loop. This document is kept as the record.
+
 > **2026-09-22: the shipped `reprise` no longer uses a UniPC core.** The UniPC
 > version this document describes rendered visibly over-saturated at CFG 4.5
 > ("burnt" hair colour on AnimaFranken-v1.2), and no restart knob closed the gap

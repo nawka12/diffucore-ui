@@ -321,52 +321,6 @@ bugs, just how the model responds:
   you want UniPC quality with a touch of stochastic variation; for the crispest
   deterministic result, use plain `uni_pc`. See `docs/uni-pc-anneal.md`.
 
-- **`reprise`** is *Restart sampling over `cogent3_pump`*: it runs
-  `cogent3_pump`, but three times on the way down it re-noises the latent back up
-  a high-σ **structure band** and re-integrates it. It runs the schedule normally
-  until `sigma_frac` 0.45, then jumps back to 0.85 along the exact forward
-  process — the same transition the model was trained on, so the latent lands
-  honestly on the noise level it is handed — and solves the band again; after
-  the last jump it runs the band at full step density and continues to σ=0 in
-  one continuous solve. Only that final pass is full density: the first pass and
-  the two intermediate ones get re-noised anyway, so they run at every second
-  grid point as cheap *drafts*, which is what makes three restarts affordable.
-  Each jump is a full re-decision of the image's layout under CFG — the mechanism
-  `cogent3_pump`'s prompt-coherency win actually came from — so reprise gives it
-  three more rounds of it. Adapted from Restart sampling (Xu et al., NeurIPS
-  2023, arXiv:2306.14878).
-
-  It reads the same `eta_max` and **Cogent gate** panel knobs as `cogent3_pump`,
-  and it stacks three noise sources — the jumps, cogent3's per-step `eta_max`
-  noise and the pump's grain — so a good result credits the combination, not any
-  one of them. (The first version ran deterministic UniPC between the jumps; at
-  CFG 4.5 it rendered visibly over-saturated — "burnt" hair colour — so the core
-  was swapped.)
-
-  **Cost: restarts are extra model calls** — about 1.4–1.5× the step count you
-  set, the way `heun` is 2× (the progress bar counts the real calls, so it stays
-  honest). On `beta_mix`, **20 steps costs 29 model calls** and 28 steps costs
-  43, so compare it against other samplers at matched calls, not matched steps.
-  Use **24+ NFE** — like the rest of the family it has nothing to offer below
-  that. Works on `beta_mix`, `smoothstep` and `flow` alike; it re-integrates
-  *your* grid, so the scheduler keeps control of σ placement. Anima only (4-D
-  latents, like the pump).
-
-  Two caveats. The **CFG interval** must still be active inside the band: at the
-  default `(0, 0.75)` it is, but an interval whose end pulls CFG off above
-  σ 0.6 leaves the restarts nothing to re-decide (same caveat as the pump). And
-  **img2img/inpaint at low strength** silently becomes plain `cogent3_pump` — a
-  sliced schedule that starts below σ 0.45 has no band to restart in, by design.
-  Live preview will visibly rewind at each jump; that is the drafts, not a bug.
-  TeaCache with restarts is untested — the drift rule sees each jump as a huge
-  input change and recomputes, so nothing breaks, but the forecast's history
-  straddles the jump.
-
-  **The evidence is thin.** The offline toy results in `docs/reprise.md` (CFG
-  error 24–28 % below the family's best stochastic samplers, in all 27 measured
-  cells) were measured on the UniPC-cored first version, not on this core, and
-  there is no controlled image A/B yet. See `docs/reprise.md`.
-
 - **`cogent`** is this project's own sampler, and the one to try if you like
   `secant_anneal`. It keeps that family's σ-annealed ancestral burn-in (noise at
   high σ, vanishing as σ→0) but replaces two things. The deterministic core is the

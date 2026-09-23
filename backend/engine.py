@@ -144,7 +144,7 @@ SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm" and s not in _SAMPLERS_SD
 # in the @21084d9 rewrite, so the sampler is deterministic now and the flow
 # restriction no longer applies — only the 4-D one does.
 _SAMPLERS_4D_ONLY = {"infinity_nano", "infinity_omega", "infinity_realism",
-                     "infinity_aether", "cogent3_pump", "reprise"}
+                     "infinity_aether", "cogent3_pump"}
 # euler_ancestral_anneal anneals eta with σ (full ancestral burn-in at high σ,
 # deterministic at low σ); Anima-only, aimed at rectified-flow merges.
 # secant_anneal is that annealed ancestral burn-in handing off to secant's
@@ -200,26 +200,8 @@ _SAMPLERS_4D_ONLY = {"infinity_nano", "infinity_omega", "infinity_realism",
 # outweighs 40% of its own Euler displacement. All of them cost nothing, all of
 # them are conservative, so expect it to read as res_multistep with a calmer
 # tail rather than as a different sampler. Family-agnostic.
-# reprise is Restart sampling (Xu et al., NeurIPS 2023, arXiv:2306.14878) fitted
-# to rectified flow, over the cogent3_pump core. It runs cogent3_pump, but on
-# reaching the bottom of a high-sigma structure band (sigma_frac 0.45) it
-# re-noises the latent back up to the top of the band (0.85) along the exact
-# forward process and re-integrates it, three times; only the last pass through
-# the band runs at full step density (the earlier ones are re-noised anyway, so
-# they are drafts at stride 2), and it continues from there to sigma=0 in one
-# continuous solve. Each jump is a full re-decision of the layout under CFG —
-# what the coherence pump measured as the source of its prompt-coherency win. It
-# stacks three noise sources (the jumps, cogent3's per-step eta, the pump's
-# grain) and reads the shared eta_max / gate_reduce panel knobs like cogent3_pump.
-# The first version ran deterministic UniPC between the jumps and rendered
-# visibly over-saturated at CFG 4.5, so the core was swapped.
-# Cost: restarts are extra model calls, n + K*ceil(band/stride) of them, ~1.4-1.5x
-# the nominal step count on the production schedulers (the pipelines size the
-# progress bar with sampling.reprise_nfe, not len(sigmas) - 1). Prefer 24+ NFE.
-# restarts=0, or an img2img schedule that starts below the band, is bit-for-bit
-# cogent3_pump. Anima only for now, and 4-D only like the pump.
 SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal",
-                                  "dpmpp_2m_anneal", "uni_pc_anneal", "reprise"]
+                                  "dpmpp_2m_anneal", "uni_pc_anneal"]
 SAMPLERS_FLUX = [s for s in SAMPLERS_FLOW if s not in _SAMPLERS_4D_ONLY]
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",

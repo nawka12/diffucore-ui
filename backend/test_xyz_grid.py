@@ -130,7 +130,7 @@ def test_xyz_cells_match_plain_generation(monkeypatch):
                      teacache_uncond_scale=1.5).items():
         monkeypatch.setitem(server.SETTINGS, k, v)
 
-    samplers = ["cogent3_pump", "secant_anneal", "reprise", "euler"]
+    samplers = ["cogent3_pump", "secant_anneal", "euler"]
     schedulers = ["beta", "linear_quadratic"]
     common = dict(prompt="a cat", neg="blurry", steps=8, cfg=4.5, seed=123,
                   width=64, height=64, shift=3.0, teacache=0.1, preview=False)
@@ -154,6 +154,3 @@ def test_xyz_cells_match_plain_generation(monkeypatch):
     for cell in cells:
         assert (cell["cfg_interval_start"], cell["cfg_interval_end"]) == (0.1, 0.75)
         assert cell["teacache_uncond_scale"] == 1.5
-    reprise = cells[samplers.index("reprise")]
-    assert reprise["eta_max"] == 0.5
-    assert reprise["gate_reduce"] == "per_channel"
