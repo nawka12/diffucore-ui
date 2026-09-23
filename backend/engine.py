@@ -94,12 +94,10 @@ SAMPLERS_SD = [
     "ipndm_v",
     "res_multistep",
     "res_multistep_ancestral",
-    "lumen",
     "gradient_estimation",
     "stork2",
     "infinity",
     "infinity_realism",
-    "infinity_nano",
     "infinity_omega",
     "infinity_aether",
     "lms",
@@ -121,11 +119,10 @@ _SAMPLERS_SD_ONLY = set()
 SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm" and s not in _SAMPLERS_SD_ONLY]
 # These need a [B, C, H, W] latent (2-D convolutions, per-channel spatial
 # statistics). FLUX samples a patchified token sequence, so it doesn't get them.
-_SAMPLERS_4D_ONLY = {"infinity_nano", "infinity_omega", "infinity_realism",
+_SAMPLERS_4D_ONLY = {"infinity_omega", "infinity_realism",
                      "infinity_aether", "cogent3_pump", "cogent3_pump_rate"}
 # Anima-only additions.
-SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal",
-                                  "dpmpp_2m_anneal", "uni_pc_anneal"]
+SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal"]
 SAMPLERS_FLUX = [s for s in SAMPLERS_FLOW if s not in _SAMPLERS_4D_ONLY]
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",

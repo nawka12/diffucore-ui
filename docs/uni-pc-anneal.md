@@ -1,5 +1,10 @@
 # `uni_pc_anneal`: a σ-annealed-stochastic UniPC sampler for rectified-flow models
 
+> **2026-09-23: `uni_pc_anneal` was removed.** The A/B below never found an
+> `eta_max` that beat plain deterministic `uni_pc`: sharpness fell steadily as
+> `eta_max` rose, even with the order ramp. It shipped only as a "stochastic
+> sibling" with no measured win. This document is kept as the record.
+
 *Status: implemented in diffucore (`sample_uni_pc_anneal`), offline-green, with a
 local characterization A/B on Anima (RTX 2060). This document states only what the
 measurements support.*

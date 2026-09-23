@@ -60,7 +60,7 @@ network/share flags, architecture, and status.
   hosts add `-std=c++20` and `-Xcompiler -fpermissive` to `nvcc_flags` in its
   `setup.py`). Newer GPUs (sm80+) don't need it: they already use PyTorch's
   built-in flash attention, and this flag never engages there.
-- **40+ samplers, multiple schedulers**: Euler, Heun, DPM++ family, ER-SDE,
+- **35+ samplers, multiple schedulers**: Euler, Heun, DPM++ family, ER-SDE,
   SECANT, UniPC, cogent; Karras, exponential, sgm_uniform, flow, and more.
 - **Gallery with metadata round-trip**: every generated image saves its full
   generation parameters as PNG metadata. Browse past outputs grouped by date
@@ -309,18 +309,6 @@ bugs, just how the model responds):
   family). `sa_solver_pece` adds the final "E", a re-evaluation of the
   corrected state, for a few extra NFEs of accuracy.
 
-- **`uni_pc_anneal`** is the *stochastic* sibling of `uni_pc`: the same UniPC
-  predictor-corrector core plus a light, σ-annealed ancestral noise term (noise at
-  high σ, vanishing as σ→0) for stochastic sample diversity and a shot at the
-  merge-robustness that makes `er_sde` reliable, but on UniPC's higher-accuracy
-  drift instead of a first-order one. It is a strict generalization of `uni_pc`
-  (its `eta_max=0` limit is deterministic UniPC, exactly). Because the high-order
-  core *amplifies* injected noise, it ships a deliberately small baked-in noise
-  level (`eta_max=0.2`) and ignores the shared `eta_max` settings knob, which is
-  tuned for the lower-order anneal samplers and over-smooths this one. Use it when
-  you want UniPC quality with a touch of stochastic variation; for the crispest
-  deterministic result, use plain `uni_pc`. See `docs/uni-pc-anneal.md`.
-
 - **`cogent`** is this project's own sampler, and the one to try if you like
   `secant_anneal`. It keeps that family's σ-annealed ancestral burn-in (noise at
   high σ, vanishing as σ→0) but replaces two things. The deterministic core is the
@@ -355,8 +343,8 @@ bugs, just how the model responds):
   coarser minimum λ-step, which also pins the gate's floor too high to damp), and
   `normal`, `infinity`, `infinity_htds` and `kl_optimal` are worse still. That
   ordering is a property of the shared DPM++(2M) core rather than of the gate:
-  `dpmpp_2m_anneal` degrades on exactly the same schedules and by roughly twice as
-  much. So treat it as "cogent likes what `dpmpp_2m` likes", not as a quirk. Note
+  the same core with the gate pinned to 1 degrades on exactly the same schedules
+  and by roughly twice as much. So treat it as "cogent likes what `dpmpp_2m` likes", not as a quirk. Note
   the absolute cross-scheduler ranking is the weaker half of the offline evidence:
   which σ placement suits a real model depends on where that model's error lives,
   so it is worth an A/B on your own checkpoint.
@@ -599,21 +587,6 @@ bugs, just how the model responds):
   sampling, so omega is absent from the FLUX dropdown. Costs about 6 ms/step of
   extra CPU work on a 1024px Anima latent, i.e. well under 1% of a real step.
 
-- **`infinity_nano`** is upstream's `nano` branch, which is `infinity_omega`
-  with AVN and the DoG term removed. It is now the *older* of the two: upstream
-  has not touched it since 2026-07-24, so it also still carries the
-  pre-rework `σ_max < 8` gate on NQVP rather than omega's `< 5`. The two
-  constants only disagree on a partial-denoise SD img2img.
-
-  Nano and omega used to differ on Anima by the near-no-op DoG term alone, so
-  the choice barely registered there. AVN changed that (omega damps the
-  velocity every step on flow and nano does not), so **nano is now the
-  unstabilized option**: LPVD + AHFRI on Euler with nothing held back. That is
-  the configuration upstream's original flow-model comparisons were made in, if
-  you want to reproduce them. Same 4-D restriction (SD/SDXL and Anima, not
-  FLUX), same `euler` bypass below 7 steps, two fewer convolutions per step
-  than omega.
-
 - **`infinity_aether`** is upstream's newest branch (added 2026-07-30), built
   on omega's stack. Everything omega does is still there (Euler, the pyramid,
   the nano-band gain, NQVP on SD/SDXL, AVN everywhere), and the isotropic
@@ -665,52 +638,6 @@ bugs, just how the model responds):
   upstream's comparisons were made against, and it does pair coherently with
   `infinity_omega` (whose detail gain is also strongest at high sigma). Just
   reach for it to spend steps on structure, not on texture.
-
-- **`lumen`** is the same project's newest branch
-  (`sampler/lumen-geometric-solver`, MIT): a deterministic second-order
-  multistep at one model evaluation per step, all families. Upstream derives it
-  by writing the ODE in `y = x/σ` and `u = log σ`, taking the x0 estimate linear
-  in `u` from one step of history, and integrating that in closed form: an
-  Euler step minus `κ · slope · (ρ − log ρ − 1)`.
-
-  **That correction is the one `res_multistep` already takes.** The closed-form
-  log-σ integral and the exponential integrator's `φ` functions are two
-  derivations of the same second-order multistep method, and with `lumen`'s
-  guards switched off the two land on the same latent to float64 round-off (a
-  test pins this). So the honest description is not "a new solver" but
-  "`res_multistep` with three no-cost stability guards":
-
-  * **Damping**: the correction is scaled by `κ = min(1, 0.8·mean|D| /
-    mean|ΔD|)`, so a step where the x0 estimate jumps gets a smaller
-    second-order term. It is step-size-blind: at high step counts `mean|ΔD|`
-    shrinks on its own and `κ` sits at 1, so this only bites at low steps and
-    high σ.
-  * **Euler tail**: the last two non-terminal steps take the plain Euler step,
-    keeping the extrapolation off the schedule's steepest `log σ` jumps as
-    σ → 0.
-  * **Magnitude guard**: any step whose damped correction averages more than
-    40% of its own Euler displacement falls back to Euler.
-
-  All three are conservative and none costs an evaluation, so expect `lumen` to
-  read as `res_multistep` with a calmer tail rather than as a different sampler:
-  closer to Euler where the trajectory is rough, identical to `res_multistep`
-  where it is smooth. Upstream's synthetic-probe table reports +1.4 to +6.9 dB
-  PSNR over *Euler* at 8–32 steps, which is the gap you would expect from any
-  second-order multistep and is not a measurement against `res_multistep`,
-  `dpmpp_2m` or `uni_pc`. Upstream also refuses flow and velocity checkpoints;
-  that restriction does not carry over here, because this port is only ever
-  handed an x0 denoiser and rectified flow satisfies the same `dx/dσ = (x−x0)/σ`
-  the derivation starts from.
-
-  Offline, on a smooth toy ODE against a converged reference, the **Euler tail
-  is the whole difference**: switch it off and `lumen` lands on `res_multistep`,
-  while damping and the magnitude guard change nothing (they only fire at high
-  σ, where the correction is small relative to the step). Keeping the tail costs
-  ~5× terminal error at 20 steps, because the last steps are exactly where the
-  x0 estimate is moving fastest and the second-order term earns the most. That
-  toy cannot show what the tail is *for* (a real denoiser's terminal overshoot,
-  which upstream tuned it against), so this is a reason to A/B it, not a verdict.
-  Image-quality A/B against `res_multistep` and `dpmpp_2m` is pending.
 
 ### TeaCache: faster Anima sampling
 

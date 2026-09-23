@@ -601,10 +601,9 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
     if ENGINE.loaded_family == "anima":
         if sampler in ("secant", "secant_anneal"):
             knobs["curvature"] = float(SETTINGS["curvature"])
-        if sampler in ("secant_anneal", "euler_ancestral_anneal", "dpmpp_2m_anneal", "cogent", "cogent3", "cogent3_pump",
+        if sampler in ("secant_anneal", "euler_ancestral_anneal", "cogent", "cogent3", "cogent3_pump",
                        "cogent3_pump_rate"):
             knobs["eta_max"] = float(SETTINGS["eta_max"])
-        # uni_pc_anneal keeps its own baked-in eta_max (0.2).
         if scheduler == "beta":
             knobs["beta_alpha"] = float(SETTINGS["beta_alpha"])
             knobs["beta_beta"] = float(SETTINGS["beta_beta"])
