@@ -1,9 +1,4 @@
-"""Tests for the SwarmUI tensor-hash + cache (pure functions, no GPU/models).
-
-Run from the project root::
-
-    .venv/bin/python -m pytest backend/test_model_hash.py -v
-"""
+"""Tests for the model-file hashes and their cache (pure functions)."""
 
 from __future__ import annotations
 
@@ -26,12 +21,11 @@ def _write_safetensors(path, tensor_bytes: bytes,
 
 
 def test_tensor_hash_skips_header(tmp_path):
-    """The hash covers only the tensor data — header changes don't affect it."""
+    """The tensor hash covers only the tensor data, not the header."""
     p = tmp_path / "m.safetensors"
     expected = _write_safetensors(p, b"\x01\x02\x03\x04tensor-bytes")
     assert mh._tensor_hash(p) == expected
 
-    # Same tensor bytes behind a *different* header → same hash (proves the skip).
     q = tmp_path / "n.safetensors"
     _write_safetensors(q, b"\x01\x02\x03\x04tensor-bytes",
                        header=b'{"__metadata__":{"note":"different header"}}')
@@ -40,7 +34,7 @@ def test_tensor_hash_skips_header(tmp_path):
 
 def test_tensor_hash_bad_file_is_none(tmp_path):
     p = tmp_path / "tiny.safetensors"
-    p.write_bytes(b"\x00\x00")   # < 8 bytes → struct.error, swallowed
+    p.write_bytes(b"\x00\x00")   # < 8 bytes: struct.error, swallowed
     assert mh._tensor_hash(p) is None
 
 
@@ -81,23 +75,23 @@ def _isolated_cache(tmp_path, monkeypatch):
 def test_ensure_then_get_hash_roundtrip(tmp_path, _isolated_cache):
     p = tmp_path / "model.safetensors"
     expected = _write_safetensors(p, b"payload-1234")
-    assert mh.ensure_hash(p) == expected     # computes + caches
-    assert mh.get_hash(p) == expected        # served from cache, no recompute
+    assert mh.ensure_hash(p) == expected
+    assert mh.get_hash(p) == expected        # served from cache
 
 
 def test_get_hash_none_before_compute(tmp_path, _isolated_cache):
     p = tmp_path / "model.safetensors"
     _write_safetensors(p, b"payload")
-    assert mh.get_hash(p) is None            # not hashed yet → non-blocking None
+    assert mh.get_hash(p) is None
 
 
 def test_get_hash_busts_on_file_change(tmp_path, _isolated_cache):
     p = tmp_path / "model.safetensors"
     _write_safetensors(p, b"payload")
     mh.ensure_hash(p)
-    with open(p, "ab") as f:                 # re-download: size changes
+    with open(p, "ab") as f:                 # size changes
         f.write(b"more-bytes")
-    assert mh.get_hash(p) is None            # stale entry ignored
+    assert mh.get_hash(p) is None
 
 
 def test_get_hash_none_for_non_safetensors(tmp_path, _isolated_cache):
@@ -115,21 +109,21 @@ def test_get_autov2_after_ensure(tmp_path, _isolated_cache):
         f.write(struct.pack("<Q", len(header)))
         f.write(header)
         f.write(b"weights")
-    assert mh.get_autov2(p) is None          # not hashed yet → non-blocking None
-    mh.ensure_hash(p)                         # computes + caches both hashes
+    assert mh.get_autov2(p) is None
+    mh.ensure_hash(p)
     whole = struct.pack("<Q", len(header)) + header + b"weights"
-    assert mh.get_autov2(p) == hashlib.sha256(whole).hexdigest()[:10]   # AutoV2 = 10 hex
+    assert mh.get_autov2(p) == hashlib.sha256(whole).hexdigest()[:10]
     assert mh.get_autov2(p.with_suffix(".ckpt")) is None
     assert mh.get_autov2(None) is None
 
 
 def test_ensure_upgrades_tensor_only_entry(tmp_path, _isolated_cache):
-    """A pre-upgrade cache entry (tensor hash, no sha256) is refreshed so AutoV2 fills in."""
+    """A tensor-only entry (no sha256) is refreshed so AutoV2 fills in."""
     p = tmp_path / "model.safetensors"
     _write_safetensors(p, b"weights")
     st = p.stat()
-    mh._load_cache()[mh._rel_key(p)] = {   # simulate the old on-disk schema
+    mh._load_cache()[mh._rel_key(p)] = {   # the old on-disk schema
         "mtime": st.st_mtime_ns, "size": st.st_size, "hash": "0xdeadbeef"}
-    assert mh.get_autov2(p) is None          # tensor-only entry has no AutoV2
-    mh.ensure_hash(p)                         # treats it as stale → recomputes both
+    assert mh.get_autov2(p) is None
+    mh.ensure_hash(p)
     assert mh.get_autov2(p) is not None

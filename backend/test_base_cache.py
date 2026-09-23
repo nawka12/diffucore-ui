@@ -1,13 +1,6 @@
-"""Tests for the base-image cache and the standalone detailer endpoint.
-
-The cache lets a second Generate click skip re-sampling when only the post-gen
-passes (upscaler / detailer) changed. These drive ``_run_generation`` against a
-stub engine — no GPU, no model.
-
-Run from the project root::
-
-    .venv/bin/python -m pytest backend/test_base_cache.py -v
-"""
+"""Tests for the base-image cache (a re-run that only changes the post-gen
+passes skips re-sampling) and the standalone detailer endpoint, against a stub
+engine."""
 
 from __future__ import annotations
 
@@ -39,8 +32,7 @@ class _StubEngine:
         self.detail_calls = 0
         self.applied = []
 
-    # Real parser: the LoRA tags it strips are exactly what the fingerprint
-    # has to key separately.
+    # Real parser: the LoRA tags it strips must be keyed separately.
     parse_lora_prompt = staticmethod(Engine.parse_lora_prompt)
 
     def apply_temp_loras(self, loras):
@@ -89,7 +81,6 @@ def _run(**overrides):
 # ── the cache ───────────────────────────────────────────────────────
 
 def test_post_pass_toggle_reuses_the_base(stub):
-    """The whole point: enabling the upscaler must not re-sample the base."""
     _run(prompt="a cat", seed=7)
     assert stub.gen_calls == 1
 
@@ -99,7 +90,7 @@ def test_post_pass_toggle_reuses_the_base(stub):
 
 
 def test_retuning_a_post_pass_keeps_reusing(stub):
-    """The real saving is the tweak loop, not the single toggle."""
+    """The saving is in the tweak loop, not the single toggle."""
     _run(prompt="a cat", seed=7)
     for strength in (0.3, 0.5, 0.7):
         _run(prompt="a cat", seed=7, detail_enabled=True,
@@ -138,8 +129,7 @@ def test_random_seed_never_reuses(stub):
 
 
 def test_random_seed_stores_under_the_seed_it_resolved(stub):
-    """Recycling the seed of a random run then hits, so the '♻ then upscale'
-    workflow costs one generation, not two."""
+    """Recycling a random run's seed then hits."""
     r = _run(prompt="a cat", seed=-1)
     assert r["seed"] == 4242
     _run(prompt="a cat", seed=4242, upscale_enabled=True)
@@ -161,8 +151,8 @@ def test_cache_holds_one_entry(stub):
 
 
 def test_reuse_does_not_hand_out_the_cached_object(stub):
-    """A ``post_generate`` extension may draw on the image it is given, so the
-    cache must never expose the entry it holds."""
+    """A ``post_generate`` extension may draw on its image, so the cache must
+    never hand out the entry it holds."""
     _run(prompt="a cat", seed=7)
     held = next(iter(server._BASE_CACHE.values()))[0]
     _run(prompt="a cat", seed=7, upscale_enabled=True)
@@ -172,10 +162,9 @@ def test_reuse_does_not_hand_out_the_cached_object(stub):
 
 
 def test_reused_run_reports_the_locked_seed(stub):
-    """``last_seed`` is stale on a hit (no generation ran), so the result and
-    its metadata must take the seed from the payload."""
+    """``last_seed`` is stale on a hit, so the seed comes from the payload."""
     _run(prompt="a cat", seed=7)
-    stub.last_seed = 999           # e.g. another device generated in between
+    stub.last_seed = 999           # another device generated in between
     r = _run(prompt="a cat", seed=7, upscale_enabled=True)
     assert r["seed"] == 7
 
@@ -194,9 +183,8 @@ def test_i2i_source_is_part_of_the_key(stub):
 
 
 def test_settings_panel_knob_invalidates(stub, monkeypatch):
-    """Sampler knobs live in SETTINGS, not the payload, but they change the
-    base — the key is built from the kwargs the engine actually receives, so
-    they are covered without being listed anywhere."""
+    """Settings knobs change the base; the key is built from the engine's
+    actual kwargs, so they're covered without being listed."""
     monkeypatch.setitem(server.SETTINGS, "gate_reduce", "all")
     _run(prompt="a cat", seed=7, sampler="cogent")
     monkeypatch.setitem(server.SETTINGS, "gate_reduce", "per_channel")
@@ -222,8 +210,7 @@ def test_fingerprint_separates_modes(stub):
 
 
 def test_fingerprint_keys_the_lora_set(stub):
-    """The engine gets the *stripped* prompt, so the LoRA tags have to be keyed
-    on their own or two different weight sets would share an entry."""
+    """The engine gets the stripped prompt, so LoRA tags are keyed separately."""
     kw = {"prompt": "x", "seed": 1}
     assert (server._base_fingerprint(kw, "t2i", [("a", 1.0)])
             != server._base_fingerprint(kw, "t2i", [("b", 1.0)]))
@@ -236,8 +223,7 @@ def test_fingerprint_keys_the_lora_set(stub):
 # ── LoRA prompts ────────────────────────────────────────────────────
 
 def test_lora_prompt_still_reuses(stub):
-    """Temp LoRAs are applied before and cleared after every run. If that churn
-    bumped the weights epoch, a LoRA prompt would miss the cache every time."""
+    """Temp LoRA churn must not bump the epoch, or LoRA prompts never hit."""
     prompt = "a cat <lora:style:0.8>"
     _run(prompt=prompt, seed=7)
     _run(prompt=prompt, seed=7, upscale_enabled=True)
@@ -268,9 +254,8 @@ def _engine_with_fake_model():
 
 
 def test_temp_lora_cycle_does_not_move_the_epoch():
-    """``apply_temp_loras``/``clear_temp_loras`` bracket every LoRA generation.
-    If they moved the epoch, the server's base cache would miss on every run
-    whose prompt carries a ``<lora:…>`` tag."""
+    """Temp LoRAs bracket every LoRA generation; moving the epoch would make
+    the base cache miss on every tagged prompt."""
     eng = _engine_with_fake_model()
     before = eng.weights_epoch
     eng._invalidate_cond_cache()
@@ -290,8 +275,7 @@ def test_load_and_unload_move_the_epoch():
 # ── standalone detailer ─────────────────────────────────────────────
 
 def test_detail_route_rejects_an_empty_model_stack():
-    """The stack is filtered for real detector names before the job is queued,
-    so an empty pick fails fast instead of occupying the worker."""
+    """An empty detector pick fails fast instead of occupying the worker."""
     with TestClient(server.app) as c:
         r = c.post("/api/detail", json={"input_image": "", "models": []})
         assert r.status_code == 400

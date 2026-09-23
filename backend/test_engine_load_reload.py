@@ -1,14 +1,6 @@
-"""Reloading when a split-file component (VAE / TE / CLIP) changes.
-
-A same-DiT load that swaps the VAE or text encoder must *not* be skipped as
-"already loaded" — otherwise the new component is silently ignored. Pure logic,
-no GPU / no real weights: a reload is observed as a ``FileNotFoundError`` from the
-companion-file existence check (proving the skip was bypassed), while a true skip
-returns the "already loaded" string before touching the filesystem.
-
-Run from the project root::
-
-    .venv/bin/python -m pytest backend/test_engine_load_reload.py -v
+"""A same-DiT load that swaps the VAE, TE or CLIP must reload, not be skipped
+as "already loaded". A reload shows up as a ``FileNotFoundError`` from the
+companion-file check; a true skip returns before touching the filesystem.
 """
 from __future__ import annotations
 
@@ -22,9 +14,8 @@ _MISSING = "____nonexistent____.safetensors"
 def _engine_with(loaded: LoadedModel | None, offload: bool | str = True) -> Engine:
     eng = Engine(device="cpu")
     eng._loaded = loaded
-    # Engine stores the *bundle* offload value (True/False/"encoders"/"stream"),
-    # which the server maps from the UI's "full"/"none"/… — match it so the
-    # staging-settings check agrees and only the component change is under test.
+    # The engine stores the bundle offload value (True/False/"encoders"/
+    # "stream"), so only the component change is under test.
     eng._offload = offload
     eng._vae_tile = True
     return eng
@@ -67,8 +58,7 @@ def test_load_anima_skips_when_everything_matches():
 ])
 def test_load_anima_reloads_when_component_changes(vae, te):
     eng = _engine_with(_anima())
-    # Same DiT, but a changed component → must NOT short-circuit; it proceeds to
-    # the companion-file check, which raises on the missing file.
+    # Same DiT, changed component: must reach the companion-file check.
     with pytest.raises(FileNotFoundError):
         eng.load_anima("d.safetensors", vae, te, offload=True, vae_tile=True)
 
@@ -81,7 +71,7 @@ def test_load_anima_drops_stale_cache_entry_on_component_change():
     with pytest.raises(FileNotFoundError):
         eng.load_anima(_MISSING, "v_new.safetensors", "t.safetensors",
                        offload=True, vae_tile=True)
-    assert label not in eng._ckpt_cache   # stale entry dropped, not restored
+    assert label not in eng._ckpt_cache
 
 
 # ── load_flux skip vs reload (CLIP is a component too) ─────────────────────

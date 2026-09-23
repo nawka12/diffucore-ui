@@ -1,13 +1,9 @@
-"""Detection + region geometry for the detailer (ADetailer-style refinement).
+"""Detection and region geometry for the detailer (ADetailer-style refinement).
 
-ADetailer hooks deep into A1111's UNet processing, so it can't drive a DiT. This
-module keeps only the model-agnostic half — YOLO detection and the crop/expand
-math — as pure functions. ``Engine.detail`` pairs them with diffucore's ``Inpaint``
-pipeline, which runs on UNet (SD/SDXL) *and* DiT (Anima, FLUX) backbones, so the
-same detail pass works across all of them.
-
-The crop math (``get_crop_region`` / ``expand_crop_region``) is ported from
-AUTO1111's ``modules/masking.py``.
+Only the model-agnostic half (YOLO detection, crop math) lives here;
+``Engine.detail`` pairs it with diffucore's ``Inpaint`` pipeline, so it works on
+UNet and DiT backbones alike. The crop math is ported from AUTO1111's
+``modules/masking.py``.
 """
 
 from __future__ import annotations
@@ -20,21 +16,19 @@ from PIL import Image, ImageDraw
 
 BBox = List[float]
 
-# Cache YOLO models by path — reloading the .pt from disk on every detailer pass
-# (and per stacked pass) is wasteful.
 _YOLO_CACHE: dict = {}
 
 
 def detect_regions(
     detector_path: str, image: Image.Image, confidence: float = 0.3,
 ) -> List[Tuple[BBox, float]]:
-    """Run a YOLO detector and return ``[(xyxy_bbox, confidence), …]`` sorted
-    largest-area first. Lazy-imports ultralytics so the app loads without it."""
+    """Run a YOLO detector; returns ``[(xyxy_bbox, confidence), …]``, largest
+    first. ultralytics is imported lazily so the app loads without it."""
     try:
         from ultralytics import YOLO
     except ImportError as e:
         raise RuntimeError(
-            "Detailer needs ultralytics — `pip install ultralytics`"
+            "Detailer needs ultralytics (`pip install ultralytics`)"
         ) from e
 
     model = _YOLO_CACHE.get(detector_path)

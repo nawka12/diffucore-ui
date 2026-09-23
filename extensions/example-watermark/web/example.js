@@ -1,4 +1,4 @@
-// Example Diffucore UI extension — frontend side.
+// Example Diffucore UI extension, frontend side.
 //
 // This script is injected into the index page by the backend (every .js file
 // in the extension's web/ dir is auto-loaded). It runs before Alpine inits,
@@ -107,7 +107,7 @@
       el.querySelector('#wm-tab-refresh').addEventListener('click', refresh);
     },
     unmount(el) {
-      // Nothing to clean up here — the innerHTML is replaced on next mount.
+      // Nothing to clean up: the innerHTML is replaced on the next mount.
     },
   });
 })();

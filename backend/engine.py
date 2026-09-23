@@ -1,4 +1,4 @@
-"""Model manager — keeps the loaded model in memory across generations."""
+"""Model manager: keeps the loaded model in memory across generations."""
 
 from __future__ import annotations
 
@@ -21,9 +21,8 @@ log = logging.getLogger("diffucore.engine")
 
 
 def _resolve_malloc_trim():
-    """glibc ``malloc_trim`` if available, else None. Used after each generation to
-    return free heap pages to the OS — offload round-trips churn many GB of CPU
-    weights per call, and glibc's allocator otherwise grows RSS indefinitely."""
+    """glibc ``malloc_trim``, or None. Offload round-trips churn GBs of CPU
+    weights, and glibc otherwise grows RSS indefinitely."""
     try:
         libc_path = ctypes.util.find_library("c")
         if not libc_path:
@@ -49,8 +48,7 @@ import numpy as np
 import torch
 from PIL import Image, ImageFilter
 
-# Optional: ESRGAN-family base upscalers for the tiled upscaler. Guarded so the
-# app boots (Lanczos base only) when spandrel isn't installed.
+# Optional ESRGAN-family base upscalers; without spandrel only Lanczos is offered.
 try:
     import spandrel as _spandrel
 except Exception:
@@ -76,18 +74,9 @@ from utils import checkpoint_path, lora_path, diffusion_model_path, vae_path, te
 
 LORA_PROMPT_RE = re.compile(r"<lora:([^:]+):([^>]+)>")
 
-# The flow families (Anima, FLUX) drive everything except "ddpm" (a VP/VE-only
-# ancestral sampler); the rest are flow-aware or model-agnostic. These lists must
-# stay in sync with the pipelines' _ANIMA_SAMPLERS / _FLUX_SAMPLERS.
-# sa_solver is SA-Solver (Xue et al., NeurIPS 2023, arXiv:2309.05019): a
-# multi-step stochastic Adams predictor-corrector in half-logSNR space, data-
-# prediction form. Each step corrects the current latent from the x0 history,
-# then predicts the next with exponential-integrator coefficients; the SDE form
-# re-injects seeded Gaussian noise on a middle (20%-80%) band of the schedule
-# (eta<=0 is the deterministic ODE). Flow-aware (VE + flow), so it is offered
-# for every family; strong at low step counts (SOTA few-step FID in the paper).
-# sa_solver_pece adds the final re-evaluation of the corrected state (Predict-
-# Evaluate-Correct-Evaluate), one extra NFE per corrected step for accuracy.
+# Flow families (Anima, FLUX) drive everything except "ddpm" (VP/VE-only). Keep
+# these lists in sync with the pipelines' _ANIMA_SAMPLERS / _FLUX_SAMPLERS.
+# GUIDE.md describes each sampler and scheduler.
 SAMPLERS_SD = [
     "euler",
     "euler_ancestral",
@@ -130,83 +119,11 @@ SAMPLERS_SD = [
 ]
 _SAMPLERS_SD_ONLY = set()
 SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm" and s not in _SAMPLERS_SD_ONLY]
-# infinity_omega and infinity_aether decompose the velocity field with 2-D
-# convolutions, and infinity_realism takes a per-channel statistic over the
-# spatial axes, so all of them need a [B, C, H, W] latent. SD/SDXL and Anima
-# have one; FLUX patchifies to a [B, L, C·p²] token sequence before sampling,
-# where a spatial blur is meaningless and dim 1 is a token index — and the
-# sampler signature carries no (h, w) to unpack with.
-#
-# infinity_realism was SD/SDXL-only through 2026-07-25 for a different reason:
-# it injected γ·σ of noise per step with γ saturating at 0.20, an absolute
-# scale that dwarfed the step on rectified flow (on Anima at shift=3.0 / 32
-# steps the first step injected 18.8× what it removed, 46× under the infinity
-# scheduler, with 28/32 steps over-injecting). Upstream deleted that injection
-# in the @21084d9 rewrite, so the sampler is deterministic now and the flow
-# restriction no longer applies — only the 4-D one does.
+# These need a [B, C, H, W] latent (2-D convolutions, per-channel spatial
+# statistics). FLUX samples a patchified token sequence, so it doesn't get them.
 _SAMPLERS_4D_ONLY = {"infinity_nano", "infinity_omega", "infinity_realism",
                      "infinity_aether", "cogent3_pump", "cogent3_pump_rate"}
-# euler_ancestral_anneal anneals eta with σ (full ancestral burn-in at high σ,
-# deterministic at low σ); Anima-only, aimed at rectified-flow merges.
-# secant_anneal is that annealed ancestral burn-in handing off to secant's
-# 2nd-order x0 refinement as σ→0 (curvature=0 ⇒ euler_ancestral_anneal,
-# eta_max=0 ⇒ deterministic secant); Anima-only.
-# dpmpp_2m_anneal is the "good and fast" variant: euler_ancestral_anneal's same
-# σ-annealed burn-in (eta = eta_max·σ) but with the DPM++(2M) flow exponential
-# integrator as the deterministic core instead of plain Euler / the secant — it
-# stays genuinely 2nd-order at low step counts (where the secant self-gates to
-# Euler), so it needs fewer steps. eta_max=0 ⇒ deterministic 2M flow multistep.
-# Anima-only; pair with beta/flow like its siblings.
-# cogent is the annealed-ancestral family's core (DPM++(2M) flow exponential
-# integrator + eta = eta_max·σ) with the 2nd-order correction scaled by a
-# *measured* weight instead of a hardcoded σ heuristic: psi = max((1+2·rho)/3,
-# 1−e^−h), where rho is the coherence of consecutive x0 differences (a Wiener
-# shrinkage — it damps itself on a merged/imperfect model and stays undamped on a
-# clean one) and 1−e^−h is the integrator's own phi-weight as a step-size floor
-# (a coarse step needs the 2nd-order term whatever its SNR). Unlike the rest of
-# the *_anneal family it is not flow-only — the same update serves VE, where the
-# anneal runs on σ/(1+σ) — so it is listed for every family. Prefer 24+ steps.
-# uni_pc_anneal is the stochastic sibling of uni_pc: UniPC's predictor-corrector
-# core (eta_max=0 ⇒ deterministic uni_pc bit-for-bit) plus a light σ-annealed
-# ancestral burn-in for stochastic diversity / merge robustness. Its high-order
-# core amplifies injected noise, so it ships a low baked-in eta_max (0.2) and is
-# NOT wired to the shared eta_max panel knob (1.0 over-smooths it). Anima-only.
-# cogent3 is cogent's measured gate carried to third order: the deterministic
-# DPM-Solver++(3M) flow exponential integrator (dpmpp_3m_sde with eta=0, bit-for-
-# bit when both gates are identity) plus the *_anneal family's σ-annealed eta.
-# The 2nd-order term is gated by cogent's psi_1 = max((1+2·rho1)/3, 1−e^-h);
-# the 3rd-order term — a difference of differences, the noisiest quantity in the
-# family — by a new Wiener shrink psi_2 = (2+3·rho2)/5 on the coherence of
-# consecutive second differences, with no floor (worst case reverts to the gated
-# 2nd-order behaviour, so it can never be worse than cogent). Like cogent it is
-# family-agnostic (VE/flow) and prefers 24+ steps.
-# cogent3_pump is cogent3 plus infinity_aether's one load-bearing mechanism,
-# isolated and given a hard low-sigma shutoff: grain scaled by (1 - coherence)
-# added on top of the completed step, so the model must read structure out of it
-# in exactly the regions that have not yet committed. At high sigma that revises
-# coarse properties (mass, pose, proportion — aether's character-stature win);
-# at low sigma the same pump churns texture, which is why aether degrades
-# everything else. Gated to sigma_frac >= 0.45 (ramping from 0.70), amplitude
-# tied to absolute sigma so it scales across families — aether pins both to
-# SD-tuned constants and injects 0.0289 into the *finished* latent on a 24-step
-# flow schedule, 34x what it does on SDXL. 4-D only (2-D structure tensor).
-# cogent3_pump_rate is cogent3_pump with the pump scaled to the step size. The
-# plain pump adds a fixed amount per step, so fewer steps means less pump (30
-# pump_dual steps deliver ~0.8x the 50-step dose); this one scales each
-# injection by the exact OU variance of its lambda-step, calibrated so a
-# pump_dual@50 band step gets exactly the plain amount. Same dose at any step
-# count. Made for pump_taper at ~30 steps.
-# lumen is galpt/infinity-diffusion's LUMEN geometric solver (branch
-# sampler/lumen-geometric-solver), a deterministic second-order multistep at one
-# evaluation per step. Its integrator is res_multistep's — upstream derives it
-# as a closed-form integral in log-sigma, which collapses to the same phi-weighted
-# correction — so what "lumen" actually offers over "res_multistep" is three
-# stability guards layered on top: a damping scale that shrinks the correction
-# when the x0 estimate jumps between steps, plain Euler on the last two
-# non-terminal steps, and a fallback to Euler on any step whose correction
-# outweighs 40% of its own Euler displacement. All of them cost nothing, all of
-# them are conservative, so expect it to read as res_multistep with a calmer
-# tail rather than as a different sampler. Family-agnostic.
+# Anima-only additions.
 SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal",
                                   "dpmpp_2m_anneal", "uni_pc_anneal"]
 SAMPLERS_FLUX = [s for s in SAMPLERS_FLOW if s not in _SAMPLERS_4D_ONLY]
@@ -214,54 +131,10 @@ SAMPLERS_FLUX = [s for s in SAMPLERS_FLOW if s not in _SAMPLERS_4D_ONLY]
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
                  "align_your_steps", "sgm_uniform", "simple", "normal",
                  "infinity", "infinity_htds", "ddim_uniform", "linear_quadratic"]
-# align_your_steps is the AYS schedule (Sabour et al., ICML 2024,
-# arXiv:2404.14507): the paper's per-family optimized 10-step noise tables
-# (SD1.5 / SDXL), extended to any step count by log-linear interpolation — the
-# authors' own recipe. Best in the few-step regime (~10-20 steps); SD/SDXL only
-# (the tables are VE-scale), and zero-terminal-SNR models degrade to karras.
-# "oss" is a calibrated optimal-stepsize schedule: it needs a one-time
-# calibration for the exact (model, steps, resolution, shift) before it works.
-# The UI's OSS panel runs that calibration (Engine.calibrate_oss) and writes the
-# cache; selecting "oss" before calibrating errors with a clear message.
-# Flow families omit "ddim_uniform": its DDIM-style table walk starts below
-# σ_max (≈0.98, not 1.0), which mismatches the flow pipelines' pure-noise init
-# (they assume σ_max == 1). normal/kl_optimal/linear_quadratic all start at σ≈1.
-# smoothstep is Anima-only for now: a U-shaped (endpoint-dense) flow schedule
-# designed to pair with euler_ancestral_anneal on rectified-flow merges.
-# beta is the Beta(0.6, 0.6)-quantile schedule (ComfyUI's "beta", pure-torch):
-# a tunable U-shape in t mapped through the flow shift; Anima-only for now.
-# beta_mix is a two-Beta mixture generalization of beta — drops the
-# symmetric-peak constraint so the low-/high-freq endpoint peaks can differ
-# in shape; defaults are detail-leaning (Lee et al. 2024 Fig. 2d's LDM
-# importance curve) but tuned for the flow shift map, not transcribed from
-# SD. Anima-only.
-# infinity is Infinity Diffusion's sine-perturbed timestep ramp: normal with
-# the first step's gap shrunk (gentler start) and the last step's grown (more
-# final cleanup), adapting to the step count. Starts at σ_max, so flow-safe;
-# all families. Upstream pairs it with the infinity sampler.
-# infinity_htds is the same project's omega/nano schedule: normal's ramp bent
-# by tanh, with the bend adapting to the step count and flattening to linear at
-# ≤4 steps. Upstream calls it a low-noise "tail density" schedule, but the curve
-# it ships is convex, so sigma is held HIGH through the early trajectory and
-# plunges at the end — at 50 flow steps it puts 7 sigmas below σ_max/2 where
-# normal puts 13. Spend it on structure, not texture. Starts at σ_max, so
-# flow-safe; all families. Upstream pairs it with infinity_omega.
-# pump_dual is a two-band schedule for cogent3_pump: a step-dense pumped band
-# (pump_share=0.85 of the run above pump_end=0.45 — the pump's hard cutoff —
-# 27 injections at 32 steps against flow's 26 and beta_mix's 21, each one a CFG
-# re-deciding round for the prompt), then a short refinement band that stops
-# where flow stops, σ(t=1/steps). That terminus is the whole trick: running to
-# the σ table floor (0.003, what beta / beta_mix / normal / infinity do) costs
-# the 3M exponential core 2.6× on the offline benchmark and 16× at 8 steps,
-# and it is the depth that hurts, not the final step size. Anima-only for now.
-# pump_taper is pump_dual cut for ~30 steps, from measurements of the 50-step
-# run: the refinement tail shrinks to 4 steps at 30 (swapping 50-step's 8-step
-# tail for 4 on the same scene moved pixels by RMSE ~11/255), and the pumped
-# band's steps start at the 50-step density (0.12 lambda) where the x0
-# prediction changes fastest (sigma 0.98-0.9, as CFG switches on) and widen to
-# 0.35 lambda near the 0.45 cutoff, where it changes ~10x slower. Pair with
-# cogent3_pump_rate. With a step-fraction CFG interval, use end 0.8 (0.75 stops
-# CFG at sigma ~0.69 on this grid).
+# align_your_steps is SD/SDXL only (its tables are VE-scale). "oss" needs a
+# one-time calibration per (model, steps, resolution, shift); see calibrate_oss.
+# Flow families omit "ddim_uniform": it starts below σ_max, and the flow
+# pipelines init from pure noise (σ_max == 1).
 SCHEDULERS_ANIMA = ["flow", "flow_dyn", "oss", "sgm_uniform", "simple",
                     "normal", "infinity", "infinity_htds", "kl_optimal",
                     "linear_quadratic", "smoothstep", "beta", "beta_mix",
@@ -269,8 +142,8 @@ SCHEDULERS_ANIMA = ["flow", "flow_dyn", "oss", "sgm_uniform", "simple",
 SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple", "normal",
                    "infinity", "infinity_htds", "kl_optimal", "linear_quadratic"]
 
-# Calibrated OSS schedules are cached one JSON (list of descending sigmas) per
-# (model, steps, resolution, shift); calibrate_oss.py writes them here.
+# Calibrated OSS schedules: one JSON of descending sigmas per
+# (model, steps, resolution, shift), written by calibrate_oss.py.
 _OSS_CACHE_DIR = _ROOT / "models" / "oss_cache"
 
 
@@ -278,10 +151,8 @@ def oss_cache_path(name: str, steps: int, width: int, height: int, shift: float)
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
     return _OSS_CACHE_DIR / f"{safe}__{steps}s_{width}x{height}_shift{shift:g}.json"
 
-# TeaCache rescaling coefficients are an architecture-level property, not a
-# per-(steps, resolution) one like OSS — one fit transfers across a family's
-# checkpoints and settings. So they cache one JSON per family ("anima.json"),
-# with an optional per-checkpoint override file that takes precedence.
+# TeaCache coefficients are per architecture: one JSON per family, with an
+# optional per-checkpoint override.
 _TEACACHE_CACHE_DIR = _ROOT / "models" / "teacache_cache"
 
 
@@ -295,11 +166,7 @@ def teacache_override_path(name: str) -> Path:
 
 
 def _write_cache_json(path: Path, values: list) -> None:
-    """Write a calibration cache atomically (temp file + os.replace).
-
-    A plain write truncates first, so an interrupted calibration would leave a
-    half-written file that every later generation then fails to parse.
-    """
+    """Write a calibration cache atomically (temp file + os.replace)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + f".tmp{os.getpid()}")
     try:
@@ -312,9 +179,7 @@ def _write_cache_json(path: Path, values: list) -> None:
 
 def _read_cache_json(path: Path) -> Optional[list]:
     """Load a calibration cache, or None if it's absent, unreadable, or not a
-    list of finite numbers. A corrupt or NaN-poisoned file reads as "never
-    calibrated" instead of breaking generation with a parse error or silently
-    feeding NaN into the sampler."""
+    list of finite numbers."""
     try:
         with open(path) as f:
             values = json.load(f)
@@ -333,16 +198,13 @@ def _finite_series(values) -> bool:
             and all(isinstance(v, (int, float)) and not isinstance(v, bool)
                     and math.isfinite(v) for v in values))
 
-# (family, native_res) tuples — used for defaults
 MODEL_FAMILY_SD15 = "sd15"
 MODEL_FAMILY_SDXL = "sdxl"
 MODEL_FAMILY_ANIMA = "anima"
 
-# TeaCache keeps tensors produced inside the compiled forward (the block-0
-# modulated input, the Taylor residuals) alive across steps; with CUDA Graphs
-# those are views of the graph's static buffer that every replay overwrites —
-# there is no call-site clone that fixes state stored *inside* the graph, so
-# the combination is rejected with a clear message instead.
+# TeaCache keeps tensors from inside the compiled forward alive across steps.
+# Under CUDA Graphs every replay overwrites them, and no call-site clone can fix
+# state stored inside the graph.
 _TEACACHE_CUDA_GRAPHS_ERROR = (
     "TeaCache is incompatible with CUDA Graphs (its cached tensors are "
     "overwritten by each graph replay). Disable TeaCache, or reload the "
@@ -352,10 +214,8 @@ MODEL_FAMILY_FLUX1 = "flux1"
 MODEL_FAMILY_FLUX2 = "flux2"
 _FLUX_FAMILIES = (MODEL_FAMILY_FLUX1, MODEL_FAMILY_FLUX2)
 
-# Cheap latent→RGB approximation for live previews (factors from ComfyUI's
-# comfy/latent_formats.py). Per family: (factors[C][3], bias[3] | None). Applied
-# to the sampler's x0 estimate to render a rough preview without a VAE decode.
-# Anima uses the Wan2.1 latent format (its VAE carries Wan2.1 latent stats).
+# Latent→RGB preview factors from ComfyUI's comfy/latent_formats.py, as
+# (factors[C][3], bias[3] | None). Anima uses the Wan2.1 latent format.
 _PREVIEW_RGB = {
     MODEL_FAMILY_SD15: (
         [[0.3512, 0.2297, 0.3227], [0.3250, 0.4974, 0.2350],
@@ -388,27 +248,20 @@ class LoadedModel:
     model: object
     native_res: int
     applied_loras: List[str] = field(default_factory=list)
-    # Split-file companion components (Anima DiT + VAE + TE; FLUX adds CLIP-L),
-    # kept so a reload triggers when one is swapped while the DiT is unchanged,
-    # and so an X/Y/Z "Checkpoint" sweep can reload a new DiT with the rest fixed.
+    # Split-file companions (Anima DiT + VAE + TE; FLUX adds CLIP-L), so swapping
+    # one triggers a reload.
     vae_name: Optional[str] = None
     te_name: Optional[str] = None
     clip_name: Optional[str] = None
-    # Staging settings this model was actually loaded under (offload, vae_tile,
-    # …), recorded when it enters the LRU cache so a later restore can tell
-    # whether the cached *placement* still matches what's being asked for.
+    # Staging settings it was loaded under (offload, vae_tile, …), so an LRU
+    # restore can check the placement still matches.
     stage_settings: Optional[tuple] = None
 
 
 class Engine:
-    # X/Y/Z Checkpoint-axis LRU cache (IMPROVE.md #10): keep the last few
-    # swept checkpoints off-GPU so a re-sweep (or an alternating A/B axis)
-    # doesn't re-read ~23 GB from disk per cell. Only fully-resident
-    # (offload="none") non-FLUX models are cached — offloaded models use a
-    # streaming/staging proxy whose placement ``.to()`` would break, and FLUX
-    # is too large to hold two of alongside the current model. Opportunistic:
-    # any torch error falls back to the normal disk reload, so a cache miss
-    # or a model that can't be moved wholesale just reloads.
+    # X/Y/Z Checkpoint-axis LRU cache of swept models, kept off-GPU. Only fully
+    # resident (offload="none") non-FLUX models qualify; any torch error falls
+    # back to a disk reload.
     CKPT_CACHE_MAX = 2
 
     def __init__(self, device: str = "cuda", dtype_str: str = "float16"):
@@ -442,19 +295,14 @@ class Engine:
 
     @property
     def cuda_graphs_enabled(self) -> bool:
-        """Whether the current load baked CUDA Graphs into the backbone — lets
-        the server fail TeaCache requests at submit time (see
-        ``_TEACACHE_CUDA_GRAPHS_ERROR``) instead of after queueing."""
+        """Whether the current load baked CUDA Graphs into the backbone."""
         return self._cuda_graphs
 
     @property
     def active_offload(self) -> "bool | str":
-        """The offload mode the *current* load actually runs with.
-
-        Not the same as :meth:`recommended_offload`, which only reads the card's
-        VRAM: the UI can pick any mode, and FLUX is forced to ``"stream"``
-        whatever the card. Callers deciding whether VRAM is tight (the server
-        parks the NSFW tagger on ``"stream"``) need this one."""
+        """The offload mode the current load actually runs with. Unlike
+        :meth:`recommended_offload` it reflects the UI's choice and FLUX's
+        forced ``"stream"``."""
         return self._offload
 
     @property
@@ -463,17 +311,11 @@ class Engine:
 
     @property
     def weights_epoch(self) -> int:
-        """Counter bumped whenever the loaded weights change identity.
+        """Counter bumped whenever the loaded weights change identity (load,
+        restore, unload, permanent LoRA fuse), for result caches keyed on it.
 
-        Incremented on every load, restore, unload, and permanent LoRA fuse.
-        Callers that cache a *result* keyed on generation parameters (the
-        server's base-image cache) fold this in, so a model swap can't serve an
-        image the current weights would no longer produce.
-
-        Deliberately *not* bumped by ``apply_temp_loras``/``clear_temp_loras``:
-        those bracket every generation whose prompt carries ``<lora:…>`` tags,
-        so a bump would make the epoch churn once per run and defeat any cache
-        keyed on it. Callers key the requested LoRA set separately."""
+        Not bumped by temp LoRAs, which bracket every tagged generation and
+        would churn it; callers key the requested LoRA set separately."""
         return self._weights_epoch
 
     @property
@@ -482,50 +324,35 @@ class Engine:
 
     @property
     def last_upscale_seed(self) -> int:
-        """Base seed the last ``upscale()`` call used for its tile passes.
-
-        ``upscale()`` deliberately leaves ``last_seed`` alone so a post-gen
-        upscale keeps its generation's seed; a *standalone* upscale has no such
-        generation, so it names and tags its output with this instead."""
+        """Base seed of the last ``upscale()`` tile passes. ``upscale()`` leaves
+        ``last_seed`` alone so a post-gen upscale keeps its generation's seed."""
         return self._last_upscale_seed
 
     @property
     def can_inpaint(self) -> bool:
-        """Whether the detailer can run on the loaded family (it drives the
-        ``Inpaint`` pipeline per region). True for every supported family now that
-        FLUX has an inpaint path."""
+        """Whether the detailer (per-region ``Inpaint``) can run; every family
+        can."""
         return bool(self._loaded)
 
     @staticmethod
     def fa2_attention_available() -> bool:
-        """Whether the optional FA2-Turing attention kernel can run here (the
-        locally built ``flash_attn_turing`` package is installed and the GPU is
-        sm75) — gates the UI's "fa2 attn" perf chip."""
+        """Whether the locally built FA2-Turing kernel is installed and the GPU
+        is sm75."""
         return fa2_turing_available()
 
     def recommended_offload(self) -> str:
-        """A sensible default offload mode for the UI, picked from the GPU's VRAM.
-        More VRAM → keep more resident (faster):
-        ``none`` > ``encoders`` > ``full`` > ``stream``.
-        FLUX overrides this to ``stream`` in the UI regardless (it can't stage its
-        ~23 GB DiT as one blob). SD/SDXL, FLUX, and Anima all support ``stream``.
-        CPU-only falls back to ``full``."""
+        """Default offload mode from the GPU's VRAM: ``none`` > ``encoders`` >
+        ``full`` > ``stream`` as VRAM shrinks. CPU-only gets ``full``."""
         if self.device.type != "cuda":
             return "full"
         vram_gb = torch.cuda.get_device_properties(self.device).total_memory / 1024**3
-        if vram_gb >= 23:      # 24 GB-class (3090/4090): hold everything resident
+        if vram_gb >= 23:      # 24 GB class: everything resident
             return "none"
-        if vram_gb >= 11:      # 12/16 GB-class: keep the (small) backbone resident,
-            return "encoders"  # only park encoders + VAE. SD/SDXL UNet (~5 GB) and the
-                               # Anima DiT (~4 GB) fit alongside activations; the heavy
-                               # VAE decode auto-tiles. Avoids shuffling the backbone
-                               # on/off the GPU every image.
-        if vram_gb >= 6:       # 6-10 GB: shuttle the whole backbone per image (safe)
+        if vram_gb >= 11:      # 12/16 GB: backbone resident, park encoders + VAE
+            return "encoders"
+        if vram_gb >= 6:
             return "full"
-        return "stream"        # ≤4-6 GB: even whole-backbone staging ("full") OOMs
-                               # once 1024² activations land on top, so stream the
-                               # backbone blocks (ComfyUI --lowvram analog). SD/SDXL,
-                               # FLUX, and Anima all support it.
+        return "stream"        # full staging OOMs once 1024² activations land
 
     @property
     def available_schedulers(self) -> List[str]:
@@ -548,7 +375,7 @@ class Engine:
         flags = self._perf_flag_summary().strip()
         return f"{self._loaded.name} ({self._loaded.family}, {self._loaded.native_res}){vram}{lora_str}{'  ' + flags if flags else ''}"
 
-    # ── temporary LoRA (reForge-style via prompt) ────────────────
+    # ── temporary LoRA (via prompt tags) ─────────────────────────
 
     @staticmethod
     def parse_lora_prompt(prompt: str) -> tuple[str, list[tuple[str, float]]]:
@@ -574,8 +401,7 @@ class Engine:
         self._loaded.applied_loras.clear()
         msgs = []
         for name, mult in loras:
-            # A prompt tag is free text: an unusable name is reported per-LoRA
-            # like any other miss, not raised as a generation failure.
+            # An unusable name in a prompt tag is reported, not raised.
             try:
                 path = lora_path(name)
             except ValueError:
@@ -586,14 +412,14 @@ class Engine:
             report = apply_lora(self._loaded.model, str(path), multiplier=mult)
             self._loaded.applied_loras.append(name)
             msgs.append(f"{name}@{mult}: {report.applied} matched")
-        self._invalidate_cond_cache()  # LoRA patches the TE/adapter → cached embeds stale
+        self._invalidate_cond_cache()  # LoRA patches the TE/adapter
         return " | ".join(msgs) if msgs else "No LoRAs"
 
     def clear_temp_loras(self) -> None:
         if self._loaded:
             clear_bundle_loras(self._loaded.model)
             self._loaded.applied_loras.clear()
-            self._invalidate_cond_cache()  # weights back to base → cached LoRA embeds stale
+            self._invalidate_cond_cache()
 
     # ── model loading ──────────────────────────────────────────────
 
@@ -603,10 +429,8 @@ class Engine:
         fp16_accumulation: bool, attention: str = "sdpa",
         vae_fp16: bool = False,
     ) -> bool:
-        """Whether the requested load-time staging settings equal those of the
-        currently loaded model. Offload and the perf flags are baked in at load
-        via DevicePolicy, so a same-name reload only skips re-staging when these
-        also match — otherwise the change would be silently dropped."""
+        """Whether the requested staging settings equal the loaded model's.
+        They're baked in at load, so a same-name reload must re-stage otherwise."""
         return (
             self._offload == offload
             and self._vae_tile == vae_tile
@@ -622,10 +446,8 @@ class Engine:
     def _components_match(
         self, vae_name: str, te_name: str, clip_name: Optional[str] = None,
     ) -> bool:
-        """Whether the loaded split-file model's companion components equal those
-        requested. A same-DiT reload that swaps the VAE or text encoder (or, for
-        FLUX.1, the CLIP) must *not* be skipped as "already loaded" — the new
-        component would otherwise be silently ignored. Assumes ``self._loaded``."""
+        """Whether the loaded split-file model's VAE / TE / CLIP equal the
+        requested ones. Assumes ``self._loaded``."""
         lm = self._loaded
         return (
             lm.vae_name == vae_name
@@ -634,9 +456,8 @@ class Engine:
         )
 
     def _vae_dtype(self, vae_fp16: bool) -> torch.dtype:
-        """The DevicePolicy ``vae_dtype`` for a load. fp16 VAE is CUDA-only
-        (fp16 convs on CPU range from glacial to unsupported); overflow-prone
-        VAEs are handled at runtime by the pipelines' non-finite fp32 fallback."""
+        """DevicePolicy ``vae_dtype``. fp16 VAE is CUDA-only; overflow is handled
+        by the pipelines' non-finite fp32 fallback."""
         return torch.float16 if (vae_fp16 and self.device.type == "cuda") else torch.float32
 
     def load_model(
@@ -649,11 +470,10 @@ class Engine:
         if compile and offload is True:
             offload = "encoders"
         elif compile and offload == "stream":
-            # stream is the only mode that fits the backbone on a tiny card, so we
-            # can't downgrade it to "encoders" (that would OOM). Drop compile instead
-            # — it's the optional speed feature; fitting in VRAM is not.
+            # stream is the only mode that fits a tiny card, so drop compile
+            # (and cuda_graphs, which needs it) instead of the offload mode.
             compile = False
-            cuda_graphs = False  # cuda_graphs needs compile, so it goes too
+            cuda_graphs = False
             log.warning("compile disabled: incompatible with offload='stream' "
                          "(backbone is block-streamed to fit VRAM)")
         if (self._loaded and self._loaded.name == model_name
@@ -662,11 +482,8 @@ class Engine:
                                          fp16_accumulation, attention, vae_fp16)):
             return f"Model already loaded: {model_name}"
 
-        # X/Y/Z Checkpoint LRU cache (#10): try to restore a recently-swept
-        # checkpoint from CPU before re-reading it from disk. Restore first, then
-        # stash the *previous* model (so an alternating A/B axis doesn't drop B
-        # when restoring A). _stash_loaded detaches self._loaded on success; on
-        # failure it leaves the previous model for _unload to drop.
+        # Restore from the Checkpoint LRU cache first, then stash the previous
+        # model, so an alternating A/B axis keeps both.
         restored = self._try_cache_restore(model_name, offload, vae_tile,
                                            compile, cuda_graphs, channels_last, tf32,
                                            fp16_accumulation, attention, vae_fp16)
@@ -709,8 +526,7 @@ class Engine:
             compile=compile, cuda_graphs=cuda_graphs,
             channels_last=channels_last, tf32=tf32,
             fp16_accumulation=fp16_accumulation, attention=attention,
-            # Overlap block-streaming copies with compute (see DevicePolicy). Only
-            # active in "stream" mode, where the backbone already lives in CPU RAM.
+            # Overlap block-streaming copies with compute.
             stream_prefetch=(offload == "stream"),
         )
 
@@ -718,8 +534,7 @@ class Engine:
         model = load_checkpoint(str(path), policy=policy)
         elapsed = time.time() - t0
 
-        # Family comes from the detected architecture (sd15/sdxl/flux1/flux2), so
-        # an all-in-one FLUX checkpoint dropped in checkpoints/ is recognised too.
+        # Detected architecture, so an all-in-one FLUX checkpoint works here too.
         family = model.spec.architecture
         self._loaded = LoadedModel(
             name=model_name,
@@ -732,12 +547,9 @@ class Engine:
         return f"Loaded {model_name} ({family}) in {elapsed:.1f}s{flags}"
 
     def reload_model(self, name: str) -> str:
-        """Swap the model file for an X/Y/Z "Checkpoint" sweep, reusing the rest
-        of the current model — its staging settings (offload / perf flags) and,
-        for Anima, its companion VAE + text encoder — so cells differ only by the
-        model. Anima sweeps the DiT; every other family sweeps a single-file
-        checkpoint. The underlying loaders no-op when ``name`` is already current,
-        so calling this per cell only reloads on an actual change."""
+        """Swap the model file for an X/Y/Z Checkpoint sweep, keeping the
+        current staging settings and (for Anima) VAE + text encoder. The loaders
+        no-op when ``name`` is already current."""
         lm = self._loaded
         if lm and lm.family == MODEL_FAMILY_ANIMA:
             return self.load_anima(
@@ -769,11 +581,10 @@ class Engine:
         if compile and offload is True:
             offload = "encoders"
         elif compile and offload == "stream":
-            # stream is the only mode that fits the backbone on a tiny card, so we
-            # can't downgrade it to "encoders" (that would OOM). Drop compile instead
-            # — it's the optional speed feature; fitting in VRAM is not.
+            # stream is the only mode that fits a tiny card, so drop compile
+            # (and cuda_graphs, which needs it) instead of the offload mode.
             compile = False
-            cuda_graphs = False  # cuda_graphs needs compile, so it goes too
+            cuda_graphs = False
             log.warning("compile disabled: incompatible with offload='stream' "
                          "(backbone is block-streamed to fit VRAM)")
         if (self._loaded and self._loaded.name == label
@@ -783,10 +594,7 @@ class Engine:
                                          fp16_accumulation, attention, vae_fp16)):
             return f"Model already loaded: {label}"
 
-        # X/Y/Z Checkpoint LRU cache (#10): restore a recently-swept Anima DiT
-        # from CPU before re-reading it. Keyed on the Anima label (DiT name), so a
-        # cached entry for this DiT but with a different VAE/TE is stale — drop it
-        # rather than restore the wrong companion components.
+        # A cached entry for this DiT with a different VAE/TE is stale.
         cached = self._ckpt_cache.get(label)
         if cached is not None and (cached.vae_name != vae_name or cached.te_name != te_name):
             self._ckpt_cache.pop(label, None)
@@ -836,8 +644,7 @@ class Engine:
             offload=offload, vae_tile=vae_tile,
             compile=compile, cuda_graphs=cuda_graphs,
             fp16_accumulation=fp16_accumulation, attention=attention,
-            # Overlap block-streaming copies with compute (see DevicePolicy). Only
-            # active in "stream" mode, where the backbone already lives in CPU RAM.
+            # Overlap block-streaming copies with compute.
             stream_prefetch=(offload == "stream"),
         )
 
@@ -868,19 +675,16 @@ class Engine:
         fp16_accumulation: bool = False, attention: str = "sdpa",
         vae_fp16: bool = False,
     ) -> str:
-        """Load a split-file FLUX model. ``te_name`` is the primary text encoder
-        (T5-XXL for FLUX.1, Mistral-3 for FLUX.2); ``clip_name`` is the CLIP-L
-        encoder (FLUX.1 only — ignored for FLUX.2). The detector picks which path
-        applies from the transformer."""
+        """Load a split-file FLUX model. ``te_name`` is T5-XXL (FLUX.1) or
+        Mistral-3 (FLUX.2); ``clip_name`` is CLIP-L, FLUX.1 only."""
         label = f"FLUX({dit_name})"
         if compile and offload is True:
             offload = "encoders"
         elif compile and offload == "stream":
-            # stream is the only mode that fits the backbone on a tiny card, so we
-            # can't downgrade it to "encoders" (that would OOM). Drop compile instead
-            # — it's the optional speed feature; fitting in VRAM is not.
+            # stream is the only mode that fits a tiny card, so drop compile
+            # (and cuda_graphs, which needs it) instead of the offload mode.
             compile = False
-            cuda_graphs = False  # cuda_graphs needs compile, so it goes too
+            cuda_graphs = False
             log.warning("compile disabled: incompatible with offload='stream' "
                          "(backbone is block-streamed to fit VRAM)")
         if (self._loaded and self._loaded.name == label
@@ -919,14 +723,13 @@ class Engine:
             offload=offload, vae_tile=vae_tile,
             compile=compile, cuda_graphs=cuda_graphs,
             fp16_accumulation=fp16_accumulation, attention=attention,
-            # Overlap block-streaming copies with compute (see DevicePolicy). Only
-            # active in "stream" mode, where the backbone already lives in CPU RAM.
+            # Overlap block-streaming copies with compute.
             stream_prefetch=(offload == "stream"),
         )
 
         t0 = time.time()
-        # te_file is passed as both T5 and Mistral candidate; the loader uses
-        # whichever the detected architecture needs.
+        # te_file serves as both T5 and Mistral candidate; the detected
+        # architecture picks.
         model = load_flux_checkpoint(
             transformer_path=str(dit_path), vae_path=str(vae_file),
             t5_path=str(te_file), mistral_path=str(te_file),
@@ -996,30 +799,25 @@ class Engine:
 
     # ── conditioning cache ─────────────────────────────────────────
     def _attach_cond_cache(self) -> None:
-        """Give the freshly (re)activated model an empty conditioning cache. A
-        fresh cache per load/restore makes stale-across-models entries
-        structurally impossible; LoRA changes clear it in place (below)."""
+        """Give the (re)activated model an empty conditioning cache, so entries
+        can't go stale across models."""
         if self._loaded is not None:
             self._loaded.model.cond_cache = ConditioningCache()
             self._weights_epoch += 1
 
     def _invalidate_cond_cache(self) -> None:
-        """Drop cached conditioning after a LoRA change. LoRAs can patch the text
-        encoders (SD) and the Anima LLM-Adapter, so any cached embeds are stale;
-        clearing unconditionally is cheaper than diffing which modules changed."""
+        """Drop cached conditioning after a LoRA change (LoRAs can patch the text
+        encoders and the Anima LLM-Adapter)."""
         if self._loaded is not None:
             cache = getattr(self._loaded.model, "cond_cache", None)
             if cache is not None:
                 cache.clear()
 
-    # ── X/Y/Z Checkpoint LRU cache (#10) ───────────────────────────
+    # ── X/Y/Z Checkpoint LRU cache ─────────────────────────────────
     def _cacheable_for_stash(self) -> bool:
-        """True iff the current model is safe to park in the cache.
-
-        Only fully-resident (``offload="none"``) non-FLUX models: offloaded
-        models use a streaming/staging proxy whose placement ``.to()`` would
-        break, and FLUX is too large to cache a second copy of. The cache is
-        opportunistic, so a ``False`` here just means "reload from disk"."""
+        """Only fully resident, non-FLUX models can be parked: offloaded models
+        sit behind a staging proxy that ``.to()`` would break, and FLUX is too
+        large for a second copy."""
         if self._loaded is None or self._offload != "none":
             return False
         if self._loaded.family in _FLUX_FAMILIES:
@@ -1033,21 +831,18 @@ class Engine:
                 self._attention, self._vae_fp16)
 
     def _stash_loaded(self) -> bool:
-        """Park ``self._loaded`` in the LRU cache (moved to CPU) for a later
-        re-sweep. On success detaches it (caller must **not** then ``_unload``).
-        On failure (not cacheable, or ``.to("cpu")`` raises on a proxy) leaves
-        ``self._loaded`` in place for ``_unload`` to drop. Returns whether it
-        stashed. Evicts the least-recently-used entry on overflow."""
+        """Park ``self._loaded`` on CPU in the LRU cache, evicting the oldest on
+        overflow. Returns whether it stashed; on success the model is detached
+        (the caller must not ``_unload``)."""
         if not self._cacheable_for_stash():
             return False
         lm = self._loaded
         try:
             lm.model.to("cpu")
-        except Exception as e:  # noqa: BLE001 — proxy/wrapper can't be moved wholesale
+        except Exception as e:  # noqa: BLE001  proxy/wrapper can't be moved wholesale
             log.debug("ckpt cache: can't move %s to CPU (%s); dropping", lm.name, e)
             return False
-        # Recorded here, before the in-progress load overwrites the engine's
-        # flags — at this point they still describe *this* model.
+        # Record now, while the engine's flags still describe this model.
         lm.stage_settings = self._current_stage_settings()
         cache = self._ckpt_cache
         cache.pop(lm.name, None)
@@ -1057,7 +852,7 @@ class Engine:
             try: del evicted.model
             except Exception: pass  # noqa: BLE001
             log.debug("ckpt cache: evicted %s (max %d)", _key, self.CKPT_CACHE_MAX)
-        self._loaded = None  # detached — owned by the cache now
+        self._loaded = None
         self._reclaim_memory()
         return True
 
@@ -1065,22 +860,15 @@ class Engine:
                            offload, vae_tile, compile, cuda_graphs,
                            channels_last, tf32, fp16_accumulation,
                            attention="sdpa", vae_fp16=False) -> Optional[LoadedModel]:
-        """Pop a cached model for ``key`` and move it back to the device, but
-        only if the requested staging settings match the model's (a settings
-        change invalidates the cached placement). Returns the restored
-        ``LoadedModel`` or ``None`` (miss / settings mismatch / restore error).
-
-        Compares against the settings *this entry* was staged under, not the
-        engine's current flags: those describe whichever model was loaded last,
-        so a settings change made while a different checkpoint was active would
-        otherwise go unnoticed and the stale placement be reused."""
+        """Pop the cached model for ``key`` and move it back to the device, if
+        the settings it was staged under match the request. Otherwise (or on a
+        restore error) drop it and return ``None``."""
         lm = self._ckpt_cache.get(key)
         if lm is None:
             return None
         if lm.stage_settings != (offload, vae_tile, compile, cuda_graphs,
                                  channels_last, tf32, fp16_accumulation,
                                  attention, vae_fp16):
-            # Settings changed since this was cached — placement is stale. Drop it.
             self._ckpt_cache.pop(key, None)
             try: del lm.model
             except Exception: pass  # noqa: BLE001
@@ -1096,9 +884,7 @@ class Engine:
         return lm
 
     def _reclaim_memory(self) -> None:
-        """Drop dead refs and hand free heap pages back to the OS. Called after
-        each generation so glibc doesn't grow RSS indefinitely from the
-        multi-GB CPU malloc/free churn the offload round-trips produce."""
+        """Drop dead refs and hand free heap pages back to the OS."""
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -1121,17 +907,16 @@ class Engine:
             raise FileNotFoundError(f"LoRA not found: {path}")
         report = apply_lora(self._loaded.model, str(path), multiplier=multiplier)
         self._loaded.applied_loras.append(lora_name)
-        self._invalidate_cond_cache()  # LoRA patches the TE/adapter → cached embeds stale
-        self._weights_epoch += 1       # fused in permanently: a new set of weights
+        self._invalidate_cond_cache()
+        self._weights_epoch += 1       # fused in permanently
         return f"Applied {lora_name}: {report}"
 
     def clear_loras(self) -> str:
         if not self._loaded:
             return "No model loaded"
-        # LoRAs are fused into the weights, so the only way to drop them is to
-        # throw the model away. Say so — the next generation needs a re-load.
+        # Fused LoRAs can only be dropped by discarding the model.
         self._unload()
-        return "All LoRAs cleared — load the model again to generate"
+        return "All LoRAs cleared. Load the model again to generate."
 
     # ── generation ─────────────────────────────────────────────────
 
@@ -1142,8 +927,7 @@ class Engine:
         return seed
 
     def _load_oss_sigmas(self, steps: int, width: int, height: int, shift: float):
-        """Calibrated OSS sigma list for the current model/config, or None if
-        none has been calibrated yet."""
+        """Calibrated OSS sigmas for the current model/config, or None."""
         if not self._loaded:
             return None
         p = oss_cache_path(self._loaded.name, steps, width, height, shift)
@@ -1152,14 +936,9 @@ class Engine:
         return _read_cache_json(p)
 
     def _degrade_oss(self, scheduler: str) -> str:
-        """Swap ``oss`` for a plain scheduler where it can't be used.
-
-        OSS is a calibrated full-trajectory t2i schedule keyed on
-        (steps, size, shift); only ``generate()`` can supply the matching
-        ``oss_sigmas``. Anywhere else — img2img/inpaint (partial trajectory) and
-        the detailer/upscaler refine passes — the pipeline would raise, so the
-        shared UI dropdown's "oss" pick degrades instead of failing the job.
-        """
+        """Swap ``oss`` for a plain scheduler outside full-trajectory t2i
+        (img2img/inpaint and the refine passes), where no matching calibration
+        can exist."""
         if scheduler != "oss":
             return scheduler
         family = self._loaded.family if self._loaded else None
@@ -1192,21 +971,17 @@ class Engine:
         values = [round(float(s), 8) for s in sigmas]
         if not _finite_series(values):
             raise RuntimeError(
-                "OSS calibration produced a non-finite schedule — not cached "
-                "(try different steps/resolution)")
+                "OSS calibration produced a non-finite schedule and was not "
+                "cached (try different steps/resolution)")
         p = oss_cache_path(self._loaded.name, steps, width, height, shift)
         _write_cache_json(p, values)
         return f"Calibrated OSS: {steps} steps @ {width}x{height}, shift={shift:g} → {p.name}"
 
     def apply_vae_tiling(self, always: bool) -> None:
-        """Flip the tiled-VAE preference on the loaded model live — the next decode
-        reads ``policy.vae_tile`` (``True`` = always tiled, ``False`` = auto-decide
-        per free VRAM). FLUX is left untouched: it's force-tiled at load by design.
-        Keeps ``self._vae_tile`` in sync so X/Y/Z checkpoint swaps and the
-        load-reuse cache inherit the same choice."""
-        # Called from the request thread while the worker may be loading or
-        # unloading; snapshot the reference so a concurrent unload can't turn
-        # self._loaded into None between the check and the write.
+        """Set the loaded model's tiled-VAE preference live (``True`` = always
+        tiled, ``False`` = auto). FLUX is always tiled and left alone."""
+        # Called from a request thread: snapshot the reference against a
+        # concurrent unload.
         lm = self._loaded
         if lm is None or lm.family in _FLUX_FAMILIES:
             return
@@ -1214,8 +989,7 @@ class Engine:
         self._vae_tile = always
 
     def _load_teacache_coeffs(self) -> "list[float] | None":
-        """TeaCache rescaling coefficients for the current model: a per-checkpoint
-        override if one exists, else the family fit, else None (identity)."""
+        """Per-checkpoint override, else the family fit, else None (identity)."""
         if not self._loaded:
             return None
         for p in (teacache_override_path(self._loaded.name),
@@ -1227,9 +1001,7 @@ class Engine:
         return None
 
     def teacache_status(self) -> dict:
-        """Whether the loaded family has a TeaCache calibration on disk, for the
-        settings panel. ``coefficients`` is the fitted polynomial (or None →
-        identity rescale); calibration only applies to Anima."""
+        """TeaCache calibration state of the loaded family for the settings panel."""
         family = self.loaded_family
         return {
             "loaded": bool(family),
@@ -1244,16 +1016,12 @@ class Engine:
         cfg_scale: float = 4.0, seed: int = 0,
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> str:
-        """Fit and cache TeaCache coefficients for the loaded Anima family.
-
-        Architecture-level: written to ``teacache_cache/<family>.json`` and reused
-        for every Anima checkpoint. One run is enough; re-run only if a specific
-        checkpoint misbehaves (then it gets its own override file)."""
+        """Fit and cache TeaCache coefficients for the loaded Anima family
+        (``teacache_cache/<family>.json``, shared by every Anima checkpoint)."""
         if not self._loaded or self._loaded.family != MODEL_FAMILY_ANIMA:
             raise RuntimeError("Load an Anima model first")
         if self._cuda_graphs:
-            # The calibration probe *is* TeaCache's recording stream — it keeps
-            # the same inside-the-graph tensors alive across steps.
+            # The calibration probe is TeaCache's own recording stream.
             raise RuntimeError(_TEACACHE_CUDA_GRAPHS_ERROR)
         try:
             coeffs = anima_calibrate_teacache(
@@ -1265,23 +1033,21 @@ class Engine:
         finally:
             self._reclaim_memory()
         values = [round(float(c), 10) for c in coeffs]
-        # A degenerate fit (flat or too-short history) makes np.polyfit return
-        # NaN, which json.dumps happily writes as the non-standard `NaN` token
-        # and json.load reads back — poisoning every later skip decision with no
-        # error. Refuse to cache it.
+        # A degenerate fit makes np.polyfit return NaN, which json round-trips
+        # silently. Refuse to cache it.
         if not _finite_series(values):
             raise RuntimeError(
-                "TeaCache calibration produced non-finite coefficients — not "
-                "cached (try more steps)")
+                "TeaCache calibration produced non-finite coefficients and was "
+                "not cached (try more steps)")
         p = teacache_cache_path(self._loaded.family)
         _write_cache_json(p, values)
         return f"Calibrated TeaCache for {self._loaded.family}: {steps} steps → {p.name}"
 
-    # ── live preview (cheap latent→RGB approximation) ──────────────
+    # ── live preview (latent→RGB approximation) ────────────────────
 
     def _latent_to_preview(self, latent) -> Optional[Image.Image]:
-        """Render the sampler's x0 estimate to a small RGB preview, or None if the
-        loaded family has no factor table. Rough by design — no VAE decode."""
+        """Render the sampler's x0 estimate as a rough RGB preview (no VAE decode),
+        or None if the family has no factor table."""
         entry = _PREVIEW_RGB.get(self._loaded.family) if self._loaded else None
         if entry is None:
             return None
@@ -1297,9 +1063,8 @@ class Engine:
         return Image.fromarray(img)
 
     def _make_preview_cb(self, out_cb, min_interval: float = 0.12):
-        """Wrap an ``out_cb(PIL.Image)`` consumer into the pipeline's
-        ``preview_callback(latent)``: throttle to ``min_interval`` seconds and
-        swallow any decode error so a preview never breaks a generation."""
+        """Wrap ``out_cb(PIL.Image)`` as the pipeline's ``preview_callback(latent)``,
+        throttled to ``min_interval`` seconds. Preview errors are swallowed."""
         state = {"last": 0.0}
 
         def cb(latent):
@@ -1308,7 +1073,7 @@ class Engine:
                 return
             try:
                 img = self._latent_to_preview(latent)
-            except Exception:  # noqa: BLE001 — a preview must never fail the job
+            except Exception:  # noqa: BLE001  a preview must never fail the job
                 img = None
             if img is not None:
                 state["last"] = now
@@ -1317,18 +1082,12 @@ class Engine:
         return cb
 
     # ── Anima resolution snapping ───────────────────────────────────
-    # Anima was trained on the SDXL ÷64 resolution grid; sizes that are ÷16
-    # (the architectural minimum) but not ÷64 land on an odd latent-token grid
-    # (e.g. 848×1200 → 53×75) that's out of distribution, and img2img/inpaint
-    # expose it as misregistered content. Generate on the nearest in-range ÷64
-    # grid, then map the result back to the requested size. No-op for any size
-    # that's already ÷64 (all SDXL buckets, 1024×1536, …) and for non-Anima.
+    # Anima was trained on the SDXL ÷64 grid; ÷16-only sizes (848×1200 → 53×75
+    # tokens) misregister in img2img/inpaint. Generate on the ÷64 grid and map
+    # the result back.
     def _anima_gen_size(self, width, height) -> Tuple[int | None, int | None, bool]:
-        """Generation size to actually run at, plus whether it was snapped.
-
-        Snaps **up** to the next ÷64 grid so the map-back to the requested size
-        is a downscale (sharper) rather than an upscale.
-        """
+        """Generation size to run at, plus whether it was snapped. Snaps up, so
+        mapping back is a downscale."""
         if (self._loaded and self._loaded.family == MODEL_FAMILY_ANIMA
                 and width is not None and height is not None):
             snap = lambda n: max(512, min(1536, ((n + 63) // 64) * 64))
@@ -1338,10 +1097,8 @@ class Engine:
 
     @staticmethod
     def _fit_inpaint(generated, init_image, mask_image, width, height) -> Image.Image:
-        """Resize an inpaint result generated on the snapped grid back to the
-        requested size, then re-paste the original pixels into the keep region
-        (hard mask edge) so untouched areas stay exact — same as the pipeline's
-        own composite, just at the requested resolution."""
+        """Resize a snapped inpaint result to the requested size and re-paste the
+        original pixels outside the mask (hard edge)."""
         resized = generated.convert("RGB").resize((width, height), Image.LANCZOS)
         original = init_image.convert("RGB").resize((width, height), Image.LANCZOS)
         mask = (mask_image.convert("L").resize((width, height), Image.NEAREST)
@@ -1618,12 +1375,8 @@ class Engine:
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
-        """Detect regions with a YOLO model, then inpaint each one at the model's
-        native resolution and composite it back — the same idea as ADetailer, but
-        driven through diffucore's ``Inpaint`` so it works for UNet and DiT alike.
-
-        Does not touch ``last_seed`` so the caller's generation seed is preserved
-        for output naming/metadata."""
+        """ADetailer-style: detect regions with a YOLO model, inpaint each at
+        native resolution and composite it back. Leaves ``last_seed`` alone."""
         if not self._loaded:
             raise RuntimeError("No model loaded")
         if not self.can_inpaint:
@@ -1632,8 +1385,6 @@ class Engine:
                 and self._loaded.family == MODEL_FAMILY_ANIMA):
             raise RuntimeError(_TEACACHE_CUDA_GRAPHS_ERROR)
 
-        # OSS is a full-trajectory t2i schedule (calibrated, not usable mid-denoise);
-        # fall back to a plain scheduler for the masked inpaint passes.
         scheduler = self._degrade_oss(scheduler)
 
         from detailer import (
@@ -1654,12 +1405,9 @@ class Engine:
         result = image.convert("RGB")
         W, H = result.size
         gen = Inpaint(self._loaded.model)
-        # Resolve TeaCache coeffs once (per-region file reads would be wasteful);
-        # thresh 0 = off, the detailer's default. Anima-only at the pipeline level.
+        # thresh 0 = off (Anima-only at the pipeline level).
         tc_coeffs = self._load_teacache_coeffs() if teacache_use_coeffs else None
-        # Show each region's crop being refined in the live preview (shared
-        # throttle across regions). The crop denoises at native res, so the
-        # preview shows just the region, not the full image.
+        # Previews show the region crop being refined.
         preview_cb = self._make_preview_cb(preview_callback) if preview_callback else None
         try:
             for i, (bbox, _conf) in enumerate(dets):
@@ -1667,7 +1415,7 @@ class Engine:
                 region = get_crop_region(mask, padding)
                 if region is None:
                     continue
-                # square the region so the native-res inpaint doesn't distort it
+                # Square the region so the native-res inpaint doesn't distort it.
                 region = expand_crop_region(region, 1, 1, W, H)
                 crop = result.crop(region)
                 crop_mask = mask.crop(region)
@@ -1724,20 +1472,15 @@ class Engine:
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
-        """Lanczos-upscale the image, then refine each overlapping tile with an
-        img2img pass at low denoise and blend them back with feather weights.
-
-        Mirrors ``detail()`` structurally but uses ``ImageToImage`` instead of
-        ``Inpaint`` and a deterministic tile grid instead of YOLO detections.
-        Does **not** touch ``last_seed`` so the caller's generation seed is
-        preserved for output naming/metadata."""
+        """Upscale (ESRGAN base or Lanczos), then refine overlapping tiles with a
+        low-denoise img2img pass and feather-blend them. Leaves ``last_seed``
+        alone."""
         if not self._loaded:
             raise RuntimeError("No model loaded")
         if (teacache_thresh > 0 and self._cuda_graphs
                 and self._loaded.family == MODEL_FAMILY_ANIMA):
             raise RuntimeError(_TEACACHE_CUDA_GRAPHS_ERROR)
 
-        # OSS is a full-trajectory t2i schedule — not usable mid-denoise.
         scheduler = self._degrade_oss(scheduler)
 
         from upscale import feather_weights, tile_grid, tile_starts
@@ -1745,10 +1488,8 @@ class Engine:
         W, H = image.size
         target_w, target_h = round(W * scale), round(H * scale)
         rgb = image.convert("RGB")
-        # Base upscale: ESRGAN-family model (detail-synthesizing) when one is
-        # selected, else Lanczos. An ESRGAN base lets the refine run at low
-        # denoise — sharp without the per-tile subject duplication that a soft
-        # Lanczos base forces at high denoise.
+        # An ESRGAN base lets the refine run at low denoise; a soft Lanczos base
+        # needs high denoise, which duplicates subjects per tile.
         if base_upscaler:
             base = self._esrgan_upscale(base_upscaler, rgb)
             if base.size != (target_w, target_h):
@@ -1764,9 +1505,8 @@ class Engine:
 
         boxes = tile_grid(target_w, target_h, tile, overlap)
         n = len(boxes)
-        # Feather over the *actual* per-axis overlap (tile - stride), not the
-        # requested one: a 2x of 1024 packs 3 tiles/axis → 512px overlaps, so a
-        # 128px ramp would leave a wide hard-50/50 band that blurs detail.
+        # Feather over the actual per-axis overlap (tile - stride), not the
+        # requested one: 2x of 1024 packs 3 tiles/axis with 512px overlaps.
         xs = tile_starts(target_w, tile, overlap)
         ys = tile_starts(target_h, tile, overlap)
         ov_x = tile - (xs[1] - xs[0]) if len(xs) > 1 else 0
@@ -1783,9 +1523,7 @@ class Engine:
             for i, (x1, y1, x2, y2) in enumerate(boxes):
                 crop = base.crop((x1, y1, x2, y2))
                 tw, th = x2 - x1, y2 - y1
-                # Snap the gen size up to Anima's ÷64 grid, then map back below
-                # (no-op for ÷64 tiles and non-Anima). Full-size tiles are 1024
-                # (÷64) already; this only bites sub-tile single tiles.
+                # Anima ÷64 snap; only sub-size edge tiles are affected.
                 gen_w, gen_h, snapped = self._anima_gen_size(tw, th)
 
                 def sub_cb(step, total, _i=i):
@@ -1829,14 +1567,12 @@ class Engine:
         self, model_name: str, image: Image.Image,
         in_tile: int = 512, in_overlap: int = 32,
     ) -> Image.Image:
-        """Run an ESRGAN-family model (via spandrel) over the image in tiles and
-        feather-blend the results. Returns the model-scale upscale (e.g. 4×);
-        the caller resizes to the requested target. Tiled so it fits 12 GB while
-        a diffusion model is also resident; ESRGAN is local so tiles agree in the
-        overlaps and the blend is seamless."""
+        """Run an ESRGAN-family model (spandrel) over the image in feather-blended
+        tiles, so it fits next to a resident diffusion model. Returns the
+        model-scale upscale; the caller resizes to the target."""
         if _spandrel is None:
             raise RuntimeError(
-                "spandrel not installed — run `pip install spandrel` to use an "
+                "spandrel is not installed. Run `pip install spandrel` to use an "
                 "ESRGAN base, or pick Lanczos."
             )
         from upscale import feather_weights, tile_grid, tile_starts

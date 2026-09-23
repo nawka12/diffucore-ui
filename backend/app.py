@@ -1,4 +1,4 @@
-"""Diffucore UI — entry point."""
+"""Diffucore UI entry point."""
 
 import argparse
 
@@ -59,10 +59,8 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-# Configure structured logging BEFORE importing server: server.py emits log
-# lines at import time (offload default, FastAPI app creation), so the loggers
-# must be wired up first to capture them. Tokens / share URLs stay on print()
-# (stdout only) so they never land in the log file.
+# Configure logging before importing server, which logs at import time. Tokens
+# and share URLs stay on print() so they never reach the log file.
 import log_setup
 log_setup.configure(log_file=args.log_file, level=args.log_level)
 
@@ -72,14 +70,12 @@ from server import app, configure_auth
 from auth import load_or_create_token
 
 # ── auth ──────────────────────────────────────────────────────────────
-# --share publishes the UI to the public internet, so the gate goes on by
-# default with an auto-generated token. --listen is LAN-only; we leave auth
-# opt-in (via --auth-token) but warn, since a trusted home network may not want
-# a login step. An explicit --auth-token always wins.
+# --share is public, so it turns the gate on with a generated token. --listen
+# (LAN) leaves auth opt-in but warns. An explicit --auth-token always wins.
 share_token = None
 if args.share or args.auth_token:
     token = args.auth_token or load_or_create_token()
-    secure = args.share  # the tunnel is HTTPS; a plain-http LAN can't use Secure
+    secure = args.share  # the tunnel is HTTPS; plain-http LAN can't use Secure
     configure_auth(token=token, enabled=True, secure=secure)
     share_token = token if args.share else None
     if args.auth_token:

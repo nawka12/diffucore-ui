@@ -1,5 +1,5 @@
 /* ════════════════════════════════════════════════════════════════
-   Diffucore — darkroom theme (hand-rolled, no framework)
+   Diffucore: darkroom theme (hand-rolled, no framework)
    ════════════════════════════════════════════════════════════════ */
 :root {
   --bg:        #111113;
@@ -45,8 +45,7 @@ body {
   padding: 0 24px 56px;
 }
 
-/* Skip link — visually offscreen until focused, then drops into view so a
-   keyboard user can jump past the model rack and tabs straight to content. */
+/* Skip link: offscreen until focused. */
 .skip-link {
   position: fixed;
   left: 8px;
@@ -85,7 +84,7 @@ body {
   font-family: var(--mono);
 }
 
-/* ── SSE connection banner (#7) ─────────────────────────────────── */
+/* ── SSE connection banner ──────────────────────────────────────── */
 .conn-banner {
   margin-top: 14px;
   padding: 10px 14px;
@@ -273,8 +272,8 @@ body {
   background: var(--surface-2);
 }
 .hint { font-size: 12px; color: var(--txt-3); margin: -2px 0 12px; }
-/* hints inside a bordered container sit tight; the default -2px/12px is for
-   hints floating between fields. .axes-body spaces children with its own gap. */
+/* Hints inside a bordered container sit tight; the default -2px/12px is for
+   hints floating between fields. */
 fieldset > .hint { margin: 0 0 8px; }
 .oss-panel .hint { margin: 0 0 8px; }
 .axes-body .hint { margin: 0; }
@@ -306,8 +305,7 @@ textarea:focus, input:focus, select:focus {
   outline: none;
 }
 
-/* Keyboard focus ring. :focus-visible fires for keyboard nav but not mouse
-   clicks, so mouse users don't see a ring while keyboard users always do. */
+/* Keyboard focus ring (:focus-visible skips mouse clicks). */
 .btn:focus-visible,
 .chip:focus-visible,
 .gear:focus-visible,
@@ -453,9 +451,8 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   gap: 22px;
   align-items: start;
 }
-/* Grid item defaults to min-width:auto, so a long, un-wrapping value (e.g. the
-   X/Y/Z multi-select showing full checkpoint/DiT names) would set a min-content
-   wider than the 380px track and stretch the page. min-width:0 lets it clip. */
+/* min-width:0 lets a long un-wrapping value (full checkpoint names in the X/Y/Z
+   multi-select) clip instead of stretching the 380px track. */
 .controls { min-width: 0; }
 .controls .seg.modes { margin-bottom: 16px; }
 
@@ -477,13 +474,9 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   overflow: hidden;
 }
 .canvas img { max-width: 100%; max-height: 78vh; display: block; }
-/* NSFW result on the Generate page: blur + click-to-reveal (mirrors the
-   lightbox treatment; the hint pill is the shared .lb-hint).
-   The radius scales with the viewport: this image renders up to 78vh tall, so a
-   fixed px blur that hides a small result leaves a big one legible. vmin tracks
-   the render size; the clamp keeps a tiny window from under-blurring and a huge
-   one from melting the whole canvas. scale() then crops the transparent edge
-   fade the (now much wider) blur leaves behind — .canvas is overflow:hidden. */
+/* NSFW result blur + click-to-reveal. The radius scales with the viewport
+   (the image renders up to 78vh), clamped at both ends; scale() crops the
+   transparent edge fade inside the overflow:hidden .canvas. */
 .result-wrap { position: relative; }
 .result-wrap img.blur {
   filter: blur(clamp(32px, 6vmin, 80px)) brightness(0.6) saturate(1.6);
@@ -491,10 +484,8 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   cursor: zoom-in;
   transition: filter 150ms ease;
 }
-/* password-eye style pill (generate page, sweep grids, lightbox): "NSFW (X)" +
-   eye toggle while blurred; the crossed-eye re-blur button alone once revealed.
-   Owns the whole pill look — .lb-hint / .grids-hint only place it, so they
-   can't override these (equal specificity, later in the file wins). */
+/* Eye-toggle pill for blurred images (generate page, sweep grids, lightbox).
+   It owns the whole look; .lb-hint / .grids-hint only place it. */
 .hint-pill {
   display: flex;
   align-items: center;
@@ -567,8 +558,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .batch-thumb:hover { border-color: var(--line-hi); }
 .batch-thumb.sel { border-color: var(--accent); }
 .batch-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-/* Strip thumbs stay blurred whatever the canvas shows — clicking one flips the
-   canvas to that (blurred) image, so an unblurred strip would defeat the blur. */
+/* Strip thumbs stay blurred whatever the canvas shows, or they'd defeat the blur. */
 .batch-thumb img.blur {
   filter: blur(12px) brightness(0.75) saturate(1.5);
   transform: scale(1.45);          /* hide the un-blurred edge ring */
@@ -673,8 +663,8 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .mask-zoom .btn { min-width: 34px; }
 .mask-zoom span { font-size: 12px; color: var(--txt-2); min-width: 46px; text-align: center; }
 
-/* maximized: fill the viewport with the tools in a right sidebar.
-   The stage scrolls when the canvas is zoomed past the viewport. */
+/* Maximized: the viewport, with tools in a right sidebar; the stage scrolls
+   when zoomed. */
 .mask-editor.maximized {
   position: fixed;
   inset: 0;
@@ -810,9 +800,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   justify-content: center;
   padding: 16px;
   touch-action: pan-y;
-  /* A blurred .lb-img is scaled past the stage bounds to crop its edge fade;
-     clip it here so it can't smear over the info bar below. The close/nav
-     buttons are siblings, so they stay reachable. */
+  /* Clip the scaled-up blurred image so it can't smear over the info bar. */
   overflow: hidden;
 }
 .lb-img {
@@ -823,15 +811,14 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   user-select: none;
   -webkit-user-drag: none;
 }
-/* Viewport-scaled radius, same reasoning as .result-wrap img.blur — the
-   lightbox fills the screen, so this is the largest render in the app. */
+/* Viewport-scaled radius, like .result-wrap img.blur. */
 .lb-img.blur {
   filter: blur(clamp(32px, 6vmin, 80px)) brightness(0.6) saturate(1.6);
   transform: scale(1.35);          /* hide the un-blurred edge ring */
   cursor: zoom-in;
   transition: filter 150ms ease;
 }
-/* placement only — the pill's look lives in .hint-pill */
+/* Placement only; the look lives in .hint-pill. */
 .lb-hint {
   position: absolute;
   bottom: 24px;
@@ -1001,9 +988,8 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   word-break: break-all;
 }
 
-/* ── settings — scannable blocks ──────────────────────────────────
-   Each section reads at a glance: title + state badge, one plain
-   purpose line, the control, and jargon tucked into <details>. */
+/* ── settings: scannable blocks ───────────────────────────────────
+   Title + state badge, one purpose line, the control, jargon in <details>. */
 .set-head {
   display: flex;
   align-items: center;
@@ -1062,7 +1048,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   transition: width 200ms ease;
 }
 
-/* per-knob "applies to" tag — beat the .field > span label rule on specificity */
+/* Per-knob "applies to" tag; outranks the .field > span label rule. */
 .field > span.field-tag {
   font-family: var(--mono);
   font-size: 10px;
@@ -1149,8 +1135,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   font-size: 13px;
   padding: 9px 11px;
   cursor: pointer;
-  /* Wrap selected values (long checkpoint filenames break anywhere) instead of
-     clipping to one ellipsised line, so every pick stays readable. */
+  /* Wrap long checkpoint names instead of ellipsising them. */
   white-space: normal;
   overflow-wrap: anywhere;
   line-height: 1.35;
@@ -1223,15 +1208,14 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   border-radius: var(--r);
 }
 .canvas.stack .grid-img { max-height: none; }
-/* X/Y/Z grids share the sweep's prompt, so one verdict blurs the whole stack.
-   No scale() here — .canvas.stack is overflow:visible, and blur() already fades
-   the edges to transparent rather than leaving a sharp ring. */
+/* One verdict blurs the whole grid stack. No scale(): .canvas.stack is
+   overflow:visible, and blur() already fades the edges. */
 .grid-img.blur {
   filter: blur(clamp(32px, 6vmin, 80px)) brightness(0.6) saturate(1.6);
   cursor: zoom-in;
   transition: filter 150ms ease;
 }
-/* placement only — the pill's look lives in .hint-pill */
+/* Placement only; the look lives in .hint-pill. */
 .grids-hint {
   position: sticky;
   top: 8px;
@@ -1252,8 +1236,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   color: var(--txt);
   font-size: 13px;
   box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-  /* Above every overlay (lightbox/settings/upscale at 200, maximized mask
-     editor at 500) — toasts fired from inside them must stay visible. */
+  /* Above every overlay (200) and the maximized mask editor (500). */
   z-index: 600;
 }
 .toast--error   { border-color: var(--danger); }
@@ -1360,8 +1343,8 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 }
 .ext-card-actions { margin-left: auto; display: flex; gap: 6px; flex-shrink: 0; }
 
-/* second row: one-line summary (grows) + trailing actions, so buttons never
-   strand on their own line. Full description on hover — titles run essay-long. */
+/* Second row: summary (grows) + trailing actions, so buttons never strand on
+   their own line. The full description shows on hover. */
 .ext-card-foot { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
 .ext-desc {
   flex: 1; min-width: 0; margin: 0;

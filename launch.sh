@@ -14,19 +14,16 @@ fi
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
 
-# Keep deps in sync with requirements.txt. Catches the common case of a user
-# updating with `git pull` (instead of ./update.sh) and then hitting an import
-# error for a newly added dependency. Hash-gated, so it's a no-op on every
-# launch where requirements.txt hasn't changed.
+# Keep deps in sync with requirements.txt for users who update with `git pull`
+# instead of ./update.sh. Hash-gated, so it's a no-op when nothing changed.
 REQ_FILE="$SCRIPT_DIR/requirements.txt"
 STAMP="$VENV_DIR/.requirements.sha256"
 REQ_HASH="$(sha256sum "$REQ_FILE" | cut -d' ' -f1)"
 if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$REQ_HASH" ]; then
-    echo "requirements.txt changed — syncing dependencies..."
+    echo "requirements.txt changed, syncing dependencies..."
     pip install -q -r "$REQ_FILE"
-    # A new dep (e.g. spandrel) can pull torchvision from PyPI and clobber the
-    # CUDA torch; repair from the right index if CUDA broke. cu124 wheels stop
-    # at sm_90, so Blackwell (RTX 50-series, compute cap 10.0+) needs cu128.
+    # A new dep can pull torchvision from PyPI and clobber the CUDA torch, so
+    # repair it from the right index (cu128 for Blackwell, like setup.sh).
     if ! python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
         echo "Repairing CUDA torch..."
         TORCH_INDEX="https://download.pytorch.org/whl/cu124"

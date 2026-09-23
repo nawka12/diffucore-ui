@@ -1,9 +1,6 @@
-"""Tile geometry + feather-weight helpers for tiled upscaling.
-
-Unlike the detailer (which uses YOLO boxes), the upscaler covers the whole
-canvas with a deterministic grid of overlapping tiles and blends them back
-with a weighted-accumulate composite — the MultiDiffusion/Ultimate SD Upscale
-approach. Pure numpy — no model, no PyTorch.
+"""Tile geometry and feather weights for tiled upscaling: a deterministic grid
+of overlapping tiles blended by weighted accumulation (MultiDiffusion /
+Ultimate SD Upscale). Pure numpy.
 """
 
 from __future__ import annotations
@@ -15,15 +12,9 @@ import numpy as np
 
 
 def tile_starts(dim: int, tile: int, overlap: int) -> List[int]:
-    """Evenly-spaced start offsets along one axis so overlap is uniform.
-
-    ``n = ceil((dim - overlap) / (tile - overlap))``, then starts are
-    ``round(i * (dim - tile) / (n - 1))``. Returns ``[0]`` when
-    ``dim <= tile`` (single tile that may be smaller than ``tile``).
-
-    ``overlap`` is clamped to ``tile - 1``: an overlap at or above the tile size
-    means zero (or negative) stride — a division by zero, or an empty grid that
-    would blend to a black image.
+    """Evenly spaced start offsets along one axis, so overlap is uniform.
+    ``[0]`` when ``dim <= tile``. ``overlap`` is clamped to ``tile - 1``, since
+    a zero or negative stride divides by zero or yields an empty grid.
     """
     if dim <= tile:
         return [0]
@@ -36,11 +27,8 @@ def tile_starts(dim: int, tile: int, overlap: int) -> List[int]:
 def tile_grid(
     w: int, h: int, tile: int, overlap: int,
 ) -> List[Tuple[int, int, int, int]]:
-    """Product of x/y tile starts → crop boxes ``(x1, y1, x2, y2)``.
-
-    Every box is ``min(tile, w) × min(tile, h)``.  When the canvas is larger
-    than ``tile``, the last start is ``dim - tile`` so edge tiles are also
-    exactly ``tile²``.
+    """Crop boxes ``(x1, y1, x2, y2)`` for every x/y tile start. Each box is
+    ``min(tile, w) × min(tile, h)``.
     """
     xs = tile_starts(w, tile, overlap)
     ys = tile_starts(h, tile, overlap)
@@ -54,19 +42,13 @@ def tile_grid(
 def feather_weights(
     tw: int, th: int, overlap_x: int, overlap_y: int | None = None,
 ) -> np.ndarray:
-    """Feather-weight map of shape ``(th, tw)`` (float32, ``[0, 1]``).
+    """Feather-weight map of shape ``(th, tw)``: 1-D ramps from
+    ``1/(overlap+1)`` to 1 at each edge, combined by outer product. Normalised
+    by the per-pixel weight sum, they hide seams.
 
-    Outer product of 1-D ramps that rise from ``1/(overlap+1)`` to ``1``
-    over ``overlap`` pixels at each edge, and stay at ``1`` in the center.
-    When overlapping tiles are accumulated with these weights and divided by
-    the per-pixel weight sum (MultiDiffusion normalisation), seams disappear
-    — even at the true canvas edge where only one tile contributes.
-
-    ``overlap_x``/``overlap_y`` should be the *actual* per-axis tile overlap
-    (``tile - stride``), which can exceed the requested overlap when only a few
-    tiles span an axis. Feathering over the full overlap avoids a wide flat
-    50/50 band that would average divergent tile detail into blur. ``overlap_y``
-    defaults to ``overlap_x``.
+    Pass the actual per-axis overlap (``tile - stride``); feathering over only
+    the requested overlap leaves a flat 50/50 band that blurs detail.
+    ``overlap_y`` defaults to ``overlap_x``.
     """
     if overlap_y is None:
         overlap_y = overlap_x

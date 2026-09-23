@@ -1,10 +1,8 @@
-// Diffucore UI — Alpine state + streaming. No build step.
+// Diffucore UI: Alpine state + streaming. No build step.
 
 // ── extension bridge ──────────────────────────────────────────────
-// Set up before Alpine inits so extension scripts (injected between this file
-// and alpine.min.js) can register tabs/settings panels by calling
-// window.DiffucoreExt.registerTab / registerSettingsPanel. The Alpine app
-// reads .tabs during init() and renders them in the main nav.
+// Set up before Alpine inits, so extension scripts (injected between this file
+// and alpine.min.js) can register tabs and settings panels.
 window.DiffucoreExt = (function () {
   const tabs = [];
   const settingsPanels = [];
@@ -25,18 +23,13 @@ window.DiffucoreExt = (function () {
   return { tabs, settingsPanels, registerTab, registerSettingsPanel };
 })();
 
-// Modal-a11y bookkeeping lives outside the Alpine state object so DOM nodes
-// never pass through Alpine's reactive proxy (same reason the mask buffers
-// hang off the canvas element instead of the data object).
+// Kept outside the Alpine state so DOM nodes never pass through its reactive proxy.
 const _modalState = { active: null, prevFocus: null };
 
 // ── fetch helper ──────────────────────────────────────────────────
-// fetch + JSON parse that fails loudly. A non-2xx response (e.g. a 500 whose
-// body is an HTML/text error page, not JSON) would otherwise blow up inside
-// .json() with a cryptic "Unexpected token '<'" and silently blank the calling
-// state. This throws a real Error carrying the status plus the server's FastAPI
-// `detail` (or a short body snippet), so callers' catch blocks can surface
-// something actionable.
+// fetch + JSON parse that fails loudly: a non-2xx throws an Error carrying the
+// status and FastAPI's `detail` (or a body snippet) instead of a cryptic
+// .json() parse error.
 async function fetchJSON(url, opts) {
   const r = await fetch(url, opts);
   if (!r.ok) {
@@ -59,14 +52,12 @@ document.addEventListener('alpine:init', () => {
     checkpoint: '', dit: '', vae: '', te: '', clip: '', fluxCheckpoint: '',
     perf: { compile: false, cudaGraphs: false, channelsLast: true, tf32: false, fp16Acc: false, vaeFp16: false, fa2Attn: false, offload: 'full' },
     fa2Available: false,
-    recommendedOffload: 'full',   // GPU-VRAM-based default from the backend (set on init)
+    recommendedOffload: 'full',   // VRAM-based default from the backend
     status: 'No model loaded',
     modelLoaded: false,
     loadingModel: false,
-    // Set when the user edits the model rack (family/checkpoint/file selectors)
-    // but hasn't loaded yet. A shared SSE broadcast (status from another tab's
-    // load) must not clobber that in-progress selection; cleared on a successful
-    // local load, so untouched tabs still sync to a model loaded elsewhere.
+    // The user edited the model rack but hasn't loaded yet; SSE status from
+    // another device must not clobber that selection.
     loadFormDirty: false,
     animaApplied: false,
     fluxApplied: false,
@@ -96,10 +87,7 @@ document.addEventListener('alpine:init', () => {
       teacacheRule: 'drift',
       deepcacheOn: false, deepcache: 2,
     },
-    // Batch count: >1 submits N generate jobs at once. With a pinned seed each
-    // job gets seed+i; with seed=-1 each gets a fresh backend random. The queue
-    // runs them one at a time (as it does for any job); progress/preview route
-    // to whichever batch member is currently running.
+    // >1 submits N jobs: seed+i with a pinned seed, a fresh random with -1.
     batchCount: 1,
 
     // ── <lora:…> autocomplete in the prompt ─────────────────────
@@ -114,7 +102,7 @@ document.addEventListener('alpine:init', () => {
     maskZoom: 1,         // display zoom while maximized (1 = fit)
 
     // ── detailer (ADetailer-style passes after generate) ────────
-    // `models` is a stack of {model, prompt} run in sequence; rest is shared.
+    // `models` is a stack of {model, prompt} run in sequence; the rest is shared.
     detail: {
       enabled: false, neg: '',
       models: [{ model: '', prompt: '' }],
@@ -124,8 +112,7 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── upscaler (tiled, after generate) ─────────────────────────
-    // teacache is independent of the main slider (0 = off): the refine pass
-    // runs its whole trajectory in the detail regime, so caching softens it.
+    // Refine-pass TeaCache, independent of the main slider (0 = off).
     upscale: {
       enabled: false, scale: 2.0, denoise: 0.35,
       tile: 1024, overlap: 128, prompt: '', teacache: 0.0, base: '',
@@ -150,43 +137,41 @@ document.addEventListener('alpine:init', () => {
     cancelling: false,
     progress: { step: 0, total: 0 },
     resultUrl: null,
-    // NSFW blur on the Generate page: the fresh result is blurred when rated
-    // R-and-up (prompt-based verdict from the done event, refined by the AI
-    // tagger via "rated" events), until clicked. `genBlur` is the page toggle.
+    // The fresh result is blurred when its rating reaches the Settings tier
+    // (prompt verdict first, AI tagger's when it lands) until clicked.
     genBlur: true,
     genReveal: false,          // user clicked the blurred result to reveal it
     resultPath: null,          // outputs/… path of the currently shown result
     _promptNsfw: {},           // path -> {nsfw, rating} from the done event
     _visionNsfw: {},           // path -> {nsfw, rating} from the AI tagger (wins)
-    batchResults: [],       // thumbnails for a >1 batch: [{url, seed}] — the last one is shown
+    batchResults: [],       // thumbnails for a >1 batch: [{url, seed}]; the last is shown
     previewUrl: null,
     preview: true,
     info: '',
     lastSeed: -1,
     _titleBase: '',       // original tab title, captured on init
-    _titleDone: false,    // a job finished while this tab was hidden → badge until looked at
+    _titleDone: false,    // a job finished while this tab was hidden
 
     // ── shared queue (broadcast over /api/events to every device) ──
-    queue: [],            // [{id, kind, label, status}] — running first, then pending
+    queue: [],            // [{id, kind, label, status}], running first
     runningJob: null,     // id of the job currently on the GPU (any device)
     runProg: { step: 0, total: 0 },  // progress of the running job (for the queue panel)
-    myJobId: null,        // id of the single job THIS device submitted and is watching
+    myJobId: null,        // the single job THIS device submitted and is watching
     _myBatchIds: [],      // ids of in-flight batch jobs (empty for single-job flows)
     _jobWaiters: {},      // id -> resolve fn, fulfilled by the terminal SSE event
 
-    // ── SSE connection state (#7) ────────────────────────────────
-    // 'connected' | 'reconnecting' | 'down'. A stalled stream freezes the queue
-    // panel silently; the banner tells the user the UI is no longer live.
+    // ── SSE connection state ─────────────────────────────────────
+    // 'connected' | 'reconnecting' | 'down'; drives the "not live" banner.
     connState: 'connected',
     connDownSince: null,        // epoch ms when the connection went 'down'
-    CONN_DOWN_TIMEOUT: 8000,    // reconnect grace before we banner the outage
+    CONN_DOWN_TIMEOUT: 8000,    // reconnect grace before the outage banner
     _connTimer: null,
 
     // ── OSS calibration ─────────────────────────────────────────
     calibrating: false,
     ossCalibrated: null,          // null = unknown, true/false = checked
     ossInfo: '',
-    _ossToken: 0,                 // bumped per status check; stale replies are dropped
+    _ossToken: 0,                 // bumped per status check; stale replies dropped
 
     // ── settings panel (global, non-per-image knobs) ────────────
     settingsOpen: false,
@@ -194,21 +179,16 @@ document.addEventListener('alpine:init', () => {
     settings: { curvature: 0.25, eta_max: 1.0, gate_reduce: 'all', beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, cfg_interval_start: 0.0, cfg_interval_end: 1.0, teacache_uncond_scale: 1.0, vae_tiling: 'auto', metadata_format: 'a1111', gen_defaults: null, nsfw_blur: true, blur_min_rating: 'R' },
     teacacheStatus: { loaded: false, calibratable: false, family: null, coefficients: null },
     calibratingTea: false,
-    // WD tagger availability + rating progress (Settings → Gallery).
     taggerStatus: { available: false, loaded: false, rated: 0, total: 0 },
-    // Id of THIS device's in-flight gallery-scan job (null when idle); its
-    // progress events keep taggerStatus.rated/total live in the Settings panel.
+    // THIS device's gallery-scan job; its progress keeps taggerStatus live.
     scanJob: null,
 
     // ── extensions ──────────────────────────────────────────────
-    // `extensions` mirrors /api/extensions (list of installed exts). `extTabs`
-    // is filled by extensions calling window.DiffucoreExt.registerTab from
-    // their injected JS. `_mountedExtTab`/`_mountedExtSettings` track the
-    // currently mounted panel so we unmount it cleanly on switch.
+    // `extTabs` come from window.DiffucoreExt.registerTab calls.
     extensions: [],
     extTabs: [],
     extInstallUrl: '',
-    extInstallPip: false,  // opt-in: pip install -r requirements.txt on install (RCE risk — off by default)
+    extInstallPip: false,  // opt-in: pip install -r is RCE on untrusted sources
     extBusy: false,
     _mountedExtTab: null,
     _mountedExtSettings: null,
@@ -216,17 +196,15 @@ document.addEventListener('alpine:init', () => {
     // ── gallery ─────────────────────────────────────────────────
     gallery: [],
     galleryGroups: [],
-    galleryLimit: 60,   // chunked rendering: only this many thumbs live in the DOM
+    galleryLimit: 60,   // chunked rendering: thumbs live in the DOM
     galleryQuery: '',   // substring filter applied via /api/gallery?q=
     gallerySearching: false,
-    _galleryToken: 0,   // bumped per listing fetch; stale responses are dropped
+    _galleryToken: 0,   // bumped per listing fetch; stale responses dropped
     selected: null,
     selectedMeta: '',
     selectedFields: {},
     lightbox: { open: false, index: 0, info: false },
-    // The lightbox shows NSFW-flagged images blurred until the user asks to see
-    // them (click on the image or the Reveal button). Reset on every
-    // navigation/open/close so a revealed image is never carried to the next.
+    // Reset on every navigation so a revealed image never carries over.
     lbReveal: false,
     deleteConfirm: false,   // two-click confirm in the lightbox Delete button
 
@@ -235,10 +213,9 @@ document.addEventListener('alpine:init', () => {
     metaText: '',
     metaFields: null,
 
-    // ── x/y/z sweep (txt2img only — reuses the shared form for base params) ──
+    // ── x/y/z sweep (txt2img only; reuses the generate form) ──
     xyzSweep: false,
-    // Start every axis empty — preset values would be sent as-is and, after a
-    // type switch (e.g. to Checkpoint), become bogus values that error the grid.
+    // Axes start empty: preset values would turn bogus after a type switch.
     axes: {
       x: { type: 'Sampler', text: '', list: [] },
       y: { type: 'Steps', text: '', list: [] },
@@ -246,14 +223,14 @@ document.addEventListener('alpine:init', () => {
     },
     xyzGrids: [],
     xyzInfo: '',
-    // Grids share one prompt, so one verdict covers the whole sweep; `xyzPath`
-    // is the last grid's output path, so a later "rated" event can refine it.
+    // One prompt, so one verdict covers every grid; `xyzPath` (the last grid)
+    // lets a later "rated" event refine it.
     xyzNsfw: null,             // {nsfw, rating} from the done event
     xyzPath: null,
     xyzReveal: false,
 
     toast: '',
-    toastKind: 'info',     // info | success | error — drives the toast border colour
+    toastKind: 'info',     // info | success | error
 
     // ── computed ────────────────────────────────────────────────
     get samplers() {
@@ -266,10 +243,8 @@ document.addEventListener('alpine:init', () => {
       if (this.modelType === 'FLUX') return this.schedulersFlux;
       return this.schedulersSd;
     },
-    // Shift is a flow-only knob, and even then only some schedulers honour the
-    // passed value: Anima uses it everywhere except flow_dyn (resolution-aware),
-    // FLUX only on the plain flow scheduler (flux/sgm_uniform/simple derive
-    // their own). SD/SDXL ignore it entirely.
+    // Shift is flow-only, and honoured by Anima everywhere but flow_dyn and by
+    // FLUX only on plain flow.
     get isFlowModel() {
       return this.modelType === 'Anima' || this.modelType === 'FLUX';
     },
@@ -279,45 +254,40 @@ document.addEventListener('alpine:init', () => {
       return false;
     },
     get offloadOptions() {
-      // "stream" streams the backbone's blocks (ComfyUI --lowvram analog): the
-      // FLUX DiT, the SD/SDXL UNet, and the Anima DiT all support it.
       return ['stream', 'full', 'encoders', 'none'];
     },
     get sweeping() {
       return this.mode === 't2i' && this.xyzSweep;
     },
 
-    // X/Y/Z axes whose values come from a known set get a multi-select; numeric
-    // axes (Steps / CFG / Seed) keep a free-text comma list.
+    // Sampler / Scheduler / Checkpoint axes are multi-selects; numeric axes
+    // keep a free-text comma list.
     axisIsList(axis) { return axis.type === 'Sampler' || axis.type === 'Scheduler' || axis.type === 'Checkpoint'; },
     axisOptions(axis) {
       if (axis.type === 'Scheduler') return this.schedulers;
-      // Anima is split-file: its "checkpoint" is the DiT (VAE + TE stay fixed).
+      // Anima's "checkpoint" is the DiT (VAE + TE stay fixed).
       if (axis.type === 'Checkpoint') return this.modelType === 'Anima' ? this.dits : this.checkpoints;
       return this.samplers;
     },
     axisValues(axis) {
-      if (axis.type === 'None') return '';   // a disabled axis carries no values
+      if (axis.type === 'None') return '';
       return this.axisIsList(axis) ? axis.list.join(', ') : axis.text;
     },
-    // Switching an axis's type makes its old values meaningless — and, for a
-    // Checkpoint switch, harmful (stale sampler names load as bogus checkpoints
-    // and abort the grid). Clear both stores so each type starts fresh.
+    // A type switch makes old values meaningless (stale sampler names would
+    // load as bogus checkpoints), so clear both stores.
     clearAxisValues(axis) { axis.list = []; axis.text = ''; },
     get progressPct() {
       const t = this.progress.total;
       return t > 0 ? Math.round((this.progress.step / t) * 100) : 0;
     },
-    // Verdict for the currently displayed result: the AI tagger's, once it
-    // lands, otherwise the instant prompt-based one from the done event.
+    // The AI verdict once it lands, else the done event's prompt verdict.
     get resultMeta() {
       const p = this.resultPath;
       if (!p) return null;
       return this._visionNsfw[p] || this._promptNsfw[p] || null;
     },
-    // Whether an image of this rating is blurred: at or above the tier picked
-    // in Settings → Gallery. Decided here from the rating, not the server's
-    // `nsfw` flag (fixed at R-and-up), so changing the tier needs no re-rate.
+    // Blurred at or above the Settings tier. Decided from the rating, not the
+    // server's fixed R-and-up `nsfw` flag, so changing the tier needs no re-rate.
     blurs(rating) {
       const order = ['PG', 'PG13', 'R', 'X', 'XXX'];
       const i = order.indexOf(rating);
@@ -328,21 +298,15 @@ document.addEventListener('alpine:init', () => {
     get resultBlurred() {
       return !!(this.blurOn && this.resultNsfw && !this.genReveal);
     },
-    // Whether the NSFW blur applies at all right now. The Generate page has its
-    // own toggle, independent of the gallery setting — and it rides along as
-    // `blur_check` on every request, so the server AI-rates what this page is
-    // going to blur even when the gallery blurs nothing.
+    // The Generate page's own toggle, independent of the gallery setting. It
+    // rides along as `blur_check` so the server rates what this page blurs.
     get blurOn() { return !!this.genBlur; },
-    // Batch-strip thumbnail: blurred like a gallery thumbnail, independent of
-    // the canvas reveal — flipping to a thumb shows the big image blurred, so
-    // an unblurred strip would defeat it.
+    // Blurred like a gallery thumbnail regardless of the canvas reveal.
     batchBlurred(b) {
       if (!this.blurOn) return false;
       const m = (b.path && this._visionNsfw[b.path]) || b.nsfw;
       return !!(m && this.blurs(m.rating));
     },
-    // X/Y/Z sweep: every grid shares the sweep's prompt, so one verdict (the
-    // AI one once it lands) covers them all.
     get xyzMeta() {
       return (this.xyzPath && this._visionNsfw[this.xyzPath]) || this.xyzNsfw || null;
     },
@@ -352,7 +316,6 @@ document.addEventListener('alpine:init', () => {
       const t = this.progress.total;
       if (t <= 0) return 'Starting…';
       const steps = `${this.progress.step} / ${t}  (${this.progressPct}%)`;
-      // X/Y/Z carries a cell index so the bar reads "image N/total" too.
       return this.progress.cells ? `Image ${this.progress.cell}/${this.progress.cells} · ${steps}` : steps;
     },
     get checkpointChoices() { return this.choices(this.checkpoints, 'models/checkpoints/'); },
@@ -367,7 +330,6 @@ document.addEventListener('alpine:init', () => {
 
     // ── init ────────────────────────────────────────────────────
     async init() {
-      // Pull in tabs registered by already-loaded extension scripts.
       this.extTabs = window.DiffucoreExt ? [...window.DiffucoreExt.tabs] : [];
       await this.refreshModels();
       await this.loadSettings();
@@ -378,10 +340,7 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── browser-tab title reflects this device's job state ──────
-    // While a job runs the tab title shows a spinner + %, so the user can
-    // tell from the tab alone — even sitting on another tab — whether their
-    // generation is still going. When one finishes while the tab is hidden
-    // we leave a "done" badge until they look back.
+    // Spinner + % while running; a "done" badge if it finished while hidden.
     _initTitle() {
       this._titleBase = document.title;   // "Diffucore"
       const apply = () => {
@@ -403,20 +362,17 @@ document.addEventListener('alpine:init', () => {
       document.addEventListener('visibilitychange', () => {
         if (!document.hidden && this._titleDone) { this._titleDone = false; apply(); }
       });
-      // Leaving the Generate tab re-blurs whatever was revealed there, the same
-      // way closing the lightbox does: a reveal is for looking at it now, not a
-      // state that survives a trip through the gallery and back.
+      // Leaving the Generate tab re-blurs a revealed result, like closing the
+      // lightbox does.
       this.$watch('tab', (t) => {
         if (t !== 'generate') { this.genReveal = false; this.xyzReveal = false; }
       });
     },
 
     // ── shared events (one SSE stream per device) ───────────────
-    // The browser auto-reconnects an EventSource on error, but a stalled stream
-    // freezes the queue panel silently — the user thinks a job is still running.
-    // We surface it: onerror bumps connState to 'reconnecting', and if no
-    // reconnect lands within CONN_DOWN_TIMEOUT we escalate to 'down' and show a
-    // banner (IMPROVE.md #7). A fresh snapshot on reconnect re-syncs everything.
+    // A stalled stream would freeze the queue panel silently, so onerror goes
+    // 'reconnecting' and, without a reconnect within CONN_DOWN_TIMEOUT, 'down'
+    // (banner). The reconnect snapshot re-syncs everything.
     connectEvents() {
       const es = new EventSource('/api/events');
       this._connEscalate = () => {
@@ -454,10 +410,9 @@ document.addEventListener('alpine:init', () => {
           this.applyState(ev);
           this.queue = ev.jobs; this.runningJob = ev.running;
           if (ev.progress) this.runProg = { step: ev.progress.step, total: ev.progress.total };
-          // A terminal event (done/error/cancelled) is lost if the SSE drops while
-          // the job finishes. The reconnect snapshot lists every live job, so any
-          // waiter whose job is absent already ended off-stream — resolve it instead
-          // of leaving busy stuck forever.
+          // A terminal event is lost if the SSE drops while the job ends. The
+          // reconnect snapshot lists every live job, so resolve waiters whose
+          // job is gone instead of leaving busy stuck.
           {
             const live = new Set((ev.jobs || []).map((j) => String(j.id)));
             for (const id of Object.keys(this._jobWaiters)) {
@@ -479,11 +434,8 @@ document.addEventListener('alpine:init', () => {
           this.applyState(ev);
           break;
         case 'progress':
-          // Running-job progress feeds the queue panel; the main bar only
-          // tracks THIS device's own job (or one of its in-flight batch jobs),
-          // so a queued device isn't shown another device's progress.
+          // Feeds the queue panel; the main bar only tracks THIS device's jobs.
           this.runProg = { step: ev.step, total: ev.total };
-          // A gallery-scan rating job also live-updates the Settings badge.
           if (ev.job === this.scanJob) {
             this.taggerStatus.rated = ev.step;
             this.taggerStatus.total = ev.total;
@@ -496,8 +448,7 @@ document.addEventListener('alpine:init', () => {
             this.previewUrl = ev.image;
           break;
         case 'rated':
-          // The AI tagger's verdict for a freshly saved output (per-save
-          // auto-tag). Refines the generate page's prompt-based blur.
+          // The AI tagger's verdict for a freshly saved output.
           if (ev.path) this._visionNsfw[ev.path] = { nsfw: !!ev.nsfw, rating: ev.rating };
           break;
         case 'done':
@@ -507,18 +458,15 @@ document.addEventListener('alpine:init', () => {
           if (w) { delete this._jobWaiters[ev.job]; w(ev); }
           const bi = this._myBatchIds.indexOf(ev.job);
           if (bi !== -1) this._myBatchIds.splice(bi, 1);
-          // Clear myJobId only when THIS job ends. A job queued behind it has
-          // already moved myJobId on at submit time, so an earlier job's
-          // completion must not null it out — otherwise the queued job's
-          // progress/preview events stop routing and the bar sticks on "Starting…".
+          // Only when THIS job ends: a job queued behind it already moved
+          // myJobId, and nulling it would stop its progress routing.
           if (ev.job === this.myJobId) this.myJobId = null;
           break;
         }
       }
     },
 
-    // Submit a job, then resolve once its terminal event arrives on the stream.
-    // Live progress/preview are handled globally by onServerEvent.
+    // Submit a job; resolves on its terminal SSE event.
     async submitJob(url, payload) {
       const r = await fetchJSON(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -528,12 +476,9 @@ document.addEventListener('alpine:init', () => {
       return new Promise((resolve) => { this._jobWaiters[r.job] = resolve; });
     },
 
-    // Submit N copies of a job for batch generation. A pinned seed is offset by
-    // i per copy so the N images differ; seed=-1 is forwarded as-is so the
-    // backend picks a fresh random per job (its existing behavior). Each job's
-    // terminal event resolves one promise; Promise.all in the caller waits for
-    // every copy. Unlike submitJob, this leaves myJobId null — onServerEvent
-    // routes progress/preview through _myBatchIds instead.
+    // Submit N copies of a job. A pinned seed is offset by i per copy; -1 is
+    // forwarded so each gets a fresh random. Progress routes through
+    // _myBatchIds, not myJobId.
     async submitBatch(url, payload, count) {
       const baseSeed = payload.seed;
       const promises = [];
@@ -549,8 +494,7 @@ document.addEventListener('alpine:init', () => {
           promises.push(new Promise((resolve) => { this._jobWaiters[r.job] = resolve; }));
         }
       } catch (e) {
-        // Fetch failed partway: cancel any jobs already enqueued so they don't
-        // run orphaned, drop their waiters, then surface the error to the caller.
+        // Cancel the jobs already enqueued, then surface the error.
         for (const id of [...this._myBatchIds]) {
           delete this._jobWaiters[id];
           try {
@@ -566,13 +510,11 @@ document.addEventListener('alpine:init', () => {
       return promises;
     },
 
-    // Reflect server-side model-load state (shared across devices/refresh).
     applyState(s) {
       this.status = s.status;
       this.modelLoaded = !!s.loaded;
       if (s.last_seed !== undefined) this.lastSeed = s.last_seed;
-      // Don't overwrite a selection the user is editing locally (loadFormDirty);
-      // a broadcast from another tab's load would otherwise revert it.
+      // Don't overwrite a selection the user is editing locally.
       if (s.load_form && !this.loadFormDirty) this.restoreLoadForm(s.load_form);
     },
 
@@ -612,9 +554,8 @@ document.addEventListener('alpine:init', () => {
       this.recommendedOffload = m.recommended_offload || 'full';
       this.fa2Available = !!m.fa2_available;
       this.uiId = m.ui_id; this.diffId = m.diff_id;
-      // First fetch seeds every selector; a later Refresh (picking up newly
-      // dropped files) must NOT clobber selections the user already made —
-      // only replace ones whose file vanished from the new list.
+      // The first fetch seeds every selector; a later Refresh only replaces
+      // selections whose file vanished.
       if (!this._modelsFetched) {
         this._modelsFetched = true;
         this.perf.offload = this.recommendedOffload;
@@ -630,14 +571,13 @@ document.addEventListener('alpine:init', () => {
         this.dit = keep(this.dit, this.ditChoices);
         this.vae = keep(this.vae, this.vaeChoices);
         this.te = keep(this.te, this.teChoices);
-        // '' is a valid CLIP pick ("(none)", FLUX.2); a gone file falls to none.
+        // '' is a valid CLIP pick ("(none)", FLUX.2).
         if (this.clip !== '' && !this.teChoices.includes(this.clip)) this.clip = '';
         for (const dm of this.detail.models) dm.model = keep(dm.model, this.detailerChoices);
       }
       this.syncSampler();
       this.syncScheduler();
-      // Hydrate from server-side load state last, so a model already loaded by
-      // another device (or before a refresh) restores its exact selections.
+      // Hydrate from the server's load state last.
       this.applyState(m);
     },
 
@@ -646,25 +586,22 @@ document.addEventListener('alpine:init', () => {
       this.loadFormDirty = true;
       this.syncSampler();
       this.syncScheduler();
-      // FLUX must stream its DiT to fit a 24 GB card. SD/SDXL and Anima use the
-      // VRAM-based default the backend recommended at startup (which is "stream"
-      // on a ≤6 GB card — backbone-block streaming that fits SDXL/Anima on ~4 GB).
+      // FLUX always streams its DiT; the others take the backend's VRAM-based
+      // default.
       this.perf.offload = (type === 'FLUX') ? 'stream' : this.recommendedOffload;
-      // channels_last only helps the conv backbones (SD/SDXL UNet + VAE); it's a
-      // no-op for the DiT families, so default it on only for SD/SDXL.
+      // channels_last only helps conv backbones (SD/SDXL UNet + VAE).
       this.perf.channelsLast = (type === 'SD/SDXL');
       if (type === 'Anima' && !this.animaApplied) {
-        // sensible Anima defaults, applied once
         this.animaApplied = true;
         this.form.sampler = 'er_sde';
         this.form.steps = 30;
         this.form.cfg = 4.0;
-        // Anima's shift=3 flow schedule turns a given strength into far more
-        // effective noise than SDXL's EDM, so 0.4 over-regenerates faces; ~0.25 refines.
+        // shift=3 makes a given strength far noisier than SDXL's EDM; 0.4
+        // over-regenerates faces.
         this.detail.strength = 0.25;
       }
       if (type === 'FLUX' && !this.fluxApplied) {
-        // sensible FLUX-dev defaults, applied once (cfg = distilled guidance)
+        // FLUX-dev defaults, applied once (cfg = distilled guidance)
         this.fluxApplied = true;
         this.form.sampler = 'euler';
         this.form.steps = 20;
@@ -697,17 +634,15 @@ document.addEventListener('alpine:init', () => {
           tf32: this.perf.tf32,
           fp16_accumulation: this.perf.fp16Acc,
           vae_fp16: this.perf.vaeFp16,
-          // fa2 only applies to the DiT families; never send it for SD/SDXL so
-          // a leftover checked chip can't tag an SD load with a no-op flag.
+          // fa2 only applies to the DiT families.
           attention: (this.perf.fa2Attn && this.modelType !== 'SD/SDXL') ? 'fa2_turing' : 'sdpa',
         };
-        // Load is queued like any job; it waits for a running generation to
-        // finish. The server also broadcasts the new state to every device.
+        // Queued like any job; the server broadcasts the new state everywhere.
         const ev = await this.submitJob('/api/load', body);
         if (ev.type === 'done') {
           this.status = ev.status;
           this.modelLoaded = !!ev.loaded;
-          // Our selection is now the loaded/persisted form — let broadcasts sync again.
+          // Our selection is now the loaded form, so broadcasts may sync again.
           if (this.modelLoaded) this.loadFormDirty = false;
           if (!this.modelLoaded) this.flash(ev.status);
         } else if (ev.type === 'cancelled') {
@@ -729,8 +664,7 @@ document.addEventListener('alpine:init', () => {
     onDrop(evt, key) { this.dragKey = null; this.readImage(evt.dataTransfer.files[0], key); },
     readImage(f, key) {
       if (!f) return;
-      // Drops bypass the file input's accept filter; refuse non-images loudly
-      // instead of silently doing nothing.
+      // Drops bypass the input's accept filter.
       if (f.type && !f.type.startsWith('image/')) { this.flash('Not an image file'); return; }
       const r = new FileReader();
       r.onload = () => {
@@ -740,8 +674,7 @@ document.addEventListener('alpine:init', () => {
       r.readAsDataURL(f);
     },
 
-    // Match the output size to the source image (rounded to ×8, the VAE's latent
-    // grid) so an img2img/inpaint input isn't stretched by default.
+    // Match the output size to the source, rounded to ×8, so it isn't stretched.
     syncOutputSize(dataUrl) {
       const img = new Image();
       img.onload = () => {
@@ -753,13 +686,10 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── inpaint mask painting ───────────────────────────────────
-    // The offscreen `_mask` buffer is the source of truth: transparent where
-    // untouched, opaque white where masked. The visible canvas is always a
-    // pure redraw of `base + orange-tinted mask`, so the brush, eraser,
-    // rectangle, undo and invert tools all just mutate `_mask` and redraw.
-    // Export flattens the mask onto black (the white-on-black PNG the engine
-    // expects). All buffers live on the canvas element so Alpine never proxies
-    // the DOM nodes.
+    // The offscreen `_mask` buffer is the source of truth (opaque white where
+    // masked); the visible canvas is always base + orange-tinted mask, so every
+    // tool just mutates `_mask` and redraws. Export flattens it onto black.
+    // Buffers hang off the canvas element so Alpine never proxies them.
     initMask(c) {
       if (!c || !this.inputImage) return;
       const img = new Image();
@@ -792,9 +722,7 @@ document.addEventListener('alpine:init', () => {
       this.maskZoom = Math.min(4, Math.max(1, Math.round((this.maskZoom + d) * 100) / 100));
       this.applyMaskZoom();
     },
-    // Size the maximized canvas to a fit-to-viewport base × zoom and let the
-    // stage scroll to pan. maskPos() reads getBoundingClientRect, so painting
-    // stays pixel-accurate at any display size.
+    // Maximized: fit-to-viewport base × zoom; the stage scrolls to pan.
     applyMaskZoom() {
       const c = this.$refs.maskCanvas;
       if (!c || !c._base) return;
@@ -808,7 +736,6 @@ document.addEventListener('alpine:init', () => {
       c.style.height = (w / aspect) + 'px';
     },
 
-    // Repaint the visible canvas: base image, then the mask tinted orange.
     redrawMask(c) {
       const ctx = c.getContext('2d');
       ctx.clearRect(0, 0, c.width, c.height);
@@ -829,8 +756,7 @@ document.addEventListener('alpine:init', () => {
     maskDown(e) {
       const c = e.currentTarget;
       if (!c._mask) return;
-      // Capture the pointer so move/up keep firing on the canvas even when the
-      // cursor strays outside its bounds — lets a stroke run off the edge.
+      // Capture the pointer so a stroke can run off the canvas edge.
       try { c.setPointerCapture(e.pointerId); } catch (_) {}
       const p = this.maskPos(c, e);
       if (this.maskTool === 'rect') {
@@ -856,21 +782,18 @@ document.addEventListener('alpine:init', () => {
         c._last = p;
         this.strokeBrushRing(c, p);
       } else if (this.maskTool !== 'rect' && c._mask) {
-        // Hover preview: repaint, then draw the ring on top so the user sees
-        // the brush footprint at the current size before committing a stroke.
+        // Hover preview of the brush footprint.
         this.redrawMask(c);
         this.strokeBrushRing(c, p);
       }
     },
-    // Clear the hover ring when the pointer leaves the canvas (unless a stroke
-    // or rectangle drag is in progress — those manage their own repaint).
+    // Clear the hover ring on leave (strokes and drags repaint themselves).
     maskLeave(e) {
       const c = e.currentTarget;
       if (c._mask && !c._painting && !c._dragging) this.redrawMask(c);
     },
-    // Draw the brush footprint as a ring in canvas coordinates, so it scales
-    // with the CSS-displayed canvas automatically. A dark halo under a light
-    // ring keeps it visible over both the image and the orange mask tint.
+    // Brush ring in canvas coordinates; a dark halo under a light ring keeps it
+    // visible over the image and the mask tint.
     strokeBrushRing(c, p) {
       const rect = c.getBoundingClientRect();
       const scale = rect.width ? c.width / rect.width : 1; // canvas px per display px
@@ -902,7 +825,6 @@ document.addEventListener('alpine:init', () => {
         y: (e.clientY - r.top) * (c.height / r.height),
       };
     },
-    // Stroke white (brush) or erase (eraser) along a segment of the mask.
     paintSeg(c, a, b) {
       const mctx = c._mask.getContext('2d');
       mctx.save();
@@ -927,9 +849,8 @@ document.addEventListener('alpine:init', () => {
       mctx.fillRect(Math.min(a.x, b.x), Math.min(a.y, b.y), w, h);
       this.redrawMask(c);
     },
-    // Snapshot the mask before a mutating op so it can be undone. The first
-    // snapshot of any chain is the empty mask, so the stack itself never
-    // implies painted state — painted-ness is derived from the buffer instead.
+    // Snapshot the mask before a mutating op. The first snapshot of a chain is
+    // the empty mask, so painted-ness is read from the buffer, never the stack.
     pushUndo(c) {
       const mctx = c._mask.getContext('2d');
       c._undo.push(mctx.getImageData(0, 0, c._mask.width, c._mask.height));
@@ -964,8 +885,7 @@ document.addEventListener('alpine:init', () => {
       c._mask.getContext('2d').clearRect(0, 0, c._mask.width, c._mask.height);
       this.redrawMask(c);
     },
-    // Flatten the transparent mask onto black → the white-on-black PNG the
-    // engine expects (decoded as RGB, so transparency must be made opaque).
+    // Flatten onto black: the white-on-black PNG the engine expects.
     exportMask() {
       const c = this.$refs.maskCanvas;
       if (!c || !c._mask) return null;
@@ -978,12 +898,8 @@ document.addEventListener('alpine:init', () => {
       return o.toDataURL('image/png');
     },
 
-    // Whether any painted pixels remain in the mask buffer. `_mask` is
-    // transparent where untouched and opaque white where painted, so one alpha
-    // scan is the source of truth — a sticky boolean can't track erase-to-
-    // empty, undo chains, or a full-mask-then-invert. Called before
-    // generating; a few ms on a 2K canvas, invisible next to the GPU work
-    // that follows.
+    // One alpha scan of `_mask` is the source of truth for coverage (erase to
+    // empty, undo, invert all change it); a few ms on a 2K canvas.
     maskHasCoverage(c) {
       const m = c && c._mask;
       if (!m) return false;
@@ -994,7 +910,7 @@ document.addEventListener('alpine:init', () => {
 
     // ── auto-growing textareas ──────────────────────────────────
     autogrow(el) {
-      if (!el || el.offsetParent === null) return;   // skip while hidden
+      if (!el || el.offsetParent === null) return;   // hidden
       el.style.height = 'auto';
       el.style.height = el.scrollHeight + 'px';
     },
@@ -1005,17 +921,14 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── <lora:…> autocomplete ───────────────────────────────────
-    // Typing `<` opens a list of available LoRAs; the fragment after the last
-    // unclosed `<` (optionally past a `lora:` prefix) filters it. Selecting one
-    // inserts `<lora:name:1.0>`. Names are the exact filenames the backend
-    // expects (see lora_path); the dropdown hides the .safetensors suffix.
+    // Typing `<` lists LoRAs, filtered by the fragment after the last unclosed
+    // `<` (past an optional `lora:`); picking one inserts `<lora:name:1.0>`. The
+    // dropdown hides the .safetensors suffix.
     loraLabel(name) {
       return name.replace(/\.safetensors$/i, '');
     },
-    // Trigger on `<`, insert <lora:name:1.0>. Used by the prompt (default) and
-    // the X/Y/Z "Prompt S/R" fields, which pass {key, set} to write back to the
-    // axis text — S/R then operates on the whole literal tag, so name swaps,
-    // weight sweeps, and removal all stay valid <lora:…> strings.
+    // Used by the prompt (default) and the X/Y/Z Prompt S/R fields, which pass
+    // {key, set} to write back to the axis text.
     loraAutocomplete(el, opts) {
       const o = opts || { key: 'prompt', set: (v) => { this.form.prompt = v; } };
       const before = el.value.slice(0, el.selectionStart);
@@ -1040,14 +953,11 @@ document.addEventListener('alpine:init', () => {
       else if (e.key === 'Escape') { e.preventDefault(); ac.open = false; }
     },
 
-    // Keydown for the prompt textarea: Ctrl/Cmd+Enter triggers Generate (the
-    // usual shortcut in every comparable UI), unless the LoRA autocomplete is
-    // open — then Enter inserts the selected LoRA and Ctrl/Cmd+Enter is left
-    // alone so the user can dismiss it first. Other keys fall through to
-    // loraKeydown for autocomplete navigation.
+    // Ctrl/Cmd+Enter generates, unless the LoRA autocomplete is open; other
+    // keys go to loraKeydown.
     promptKeydown(e) {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-        if (this.loraAC.open) return;   // don't fire through an open dropdown
+        if (this.loraAC.open) return;
         e.preventDefault();
         if (!this.busy) this.runGenerate();
         return;
@@ -1076,14 +986,11 @@ document.addEventListener('alpine:init', () => {
     },
 
     async generate() {
-      // A load in flight is fine: the job queues behind it and the model is
-      // loaded by the time it runs. Only refuse when nothing's loaded or loading.
+      // A load in flight is fine: the job queues behind it.
       if (!this.modelLoaded && !this.loadingModel) { this.flash('Load a model first'); return; }
       if (this.mode === 'i2i' && !this.inputImage) { this.flash('Provide an input image'); return; }
       if (this.mode === 'inpaint') {
         if (!this.inputImage) { this.flash('Provide an input image'); return; }
-        // Authoritative check: the sticky flag can be stale (erased to empty,
-        // undo chain, inverted full mask) while the buffer holds no mask.
         if (!this.maskHasCoverage(this.$refs.maskCanvas)) {
           this.flash('Paint a mask over the image');
           return;
@@ -1101,9 +1008,8 @@ document.addEventListener('alpine:init', () => {
       this._promptNsfw = {};
       this._visionNsfw = {};
       try {
-        // Seamless OSS: calibrate this steps/size/shift on first use, then
-        // generate — all under one click. Re-check status fresh so a just-changed
-        // steps/size/shift isn't missed.
+        // Calibrate OSS for this steps/size/shift on first use, then generate,
+        // under one click. The status is re-checked fresh.
         if (this.needsOss()) {
           await this.checkOssStatus();
           if (this.ossCalibrated === false) {
@@ -1146,8 +1052,7 @@ document.addEventListener('alpine:init', () => {
           upscale_teacache: this.upscale.teacache,
           upscale_base: this.upscale.base,
         };
-        // Batch: submit N copies, await all. Single (count=1) keeps the original
-        // submitJob path so load/upscale/xyz/calibrate semantics are unchanged.
+        // Batch: submit N copies and await all; a single job keeps submitJob.
         const batchCount = Math.max(1, Math.min(16, Math.floor(this.batchCount) || 1));
         if (batchCount > 1) {
           const promises = await this.submitBatch('/api/generate', payload, batchCount);
@@ -1160,9 +1065,8 @@ document.addEventListener('alpine:init', () => {
             else if (ev.type === 'cancelled') nCancel++;
           }
           if (lastDone) {
-            // Keep every finished image so the strip below can flip through
-            // the batch; the canvas shows the last one (results arrive in
-            // submission order — FIFO completion on the single worker).
+            // Keep every finished image for the strip; the canvas shows the
+            // last (FIFO on the single worker).
             this.batchResults = results
               .filter(ev => ev.type === 'done')
               .map(ev => ({
@@ -1191,7 +1095,6 @@ document.addEventListener('alpine:init', () => {
           }
           if (nErr) this.flash(`${nErr} batch job(s) failed`);
         } else {
-          // Progress + preview arrive on the shared stream; we await the result.
           const ev = await this.submitJob('/api/generate', payload);
           if (ev.type === 'done') {
             this.previewUrl = null;
@@ -1215,16 +1118,13 @@ document.addEventListener('alpine:init', () => {
         this.busy = false;
         this.cancelling = false;
         this.previewUrl = null;
-        // Belt-and-suspenders: terminal events should have emptied the set, but
-        // a missed event (e.g. a future code path that doesn't register a waiter)
-        // would otherwise leave stale ids routing unrelated progress here.
+        // In case a terminal event was missed.
         this._myBatchIds = [];
       }
     },
 
-    // Cancel a job by id (defaults to this device's running job). A running job
-    // stops at its next sampling step; a still-queued job is dropped. With no
-    // arg and an in-flight batch, every batch member is cancelled.
+    // Cancel a job by id (default: this device's). A running job stops at its
+    // next step, a queued one is dropped; with no arg every batch member goes.
     async cancel(jobId) {
       if (jobId == null && this._myBatchIds.length > 0) {
         this.cancelling = true;
@@ -1253,11 +1153,10 @@ document.addEventListener('alpine:init', () => {
 
     // ── x/y/z sweep ─────────────────────────────────────────────
     async generateXyz() {
-      // Queue behind an in-flight load (see generate()); only refuse when idle.
+      // Queue behind an in-flight load (see generate()).
       if (!this.modelLoaded && !this.loadingModel) { this.flash('Load a model first'); return; }
-      // A Prompt S/R axis's search term (its first value) must appear in the
-      // prompt or negative prompt, or every cell is identical. Refuse early —
-      // same case-sensitive match the backend's replace uses.
+      // A Prompt S/R search term missing from both prompts makes every cell
+      // identical. Same case-sensitive match as the backend's replace.
       const haystack = this.form.prompt + '\n' + this.form.neg;
       for (const axis of [this.axes.x, this.axes.y, this.axes.z]) {
         if (axis.type !== 'Prompt S/R') continue;
@@ -1315,15 +1214,12 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── OSS calibration ─────────────────────────────────────────
-    // Whether the current (steps, resolution, shift) already has a calibrated
-    // schedule. Reads form fields synchronously so Alpine's x-effect re-checks
-    // when any of them change.
+    // Reads form fields synchronously so Alpine's x-effect re-checks on change.
     async checkOssStatus() {
       const { scheduler, steps, width, height, shift } = this.form;
-      // Dragging a slider fires one check per tick; without a token an earlier,
-      // slower response could land last and report the verdict for stale params.
-      // Bumped before the early return too, so an in-flight check can't revive a
-      // verdict after the user switched away from oss.
+      // A token drops stale replies while a slider fires one check per tick. It
+      // is bumped before the early return too, so an in-flight check can't
+      // revive a verdict after switching away from oss.
       const token = ++this._ossToken;
       if (this.modelType !== 'Anima' || scheduler !== 'oss' || !this.modelLoaded) {
         this.ossCalibrated = null;
@@ -1343,9 +1239,8 @@ document.addEventListener('alpine:init', () => {
       return this.modelType === 'Anima' && this.mode === 't2i' && this.form.scheduler === 'oss';
     },
 
-    // Queue a calibration job. Updates progress/status but does NOT own `busy`
-    // — the caller does, so it can chain calibrate→generate under one spinner.
-    // Returns true on success.
+    // Queue a calibration job; returns true on success. The caller owns `busy`,
+    // so calibrate→generate runs under one spinner.
     async _streamCalibrate() {
       this.calibrating = true;
       this.ossInfo = '';
@@ -1375,7 +1270,6 @@ document.addEventListener('alpine:init', () => {
       return ok;
     },
 
-    // Manual "Calibrate" button.
     async calibrateOss() {
       if (!this.modelLoaded) { this.flash('Load a model first'); return; }
       this.busy = true;
@@ -1402,11 +1296,9 @@ document.addEventListener('alpine:init', () => {
         this.flash('Settings saved');
       } catch (e) { this.flash('Could not save settings'); }
     },
-    // Sampler-section auto-save, guarded: two fields form a pair the backend
-    // validates together (cfg_interval_start < cfg_interval_end), and a field
-    // mid-edit is briefly ''/null (Alpine .number) which the backend rejects.
-    // Skip the save while the section is in either state, so a two-field edit
-    // commits once both are set instead of toasting an error on every blur.
+    // Sampler-section auto-save. Skip while a field is mid-edit (''/null under
+    // .number) or the CFG interval pair is out of order, which the backend
+    // rejects, so a two-field edit commits once instead of toasting per blur.
     saveSamplerSettings() {
       const s = this.settings;
       const nums = [s.curvature, s.eta_max, s.beta_alpha, s.beta_beta,
@@ -1415,8 +1307,7 @@ document.addEventListener('alpine:init', () => {
       if (s.cfg_interval_start >= s.cfg_interval_end) return;
       this.saveSettings();
     },
-    // Same guard for the TeaCache tab's lone number field: mid-edit it is
-    // briefly ''/null, which the backend rejects.
+    // Same guard for the TeaCache tab's lone number field.
     saveTeacacheSettings() {
       const v = this.settings.teacache_uncond_scale;
       if (v == null || v === '' || Number.isNaN(v)) return;
@@ -1433,9 +1324,7 @@ document.addEventListener('alpine:init', () => {
       catch (e) { this.taggerStatus = { available: false, loaded: false, rated: 0, total: 0 }; }
     },
 
-    // Rate every gallery image that lacks an AI verdict (one queued job; the
-    // queue panel and the Settings badge show its progress). Resolves on the
-    // job's terminal event.
+    // Rate every gallery image lacking an AI verdict, as one queued job.
     async scanGallery() {
       if (this.scanJob) { this.flash('Already rating the gallery'); return; }
       if (this.busy) return;
@@ -1458,15 +1347,13 @@ document.addEventListener('alpine:init', () => {
         this.flash('' + e);
       }
     },
-    // Live scan progress as a percent (for the Settings progress bar).
     get scanPct() {
       const t = this.taggerStatus.total;
       return t > 0 ? Math.min(100, Math.round((this.taggerStatus.rated / t) * 100)) : 0;
     },
 
-    // Seed the Generate form from saved defaults, then re-validate the sampler/
-    // scheduler against the current model type (so a default that doesn't apply
-    // to the loaded family falls back instead of sticking an invalid value).
+    // Seed the Generate form from saved defaults, then re-validate the sampler
+    // and scheduler against the current model type.
     applyGenDefaults() {
       const d = this.settings.gen_defaults;
       if (!d) return;
@@ -1483,7 +1370,7 @@ document.addEventListener('alpine:init', () => {
         sampler: f.sampler, scheduler: f.scheduler, steps: f.steps,
         cfg: f.cfg, width: f.width, height: f.height, shift: f.shift,
       };
-      // Prompt/negative are only worth pinning when the user actually filled them.
+      // Pin prompt/negative only when filled.
       if (f.prompt && f.prompt.trim()) d.prompt = f.prompt;
       if (f.neg && f.neg.trim()) d.neg = f.neg;
       this.settings.gen_defaults = d;
@@ -1508,9 +1395,8 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── modal a11y ─────────────────────────────────────────────
-    // Overlays (lightbox, settings, upscale popover) get dialog semantics, a
-    // Tab trap, and an `inert` app shell so keyboard focus and screen readers
-    // can't reach the page behind them. Wired via x-effect on each overlay.
+    // Overlays get dialog semantics, a Tab trap, and an `inert` app shell.
+    // Wired via x-effect on each overlay.
     modalA11y(el, open, label) {
       if (!el) return;
       if (open) {
@@ -1532,10 +1418,9 @@ document.addEventListener('alpine:init', () => {
         if (shell) shell.removeAttribute('inert');
         const prev = _modalState.prevFocus;
         _modalState.prevFocus = null;
-        // The previously focused element can be hidden by the time we restore
-        // (the gallery→upscale handoff closes the lightbox behind the popover);
-        // .focus() on a display:none element no-ops and drops focus to <body>.
-        // Fall back to the header gear when the original isn't visible.
+        // The previous element may be hidden by now (the gallery→upscale
+        // handoff closes the lightbox), and focusing it would drop focus to
+        // <body>; fall back to the header gear.
         if (prev && prev.isConnected && prev.offsetParent !== null) {
           prev.focus();
         } else {
@@ -1544,8 +1429,7 @@ document.addEventListener('alpine:init', () => {
         }
       }
     },
-    // Keep Tab/Shift+Tab cycling inside the open dialog. Focus was moved in on
-    // open, so any Tab while focus is inside bubbles here and gets wrapped.
+    // Keep Tab/Shift+Tab cycling inside the open dialog.
     modalTab(e, el) {
       if (e.key !== 'Tab') return;
       const list = [...el.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
@@ -1556,9 +1440,7 @@ document.addEventListener('alpine:init', () => {
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     },
 
-    // Fit the TeaCache rescaling polynomial for the loaded Anima family. Long,
-    // GPU-heavy job routed through the shared queue (progress shows on the bar),
-    // exactly like OSS calibrate.
+    // Fit the TeaCache polynomial for the loaded Anima family, as a queued job.
     async calibrateTeacache() {
       if (!this.teacacheStatus.calibratable) { this.flash('Load an Anima model first'); return; }
       this.busy = true;
@@ -1591,13 +1473,11 @@ document.addEventListener('alpine:init', () => {
 
     // ── standalone upscale ───────────────────────────────────────
     async openUpscale() {
-      // Capture the source the moment the popover opens, so the run upscales the
-      // image you launched from. A gallery selection carries its own metadata
-      // (so the refine pass matches how it was made); a fresh result is
-      // described by the live form.
+      // Capture the source now. A gallery image carries its own metadata for the
+      // refine pass; a fresh result is described by the live form.
       let fromGallery = false;
       if (this.lightbox.open && this.selected) {
-        await this._metaLoad;                    // metadata may still be in flight
+        await this._metaLoad;                    // metadata may still be loading
         this._upscaleSrc = { url: this.selected.url, meta: this.selectedFields };
         fromGallery = true;
       } else if (this.resultUrl) {
@@ -1613,9 +1493,7 @@ document.addEventListener('alpine:init', () => {
       this.upscaleForm.overlap = this.upscale.overlap;
       this.upscaleForm.teacache = this.upscale.teacache;
       this.upscaleForm.base = this.upscale.base;
-      // The popover and the progress bar both live on the Generate tab, so a
-      // gallery launch moves there (closing the lightbox) — otherwise the
-      // popover stays hidden behind the gallery.
+      // The popover and progress bar live on the Generate tab.
       if (fromGallery) { this.closeLightbox(); this.tab = 'generate'; }
       this.upscalePopover.open = true;
       this.upscalePopover.busy = false;
@@ -1625,7 +1503,7 @@ document.addEventListener('alpine:init', () => {
       const src = this._upscaleSrc;
       if (!src) { this.flash('No image to upscale'); return; }
       if (!this.modelLoaded) { this.flash('Load a model first'); return; }
-      this.closeUpscale();   // reveal the Generate-tab progress bar + live preview
+      this.closeUpscale();   // reveal the progress bar + live preview
       this.busy = true;
       this.progress = { step: 0, total: 0 };
       this.previewUrl = null;
@@ -1637,8 +1515,7 @@ document.addEventListener('alpine:init', () => {
           r.onerror = rej;
           r.readAsDataURL(blob);
         });
-        // Refine params describe the source: a gallery image's own metadata
-        // (over the form as a fallback), or the live form for a fresh result.
+        // A gallery image's metadata over the form, or the form for a fresh result.
         const refine = src.meta ? { ...this.form, ...src.meta } : this.form;
         const payload = {
           input_image: inputImage,
@@ -1661,17 +1538,14 @@ document.addEventListener('alpine:init', () => {
         if (ev.type === 'done') {
           this.previewUrl = null;
           this.resultUrl = ev.image_url + '?t=' + Date.now();
-          // Carry the upscale's own verdict over, or the canvas would keep the
-          // *previous* result's blur state — showing an upscaled NSFW image
-          // unblurred (an upscale from the gallery has no previous result).
+          // Carry the upscale's own verdict, or the canvas would keep the
+          // previous result's blur state.
           this.resultPath = ev.path || null;
           if (ev.path) this._promptNsfw[ev.path] = { nsfw: !!ev.nsfw_prompt, rating: ev.prompt_rating };
           this.genReveal = false;
-          this.batchResults = [];   // the upscaled image replaces any batch strip
+          this.batchResults = [];
           this.info = ev.info;
           this.closeUpscale();
-          // Surface the result on the Generate tab (no-op when already there),
-          // closing the gallery lightbox if the upscale was launched from it.
           this.closeLightbox();
           this.tab = 'generate';
           this.flash('Upscale done');
@@ -1693,8 +1567,7 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── standalone detailer ──────────────────────────────────────
-    // Mirrors the upscale popover: refine an image that already exists instead
-    // of re-sampling it. Works on any gallery PNG, so it needs no seed lock.
+    // Like the upscale popover: refine an existing image without re-sampling.
     addDetailFormModel() {
       this.detailForm.models.push({ model: this.detailerChoices[0], prompt: '' });
     },
@@ -1705,7 +1578,7 @@ document.addEventListener('alpine:init', () => {
     async openDetail() {
       let fromGallery = false;
       if (this.lightbox.open && this.selected) {
-        await this._metaLoad;                    // metadata may still be in flight
+        await this._metaLoad;                    // metadata may still be loading
         this._detailSrc = { url: this.selected.url, meta: this.selectedFields };
         fromGallery = true;
       } else if (this.resultUrl) {
@@ -1713,8 +1586,7 @@ document.addEventListener('alpine:init', () => {
       } else {
         this._detailSrc = null;
       }
-      // Seed the popover from the Generate-tab detailer panel, so the settings
-      // you already tuned there carry over.
+      // Seed the popover from the Generate-tab detailer panel.
       const meta = this._detailSrc && this._detailSrc.meta;
       this.detailForm.models = this.detail.models.map(dm => ({ ...dm }));
       if (!this.detailForm.models.length) this.addDetailFormModel();
@@ -1740,7 +1612,7 @@ document.addEventListener('alpine:init', () => {
       if (!this.modelLoaded) { this.flash('Load a model first'); return; }
       const models = this.detailForm.models.filter(dm => dm.model && !dm.model.startsWith('('));
       if (!models.length) { this.flash('Pick at least one detection model'); return; }
-      this.closeDetail();   // reveal the Generate-tab progress bar + live preview
+      this.closeDetail();   // reveal the progress bar + live preview
       this.busy = true;
       this.progress = { step: 0, total: 0 };
       this.previewUrl = null;
@@ -1752,8 +1624,7 @@ document.addEventListener('alpine:init', () => {
           r.onerror = rej;
           r.readAsDataURL(blob);
         });
-        // Refine params describe the source: a gallery image's own metadata
-        // (over the form as a fallback), or the live form for a fresh result.
+        // A gallery image's metadata over the form, or the form for a fresh result.
         const refine = src.meta ? { ...this.form, ...src.meta } : this.form;
         const payload = {
           input_image: inputImage,
@@ -1780,12 +1651,11 @@ document.addEventListener('alpine:init', () => {
         if (ev.type === 'done') {
           this.previewUrl = null;
           this.resultUrl = ev.image_url + '?t=' + Date.now();
-          // Carry the detail run's own verdict over, or the canvas would keep
-          // the previous result's blur state.
+          // Carry this run's own verdict, not the previous result's blur state.
           this.resultPath = ev.path || null;
           if (ev.path) this._promptNsfw[ev.path] = { nsfw: !!ev.nsfw_prompt, rating: ev.prompt_rating };
           this.genReveal = false;
-          this.batchResults = [];   // the detailed image replaces any batch strip
+          this.batchResults = [];
           this.info = ev.info;
           this.closeLightbox();
           this.tab = 'generate';
@@ -1808,9 +1678,8 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── gallery ─────────────────────────────────────────────────
-    // Both listing fetches share a monotonic token: a debounced search racing a
-    // tab-click (or two quick searches) can resolve out of order, and the last
-    // response to land would otherwise overwrite the newest one on screen.
+    // Both listing fetches share a monotonic token, so an out-of-order response
+    // can't overwrite a newer one.
     async openGallery() {
       this.tab = 'gallery';
       this.selected = null;
@@ -1821,16 +1690,15 @@ document.addEventListener('alpine:init', () => {
       const token = ++this._galleryToken;
       try {
         const images = (await fetchJSON('/api/gallery')).images;
-        if (token !== this._galleryToken) return;   // a newer fetch won
+        if (token !== this._galleryToken) return;
         this.gallery = images;
         this.buildGalleryGroups();
       } catch (e) {
-        /* keep the previous list on a transient fetch error */
+        /* keep the previous list on a transient error */
       }
     },
 
-    // Debounced search field: fetch the filtered list from the backend's cached
-    // metadata index. An empty query restores the full list (no index needed).
+    // Debounced search against the backend's cached metadata index.
     async searchGallery() {
       const q = (this.galleryQuery || '').trim();
       this.gallerySearching = true;
@@ -1838,23 +1706,21 @@ document.addEventListener('alpine:init', () => {
       try {
         const url = q ? `/api/gallery?q=${encodeURIComponent(q)}` : '/api/gallery';
         const images = (await fetchJSON(url)).images;
-        if (token !== this._galleryToken) return;   // a newer fetch won
+        if (token !== this._galleryToken) return;
         this.gallery = images;
         this.selected = null;
         this.selectedMeta = '';
         this.galleryLimit = 60;
         this.buildGalleryGroups();
       } catch (e) {
-        /* keep the previous list on a transient fetch error */
+        /* keep the previous list on a transient error */
       } finally {
         if (token === this._galleryToken) this.gallerySearching = false;
       }
     },
 
-    // Group the (date-desc) gallery list into day sections, carrying each
-    // image's flat index so the lightbox carousel still pages across all of them.
-    // Only the first `galleryLimit` images are grouped (and rendered); the rest
-    // stay in `gallery` for the lightbox and load in as the sentinel scrolls in.
+    // Group the first `galleryLimit` images into day sections, keeping each
+    // image's flat index so the lightbox pages across the whole list.
     buildGalleryGroups() {
       const groups = [];
       let cur = null;
@@ -1868,8 +1734,7 @@ document.addEventListener('alpine:init', () => {
       this.galleryGroups = groups;
     },
 
-    // Watch the bottom sentinel; render the next chunk as it nears the viewport.
-    // rootMargin pre-loads 400px early so the "Loading more…" row rarely shows.
+    // Render the next chunk as the bottom sentinel nears the viewport.
     observeSentinel(el) {
       new IntersectionObserver((entries) => {
         if (entries[0].isIntersecting) this.loadMoreGallery();
@@ -1882,7 +1747,6 @@ document.addEventListener('alpine:init', () => {
     },
 
     dateLabel(d) {
-      // ISO YYYY-MM-DD folder names (legacy dirs are migrated server-side).
       const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d || '');
       if (!m) return d || 'Unknown date';
       const dt = new Date(+m[1], +m[2] - 1, +m[3]);
@@ -1895,19 +1759,17 @@ document.addEventListener('alpine:init', () => {
 
     async selectImage(img) {
       this.selected = img;
-      // Drop the previous image's metadata up front so the panel and the
-      // send-to-generator buttons never act on stale data while this loads.
+      // Drop the previous metadata so nothing acts on stale data meanwhile.
       this.selectedMeta = '';
       this.selectedFields = null;
-      // Token guards against out-of-order responses: paging fast on a slow
-      // link, an earlier image's fetch can resolve last — ignore it so the
-      // image on screen always wins. Consumers await _metaLoad (below).
+      // Token: when paging fast, an earlier fetch may resolve last. Consumers
+      // await _metaLoad.
       const token = img.url;
       this._metaToken = token;
       this._metaLoad = (async () => {
         try {
           const r = await fetchJSON('/api/metadata?path=' + encodeURIComponent(img.path));
-          if (this._metaToken !== token) return;   // a newer selection won
+          if (this._metaToken !== token) return;
           this.selectedMeta = r.raw;
           this.selectedFields = r.fields;
         } catch (e) {
@@ -1934,18 +1796,17 @@ document.addEventListener('alpine:init', () => {
     lbGo(d) {
       const n = this.gallery.length;
       if (!n) return;
-      this.deleteConfirm = false;   // reset the two-click confirm on navigation
+      this.deleteConfirm = false;
       this.lightbox.index = (this.lightbox.index + d + n) % n;
       this.lbReveal = false;
       this.selectImage(this.gallery[this.lightbox.index]);
     },
-    // Click-to-reveal for a blurred NSFW image; re-clicking re-blurs. No-op
-    // when the image isn't blurred, so an un-blurred click still selects.
+    // Toggle the blur of a blurred image; a no-op otherwise, so a plain click
+    // still selects.
     reveal() {
       if (!this.lbReveal && !this.lbBlurred) return;
       this.lbReveal = !this.lbReveal;
     },
-    // Whether the current lightbox image is rendered blurred (NSFW + setting on).
     get lbBlurred() {
       return !!(this.selected && this.blurs(this.selected.rating) && this.settings.nsfw_blur);
     },
@@ -1963,7 +1824,7 @@ document.addEventListener('alpine:init', () => {
     },
 
     async loadToWorkspace() {
-      await this._metaLoad;   // wait for this image's metadata on slow links
+      await this._metaLoad;
       this.applyFields(this.selectedFields);
       this.closeLightbox();
       this.tab = 'generate';
@@ -1971,11 +1832,8 @@ document.addEventListener('alpine:init', () => {
       this.flash('Loaded settings into Generate');
     },
 
-    // Two-click delete: first click arms the confirm; the second fires the
-    // DELETE. Clicking anywhere else (click.outside on the button) disarms it.
-    // After the file is gone, drop it from the in-memory list, rebuild the
-    // grid groups, and step the lightbox to a neighbor (or close if it was the
-    // last image entirely).
+    // Two-click delete: the first click arms, the second fires (click.outside
+    // disarms). Then step to a neighbour, or close if the gallery is empty.
     async deleteSelected() {
       if (!this.selected) return;
       if (!this.deleteConfirm) {
@@ -1998,9 +1856,7 @@ document.addEventListener('alpine:init', () => {
         this.flash('Could not delete: ' + e);
         return;
       }
-      // Remove from the in-memory gallery; if the gallery list is currently a
-      // search result, the next openGallery()/searchGallery() will refetch —
-      // the backend already invalidated its search index.
+      // A search-result list refetches on the next open/search.
       this.gallery = this.gallery.filter((g) => g.path !== path);
       this.buildGalleryGroups();
       if (this.gallery.length === 0) {
@@ -2011,15 +1867,13 @@ document.addEventListener('alpine:init', () => {
         this.flash('Deleted. Gallery is now empty');
         return;
       }
-      // Step to the neighbor (clamp, since idx may now point past the end).
       const nextIdx = Math.min(idx, this.gallery.length - 1);
       this.lightbox.index = nextIdx;
-      this.lbReveal = false;   // same as navigation: never carry a reveal over
+      this.lbReveal = false;
       this.selectImage(this.gallery[nextIdx]);
       this.flash('Deleted');
     },
 
-    // Send the selected gallery image into img2img / inpaint as the input image.
     async sendToMode(mode) {
       if (!this.selected) return;
       try {
@@ -2035,7 +1889,7 @@ document.addEventListener('alpine:init', () => {
         return;
       }
       this.maskImage = null;
-      await this._metaLoad;   // wait for this image's metadata on slow links
+      await this._metaLoad;
       this.applyFields(this.selectedFields);
       this.syncOutputSize(this.inputImage);
       this.mode = mode;
@@ -2050,8 +1904,7 @@ document.addEventListener('alpine:init', () => {
     onMetaDrop(evt) { this.dragKey = null; this.readMeta(evt.dataTransfer.files[0]); },
     async readMeta(f) {
       if (!f) return;
-      // Drops bypass the input's accept="image/png"; only PNGs carry the
-      // parameters text chunk, so refuse other types with feedback.
+      // Drops bypass accept="image/png", and only PNGs carry the parameters chunk.
       if (f.type && f.type !== 'image/png') { this.flash('Metadata lives in PNGs. Drop a PNG file'); return; }
       const pre = new FileReader();
       pre.onload = () => { this.metaPreview = pre.result; };
@@ -2077,7 +1930,7 @@ document.addEventListener('alpine:init', () => {
       this.flash('Sent to txt2img');
     },
 
-    // map a normalised workspace-fields dict onto the form
+    // Map a normalised workspace-fields dict onto the form.
     applyFields(f) {
       if (!f) return;
       const keys = ['prompt', 'neg', 'steps', 'cfg', 'sampler', 'scheduler',
@@ -2086,17 +1939,15 @@ document.addEventListener('alpine:init', () => {
                     'teacacheRule',
                     'deepcacheOn', 'deepcache'];
       for (const k of keys) if (f[k] !== undefined) this.form[k] = f[k];
-      // The metadata may come from another family's image (an SD sampler while
-      // FLUX is loaded); drop a pick the active family can't run rather than
-      // submitting it verbatim for an opaque generation failure.
+      // Metadata from another family's image may name a sampler the active
+      // family can't run.
       this.syncSampler();
       this.syncScheduler();
       if (f.detailer) this.applyDetailer(f.detailer);
       if (f.upscale) this.applyUpscale(f.upscale);
     },
 
-    // Restore the upscaler panel from a saved `upscale` metadata chunk. Additive,
-    // like applyDetailer — an image without the chunk leaves the panel untouched.
+    // Restore the upscaler panel from `upscale` metadata; absent leaves it alone.
     applyUpscale(u) {
       this.upscale.enabled = u.enabled !== false;
       for (const k of ['scale', 'denoise', 'tile', 'overlap', 'teacache', 'base', 'prompt']) {
@@ -2104,8 +1955,7 @@ document.addEventListener('alpine:init', () => {
       }
     },
 
-    // Restore the detailer panel from a saved `detailer` metadata chunk. Additive,
-    // like applyFields — an image without the chunk leaves the panel untouched.
+    // Restore the detailer panel from `detailer` metadata; absent leaves it alone.
     applyDetailer(d) {
       this.detail.enabled = d.enabled !== false;
       if (Array.isArray(d.models) && d.models.length) {
@@ -2117,8 +1967,8 @@ document.addEventListener('alpine:init', () => {
       }
     },
 
-    // Parse AUTO1111-style parameters pasted into the prompt box and apply them
-    // to the form (prompt/negative/settings), like SD WebUI's read-params arrow.
+    // Parse A1111-style parameters pasted into the prompt box onto the form,
+    // like SD WebUI's read-params arrow.
     async importFromPrompt() {
       const text = this.form.prompt;
       if (!text || !text.trim()) { this.flash('Paste generation parameters into the prompt first'); return; }
@@ -2128,8 +1978,7 @@ document.addEventListener('alpine:init', () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text }),
         });
-        // workspace_fields always echoes a default seed, so "has params" means
-        // an actual settings key was parsed — not just prompt/neg/seed.
+        // Only an actual settings key counts, not just prompt/neg/seed.
         const f = r.fields || {};
         const hasSettings = ['steps', 'cfg', 'sampler', 'scheduler', 'width', 'height', 'strength', 'shift']
           .some((k) => f[k] !== undefined);
@@ -2142,12 +1991,9 @@ document.addEventListener('alpine:init', () => {
       }
     },
 
-    // Arrow-key navigation for a segmented control / tablist. Moves focus
-    // between the sibling <button>s of the group the event fired on. Radio
-    // groups activate on move (selection follows focus, per the radio
-    // pattern); tablists pass activate=false so arrows only move focus and
-    // Enter/Space (native button) activates — avoids firing expensive tab
-    // handlers on every keypress.
+    // Arrow-key navigation among a group's sibling <button>s. Radio groups
+    // activate on move; tablists pass activate=false so arrows only move focus
+    // and Enter/Space activates (tab handlers can be expensive).
     navGroup(e, activate = true) {
       const keys = ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'];
       if (!keys.includes(e.key)) return;
@@ -2169,18 +2015,14 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── toast ───────────────────────────────────────────────────
-    // A small FIFO queue so a burst of messages (e.g. several batch errors)
-    // each get a turn instead of the last overwriting the rest instantly.
-    // Capped at 4 pending so a runaway loop can't pile up dozens.
+    // A small FIFO (capped at 4) so a burst of messages each get a turn.
     flash(msg, kind) {
       if (!msg) return;
       this._toastQueue.push({ msg, kind: kind || this._toastKind(msg) });
       if (this._toastQueue.length > 4) this._toastQueue.length = 4;
       if (!this._toastShowing) this._toastNext();
     },
-    // Infer severity from the message when the caller didn't pass one, so
-    // failures read red and completions read green without tagging every
-    // callsite. An explicit `kind` always wins.
+    // Infer severity from the message unless `kind` is given.
     _toastKind(msg) {
       if (/fail|error|could ?n.t|could not|cannot|unable/i.test(msg)) return 'error';
       if (/saved|done|copied|loaded|imported|installed|updated|deleted|sent|calibrated/i.test(msg)) return 'success';
@@ -2197,16 +2039,13 @@ document.addEventListener('alpine:init', () => {
       clearTimeout(this._toastTimer);
       this._toastTimer = setTimeout(() => {
         this.toast = '';
-        // Brief gap before the next so the fade-out completes (x-transition)
-        // and the new toast fades in, rather than two messages snapping together.
+        // A gap so the fade-out completes before the next toast fades in.
         setTimeout(() => this._toastNext(), 250);
       }, 2500);
     },
 
-    // Copy the lightbox's raw AUTO1111 parameters string to the clipboard.
-    // `navigator.clipboard` is the modern path but needs a secure context
-    // (HTTPS or localhost); on a plain-HTTP LAN (--listen) it's unavailable, so
-    // fall back to a hidden-textarea + execCommand for those clients.
+    // Copy the lightbox's raw parameters string. navigator.clipboard needs a
+    // secure context, so plain-HTTP LAN clients fall back to execCommand.
     async copyMeta() {
       const text = this.selectedMeta;
       if (!text) return;
@@ -2231,19 +2070,15 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ── extensions ──────────────────────────────────────────────
-    // Backend list + install/toggle/reload/uninstall. The DiffucoreExt global
-    // (set up at the top of this file, before Alpine inits) is how extension
-    // scripts register tabs and settings panels into extTabs/extSettingsSpecs.
 
     async refreshExtensions() {
       try {
         const r = await fetchJSON('/api/extensions');
         this.extensions = r.extensions || [];
-      } catch (e) { /* server may be mid-startup; silently retry on next open */ }
+      } catch (e) { /* server may be mid-startup; retried on next open */ }
     },
 
-    // x-effect on the Extensions settings section: only fetch when it's the
-    // active tab, so an idle settings modal doesn't poll.
+    // x-effect: fetch only while the Extensions settings tab is active.
     refreshExtensionsIfOpen(tab) {
       if (tab === 'extensions') this.refreshExtensions();
     },
@@ -2256,8 +2091,7 @@ document.addEventListener('alpine:init', () => {
       this.tab = t.id;
     },
 
-    // x-effect: when `tab` changes, mount/unmount the extension tab panel.
-    // Extensions own their DOM; we just hand them the container element.
+    // x-effect: mount/unmount the extension tab panel when `tab` changes.
     mountExtTab(tab, el) {
       if (!el) return;
       const spec = this.extTabs.find(t => t.id === tab);
@@ -2283,8 +2117,7 @@ document.addEventListener('alpine:init', () => {
     mountExtSettings(tab, el) {
       if (!el) return;
       if (tab !== 'extensions') return;
-      // Extensions registered via DiffucoreExt.registerSettingsPanel each get a
-      // child container; we mount all of them once.
+      // Every registered settings panel gets a child container, mounted once.
       if (this._mountedExtSettings) return;
       const specs = (window.DiffucoreExt && window.DiffucoreExt.settingsPanels) || [];
       for (const spec of specs) {
@@ -2303,8 +2136,7 @@ document.addEventListener('alpine:init', () => {
       if (!url) return;
       this.extBusy = true;
       try {
-        // Installs run on the shared job worker (not the request threadpool), so
-        // this returns a job id; the terminal SSE event resolves the promise.
+        // Installs run as a job; the terminal SSE event resolves the promise.
         const r = await fetchJSON('/api/extensions/install', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2318,11 +2150,9 @@ document.addEventListener('alpine:init', () => {
         this.flash('Installed ' + name);
         this.extInstallUrl = '';
         await this.refreshExtensions();
-        // Extension JS is injected server-side into the page on render; a
-        // reload picks up the newly-installed extension's UI script.
+        // Extension JS is injected server-side, so its UI needs a page reload.
         if (ev.extension && ev.extension.has_ui) this.flash('Reload the page to load the extension UI');
-        // Surface a skipped-deps / load-error note (opt-in pip leaves a note on
-        // the extension record when requirements.txt was skipped).
+        // Surface a skipped-deps / load-error note.
         if (ev.extension && ev.extension.load_error) {
           this.flash('Note: ' + ev.extension.load_error);
         }
@@ -2336,8 +2166,7 @@ document.addEventListener('alpine:init', () => {
     async updateExtension(name) {
       this.extBusy = true;
       try {
-        // Like install, update runs on the shared job worker and returns a job
-        // id; the terminal SSE event resolves with the updated record.
+        // Like install, update runs as a job.
         const r = await fetchJSON('/api/extensions/update', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

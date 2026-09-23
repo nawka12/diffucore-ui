@@ -1,10 +1,7 @@
 """Headless CLI to calibrate an OSS (optimal-stepsize) schedule for an Anima model.
 
-A thin wrapper over ``Engine.calibrate_oss`` — the exact path the UI's OSS panel
-uses — for batch/headless calibration. It loads the model the same way the UI
-does (files under models/) and writes the cache where the engine looks it up,
-keyed by model name + steps + resolution + shift. Run it once per
-(model, steps, resolution, shift), then select "oss" for that config.
+Wraps ``Engine.calibrate_oss``, the same path as the UI's OSS panel. Run it
+once per (model, steps, resolution, shift), then select "oss" for that config.
 
     python calibrate_oss.py \
         --dit anima-base-v1.0.safetensors \

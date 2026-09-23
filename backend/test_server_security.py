@@ -1,17 +1,11 @@
-"""Tests for the urgent hardening fixes from IMPROVE.md.
-
-Covers: auth gate + CSRF/Origin (#1/#2), body-size cap (#5), pydantic param
-bounds (#54), CUDA OOM hint (#57), atomic state writes (#58), SSE queue cap
-(#17), gallery index lock/invalidation (#11), load fail-fast validation (#8),
-and the extension-install URL scheme allowlist / SSRF guard (#4).
-
-Run from the project root::
+"""Tests for the auth gate, CSRF/Origin checks, body-size cap, payload bounds,
+OOM hint, atomic state writes, SSE queue cap, gallery index, load validation
+and the extension-install URL guard.
 
     .venv/bin/python -m pytest backend/test_server_security.py -v
 
 Some cases drive the real ``server.app`` through TestClient, which starts the
-worker thread and loads extensions (the normal startup path). The pure-function
-cases avoid that cost.
+worker thread and loads extensions.
 """
 
 from __future__ import annotations
@@ -32,7 +26,7 @@ import auth as authmod
 import server
 
 
-# ── #54: pydantic Field bounds on generation params ─────────────────
+# ── pydantic Field bounds on generation params ──────────────────────
 
 def test_generate_payload_rejects_runaway_steps():
     with pytest.raises(ValidationError):
@@ -43,12 +37,11 @@ def test_generate_payload_rejects_runaway_steps():
         server.GeneratePayload(cfg=-1.0)
     with pytest.raises(ValidationError):
         server.GeneratePayload(upscale_tile=0)
-    # In-range values still parse.
     assert server.GeneratePayload(steps=200, width=8192, cfg=0.0).steps == 200
 
 
 def test_teacache_uncond_scale_is_a_bounded_setting():
-    """Settings-level, not a form field: bounded at [1, 4] and defaulting off."""
+    """Settings-level: bounded at [1, 4], default off."""
     assert server.Settings().teacache_uncond_scale == 1.0
     assert server.Settings(teacache_uncond_scale=2.5).teacache_uncond_scale == 2.5
     for bad in (0.5, 4.5):
@@ -58,8 +51,8 @@ def test_teacache_uncond_scale_is_a_bounded_setting():
 
 
 def test_teacache_rule_is_an_enum():
-    """The rule reaches the pipeline verbatim, so an unknown one must be a 422
-    at the API edge rather than a ValueError mid-generation."""
+    """An unknown rule must be a 422 at the API edge, not a ValueError
+    mid-generation."""
     for model in (server.GeneratePayload, server.DetailPayload,
                   server.UpscalePayload, server.XYZPayload):
         assert model().teacache_rule == "drift"
@@ -77,7 +70,7 @@ def test_xyz_and_upscale_payloads_bounded():
         server.CalibratePayload(grid=0)
 
 
-# ── #2: CSRF / Origin allowlist ─────────────────────────────────────
+# ── CSRF / Origin allowlist ─────────────────────────────────────────
 
 class _FakeReq:
     def __init__(self, method, host, origin=None, referer=None, token=None, bearer=None):
@@ -104,7 +97,7 @@ def test_origin_ok_cross_origin_post_blocked():
 
 
 def test_origin_ok_no_origin_passes_curl():
-    # Non-browser clients (curl) send no Origin — not a CSRF vector.
+    # curl sends no Origin; not a CSRF vector.
     req = _FakeReq("POST", "192.168.1.5:7860")
     assert authmod.origin_ok(req) is True
 
@@ -122,8 +115,8 @@ def test_origin_ok_referer_fallback():
 
 
 def test_origin_ok_ipv6_host_same_origin():
-    """An IPv6 Host is bracketed (``[::1]:8000``); splitting it on ":" yielded
-    "[" and blocked every state-changing request over IPv6."""
+    """A bracketed IPv6 Host (``[::1]:8000``) split on ":" once blocked every
+    state-changing request over IPv6."""
     req = _FakeReq("POST", "[::1]:8000", origin="http://[::1]:8000")
     assert authmod.origin_ok(req) is True
     req = _FakeReq("POST", "[2001:db8::1]:7860", origin="http://[2001:db8::1]:7860")
@@ -137,7 +130,7 @@ def test_origin_ok_ipv6_cross_origin_still_blocked():
     assert authmod.origin_ok(req) is False
 
 
-# ── #1: AuthGate token / cookie ─────────────────────────────────────
+# ── AuthGate token / cookie ─────────────────────────────────────────
 
 TOKEN = "test-token-abc123"
 
@@ -176,18 +169,18 @@ def test_load_or_create_token_persists_and_chmods(tmp_path: Path):
     path = tmp_path / ".auth_token"
     t1 = authmod.load_or_create_token(path)
     assert t1 and path.is_file()
-    # Second call returns the same persisted token (stable across restarts).
+    # Stable across restarts.
     assert authmod.load_or_create_token(path) == t1
     mode = path.stat().st_mode & 0o777
-    # On POSIX the file should be owner-only (0600). Windows ignores chmod.
+    # Owner-only on POSIX; Windows ignores chmod.
     if os.name == "posix":
         assert mode == 0o600
 
 
-# ── #4 + #53: extension install URL scheme allowlist / SSRF ─────────
+# ── extension install URL scheme allowlist / SSRF ───────────────────
 
 def test_validate_install_url_https_passes():
-    authmod  # noqa — ensure module import side effects are loaded
+    authmod  # noqa: ensure module import side effects are loaded
     from extensions import _validate_install_url
     _validate_install_url("https://github.com/foo/bar.git")
     _validate_install_url("https://example.com/ext.zip")
@@ -209,10 +202,10 @@ def test_validate_install_url_blocks_ssrf(url):
         _validate_install_url(url)
 
 
-# ── #8: load fail-fast validation ───────────────────────────────────
+# ── load fail-fast validation ───────────────────────────────────────
 
 def test_validate_load_missing_checkpoint_returns_error(tmp_path: Path, monkeypatch):
-    # Point the model dirs at an empty temp dir so nothing resolves.
+    # Empty model dirs, so nothing resolves.
     monkeypatch.setattr(server, "CHECKPOINTS_DIR", tmp_path / "ckpts")
     monkeypatch.setattr(server, "DIFFUSION_DIR", tmp_path / "dit")
     monkeypatch.setattr(server, "VAE_DIR", tmp_path / "vae")
@@ -239,14 +232,13 @@ def test_validate_load_existing_file_passes(tmp_path: Path, monkeypatch):
         server.LoadPayload(model_type="SD/SDXL", checkpoint="real.safetensors")) is None
 
 
-# ── #58: atomic state writes ────────────────────────────────────────
+# ── atomic state writes ─────────────────────────────────────────────
 
 def test_atomic_write_text_replaces_cleanly(tmp_path: Path):
     path = tmp_path / "state.json"
     path.write_text('{"old": true}', encoding="utf-8")
     server._atomic_write_text(path, json.dumps({"new": True}))
     assert json.loads(path.read_text()) == {"new": True}
-    # The temp file is gone (no litter left in the dir).
     leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".state.json-")]
     assert leftovers == []
 
@@ -254,11 +246,10 @@ def test_atomic_write_text_replaces_cleanly(tmp_path: Path):
 def test_atomic_write_does_not_truncate_on_oserror(tmp_path: Path, monkeypatch):
     path = tmp_path / "state.json"
     path.write_text('{"keep": true}', encoding="utf-8")
-    # Force os.replace to fail so we can confirm the original survives.
     import server as srv
     monkeypatch.setattr(srv.os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
     srv._atomic_write_text(path, json.dumps({"new": True}))
-    # Original content is intact — no truncation, no data loss.
+    # Original content intact.
     assert json.loads(path.read_text()) == {"keep": True}
 
 
@@ -272,7 +263,7 @@ def test_extensions_state_write_is_atomic(tmp_path: Path, monkeypatch):
     assert json.loads(state_path.read_text())["enabled"] == {"x": True}
 
 
-# ── #17: SSE queue cap + drop-oldest ────────────────────────────────
+# ── SSE queue cap + drop-oldest ─────────────────────────────────────
 
 def test_force_put_drops_oldest_on_overflow():
     q: asyncio.Queue = asyncio.Queue(maxsize=2)
@@ -291,13 +282,13 @@ def test_force_put_shutdown_sentinel_lands_on_full_queue():
     assert q.get_nowait() is None
 
 
-# ── #57: CUDA OOM friendly error ────────────────────────────────────
+# ── CUDA OOM friendly error ─────────────────────────────────────────
 
 def test_friendly_error_maps_cuda_oom():
     try:
         import torch
         oom = torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
-    except Exception:  # noqa: BLE001 — torch missing in a minimal CI env
+    except Exception:  # noqa: BLE001  torch missing in a minimal env
         pytest.skip("torch not available")
     msg = server._friendly_error(oom)
     assert "out of VRAM" in msg
@@ -309,7 +300,7 @@ def test_friendly_error_passthrough_for_other_errors():
     assert msg == "boom"
 
 
-# ── #11: gallery index invalidation ─────────────────────────────────
+# ── gallery index invalidation ──────────────────────────────────────
 
 def test_invalidate_gallery_index_clears_cache():
     server._GALLERY_INDEX = ["stale"]
@@ -319,11 +310,10 @@ def test_invalidate_gallery_index_clears_cache():
     assert server._GALLERY_INDEX_KEY == 0.0
 
 
-# ── #55: X/Y/Z grid cell-count cap ──────────────────────────────────
+# ── X/Y/Z grid cell-count cap ───────────────────────────────────────
 
 def test_xyz_grid_rejects_over_cap():
     import xyz_grid
-    # One axis with MAX_XYZ_CELLS+1 seeds, the other two None → over the cap.
     seeds = ",".join(str(i) for i in range(xyz_grid.MAX_XYZ_CELLS + 1))
     with pytest.raises(ValueError, match="cap"):
         xyz_grid.generate_xyz_grid(
@@ -331,7 +321,7 @@ def test_xyz_grid_rejects_over_cap():
         )
 
 
-# ── #51: extensions mounted at runtime (idempotent re-mount) ─────────
+# ── extensions mounted at runtime (idempotent re-mount) ─────────────
 
 def test_mount_into_is_idempotent_and_picks_up_new_routes():
     from fastapi import APIRouter, FastAPI
@@ -353,11 +343,10 @@ def test_mount_into_is_idempotent_and_picks_up_new_routes():
     assert ("router", "/api/ext/a") in loader._mounted
     assert any(getattr(rt, "path", "") == "/api/ext/a/ping" for rt in app.router.routes)
 
-    # Re-calling must not double-mount the same router.
     loader.mount_into(app)
     assert len(app.router.routes) == after_first
 
-    # A freshly-installed extension's router is attached on the next call.
+    # A newly installed extension's router is attached on the next call.
     r2 = APIRouter()
     r2.add_api_route("/ping", lambda: {"ok": True}, methods=["GET"])
     loader._routers.append(("b", r2, "/api/ext/b"))
@@ -367,13 +356,13 @@ def test_mount_into_is_idempotent_and_picks_up_new_routes():
     assert len(app.router.routes) > after_first
 
 
-# ── #13: LoRA weight validation ─────────────────────────────────────
+# ── LoRA weight validation ──────────────────────────────────────────
 
 def test_parse_lora_prompt_rejects_non_numeric_weight():
     import engine
     with pytest.raises(ValueError, match="not a number"):
         engine.Engine.parse_lora_prompt("a cat <lora:mychar:high> sitting")
-    # A comma-decimal typo is caught too (would otherwise crash in apply_lora).
+    # A comma-decimal typo too (would otherwise crash in apply_lora).
     with pytest.raises(ValueError, match="not a number"):
         engine.Engine.parse_lora_prompt("<lora:x:0,8>")
 
@@ -385,7 +374,7 @@ def test_parse_lora_prompt_accepts_valid_weight():
     assert "<lora" not in cleaned
 
 
-# ── #18: live-preview throttle + resolution/format cap ──────────────
+# ── live-preview throttle + resolution/format cap ───────────────────
 
 def test_on_preview_throttles_and_caps(monkeypatch):
     from PIL import Image
@@ -417,8 +406,7 @@ def test_on_preview_throttles_and_caps(monkeypatch):
 
 
 def test_preview_webp_payload_smaller_than_full_png():
-    """The shipped path (≤512 WebP) is far smaller than the old full-res PNG for
-    worst-case noisy content — what drove the per-client serialize cost."""
+    """≤512 WebP previews are far smaller than full-res PNG on noisy content."""
     import os
     from PIL import Image
     noisy = Image.frombytes("RGB", (1024, 1024), os.urandom(1024 * 1024 * 3))
@@ -469,7 +457,6 @@ def test_auth_gate_auto_login_with_token_query(client, auth_enabled):
     r = client.get("/", params={"token": TOKEN}, follow_redirects=False)
     assert r.status_code == 303
     assert authmod.COOKIE_NAME in r.headers.get("set-cookie", "")
-    # A wrong token is rejected.
     r2 = client.get("/", params={"token": "nope"}, follow_redirects=False)
     assert r2.status_code == 401
 
@@ -488,7 +475,7 @@ def test_auth_gate_accepts_cookie(client, auth_enabled):
 
 
 def test_csrf_blocks_cross_origin_post(client):
-    # Auth is off here; the Origin check runs regardless.
+    # Auth is off; the Origin check runs regardless.
     r = client.post("/api/cancel", json={"job": None},
                     headers={"Origin": "https://evil.example"})
     assert r.status_code == 403
@@ -497,12 +484,11 @@ def test_csrf_blocks_cross_origin_post(client):
 def test_csrf_allows_same_origin_post(client):
     r = client.post("/api/cancel", json={"job": None},
                     headers={"Origin": "http://testserver"})
-    # No job running → 200 with {cancelling: False}; the point is it isn't 403.
+    # No job running → 200 {cancelling: False}; the point is it isn't 403.
     assert r.status_code == 200
 
 
 def test_body_size_cap_rejects_oversize(client):
-    # Content-Length over the global cap → 413 before the handler runs.
     r = client.post("/api/generate", json={"steps": 999999999},
                     headers={"Content-Length": str(server.MAX_BODY_BYTES + 1)})
     assert r.status_code == 413
@@ -520,11 +506,10 @@ def test_generate_rejects_out_of_range_steps(client):
     assert r.status_code == 422  # pydantic validation error
 
 
-# ── BUG.md M8: the body cap must not be skippable via chunked encoding ──
+# ── the body cap must not be skippable via chunked encoding ───────────
 
 def test_body_cap_rejects_chunked_state_change(client):
-    # A generator body makes httpx stream it: chunked, no Content-Length — the
-    # shape that used to slip past the MAX_BODY_BYTES check entirely.
+    # A generator body makes httpx send it chunked, with no Content-Length.
     def _body():
         yield b'{"job": null}'
 
@@ -534,16 +519,14 @@ def test_body_cap_rejects_chunked_state_change(client):
 
 
 def test_body_cap_chunked_get_unaffected(client):
-    # Only body-carrying methods are gated; a GET is left alone.
     r = client.get("/api/models", headers={"Transfer-Encoding": "chunked"})
     assert r.status_code == 200
 
 
-# ── BUG.md H3: overlap must be smaller than the tile ────────────────
+# ── overlap must be smaller than the tile ───────────────────────────
 
 def test_upscale_payload_rejects_overlap_ge_tile():
-    # overlap == tile divides by zero in tile_starts; overlap > tile yields an
-    # empty tile grid that blends to an all-black "successful" upscale.
+    # overlap == tile divides by zero; overlap > tile blends to all black.
     with pytest.raises(ValidationError):
         server.UpscalePayload(tile=2048, overlap=2048)
     with pytest.raises(ValidationError):
@@ -555,12 +538,12 @@ def test_generate_payload_rejects_overlap_ge_tile_when_enabled():
     with pytest.raises(ValidationError):
         server.GeneratePayload(upscale_enabled=True, upscale_tile=1024,
                                upscale_overlap=1024)
-    # With the upscaler off the stale panel values don't block a plain generate.
+    # With the upscaler off, stale panel values don't block a plain generate.
     assert server.GeneratePayload(upscale_enabled=False, upscale_tile=1024,
                                   upscale_overlap=1024).steps
 
 
-# ── BUG.md M1: model names must stay inside their models dir ────────
+# ── model names must stay inside their models dir ───────────────────
 
 def test_model_name_rejects_traversal():
     from utils import model_name_ok, checkpoint_path, detector_path
@@ -576,8 +559,7 @@ def test_model_name_rejects_traversal():
 
 
 def test_load_rejects_traversal_name_that_exists(client, tmp_path, monkeypatch):
-    # The escaping name points at a file that really exists, so a bare
-    # is_file() check would pass it straight through to the loader.
+    # The escaping name points at a real file, so is_file() alone would pass it.
     secret = tmp_path / "secret.safetensors"
     secret.write_bytes(b"x")
     monkeypatch.setattr(server, "CHECKPOINTS_DIR", tmp_path / "models")
@@ -587,7 +569,7 @@ def test_load_rejects_traversal_name_that_exists(client, tmp_path, monkeypatch):
     assert "not found" in r.json()["detail"].lower()
 
 
-# ── BUG.md L2: a non-string JSON token must not 500 the login path ──
+# ── a non-string JSON token must not 500 the login path ───────────────
 
 def test_login_with_non_string_token_is_401(client):
     r = client.post("/api/auth/login", json={"token": [1]},

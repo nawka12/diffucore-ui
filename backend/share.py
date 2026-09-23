@@ -1,9 +1,6 @@
-"""Optional Cloudflare quick-tunnel support for ``--share``.
-
-Exposes the local UI over a public ``trycloudflare.com`` URL with no Cloudflare
-account or login. The official ``cloudflared`` binary is used from ``PATH`` if
-present, otherwise downloaded once and cached in the repo. The tunnel runs in
-the background and is torn down when the process exits.
+"""Optional Cloudflare quick tunnel for ``--share``: a public
+``trycloudflare.com`` URL with no account. Uses ``cloudflared`` from ``PATH``,
+else downloads it once into the repo.
 """
 
 from __future__ import annotations
@@ -79,14 +76,8 @@ def _binary() -> Path:
 
 
 def _write_share_url_file(url: str) -> Path | None:
-    """Persist the full share URL (with ``?token=…``) to a ``chmod 600`` file so
-    it isn't sitting in terminal scrollback / CI logs / screen-share captures.
-
-    The URL + token grants full GPU access, so it's treated like the auth token
-    (``.auth_token``): written to an owner-only file and referenced by path from
-    the terminal warning, never printed to stdout or the structured log. Returns
-    the path on success or ``None`` if the file couldn't be written (in which
-    case we fall back to printing the URL with a loud warning)."""
+    """Write the full share URL (with ``?token=…``) to a chmod-600 file instead
+    of the terminal. Returns the path, or ``None`` if it couldn't be written."""
     try:
         _BIN_DIR.mkdir(parents=True, exist_ok=True)
         _SHARE_URL_FILE.write_text(url + "\n", encoding="utf-8")
@@ -101,13 +92,8 @@ def _write_share_url_file(url: str) -> Path | None:
 
 
 def _print_share_warning(url: str, suffix: str) -> None:
-    """Print the public share URL with an explicit, hard-to-miss warning.
-
-    The full link (with ``?token=…``) is written to a ``chmod 600`` file and the
-    terminal only names the file + the risk — anyone with the link can reach the
-    GPU, so don't paste it, clear scrollback if you've screen-shared, and Ctrl+C
-    to stop. If the file write failed we fall back to printing the URL (still
-    with the warning) so the user isn't locked out."""
+    """Point the user at the share-URL file, with a warning. Prints the URL
+    itself only if the file write failed."""
     full = url + suffix
     path = _write_share_url_file(full)
     print(
@@ -126,16 +112,12 @@ def _print_share_warning(url: str, suffix: str) -> None:
 
 
 def start(port: int, token: str | None = None) -> None:
-    """Launch a quick tunnel to 127.0.0.1:<port> and print the public URL.
-
-    Returns immediately; the URL is printed from a background thread once
-    cloudflared registers with the Cloudflare edge. When ``token`` is given the
-    persisted URL carries ``?token=…`` so the auth gate (enabled for --share) lets
-    the first visit straight through to the app.
+    """Launch a quick tunnel to 127.0.0.1:<port> in the background. With
+    ``token``, the saved URL carries ``?token=…`` so the first visit gets in.
     """
     try:
         binary = _binary()
-    except Exception as exc:  # noqa: BLE001 — download/extraction can fail many ways
+    except Exception as exc:  # noqa: BLE001
         log.warning("could not obtain cloudflared: %s", exc)
         return
 
@@ -151,7 +133,7 @@ def start(port: int, token: str | None = None) -> None:
 
     def _watch() -> None:
         printed = False
-        for line in proc.stderr:  # drains continuously so cloudflared never stalls
+        for line in proc.stderr:  # keep draining so cloudflared never stalls
             if not printed:
                 match = _URL_RE.search(line)
                 if match:
@@ -159,10 +141,8 @@ def start(port: int, token: str | None = None) -> None:
                     suffix = f"?token={token}" if token else ""
                     _print_share_warning(url, suffix)
                     printed = True
-        # stderr closed: cloudflared exited. Say so if we never got a URL —
-        # otherwise the user waits for a share link that is never coming.
         if not printed:
             log.warning("cloudflared exited (code %s) without printing a tunnel "
-                        "URL — sharing is not active", proc.wait())
+                        "URL, so sharing is not active", proc.wait())
 
     threading.Thread(target=_watch, daemon=True).start()

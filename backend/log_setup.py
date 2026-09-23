@@ -1,14 +1,6 @@
-"""Structured logging setup for Diffucore UI.
-
-Centralises what used to be a mix of ``print()`` (startup, share) and ad-hoc
-``logging`` (extensions only): one configuration point, run-id stamping, an
-optional ``--log-file`` with size rotation, and a single timestamped format
-across every ``diffucore.*`` logger. Called once from ``app.py`` *before*
-``server`` is imported so the module-level log calls in ``server.py`` are
-captured.
-
-Token / share-URL secrets stay on ``print()`` (stdout only) so they never land
-in the log file — only operational messages go through here.
+"""Logging setup for Diffucore UI: run-id stamping, one timestamped format for
+every ``diffucore.*`` logger, and an optional rotating ``--log-file``. Called
+from ``app.py`` before ``server`` is imported. Secrets stay on ``print()``.
 """
 
 from __future__ import annotations
@@ -35,13 +27,8 @@ def configure(
     max_bytes: int = 5 * 1024 * 1024,
     backups: int = 3,
 ) -> str:
-    """Configure root + ``diffucore`` logging.
-
-    Always attaches a stream handler (stderr) so console behaviour is preserved;
-    when ``log_file`` is given, also attaches a rotating file handler (``chmod
-    600`` on POSIX) so a long-running server doesn't grow one file unbounded.
-    Returns the per-process run-id (also stamped into every log line via the
-    format and into the startup banner).
+    """Configure root logging: stderr always, plus a rotating chmod-600 file
+    when ``log_file`` is given. Returns the per-process run-id.
     """
     global _RUN_ID
     _RUN_ID = secrets.token_hex(4)
@@ -53,8 +40,7 @@ def configure(
     )
 
     root = logging.getLogger()
-    # Drop any prior handlers from a re-configure (e.g. test re-import) so we
-    # don't double-emit lines.
+    # Drop handlers from a previous configure so lines aren't emitted twice.
     for h in list(root.handlers):
         root.removeHandler(h)
     root.setLevel(numeric)
@@ -72,19 +58,18 @@ def configure(
             )
             fh.setFormatter(fmt)
             root.addHandler(fh)
-            # Owner-only on POSIX so the log (which names models/paths) isn't
-            # world-readable on a shared host. Windows ignores chmod.
+            # The log names models and paths; keep it owner-only.
             try:
                 os.chmod(path, 0o600)
             except OSError:
                 pass
         except OSError as e:
-            # A bad log path shouldn't kill the server — fall back to stderr.
+            # A bad log path shouldn't kill the server.
             root.warning("could not open log file %s: %s (logging to stderr only)",
                          path, e)
 
     logging.getLogger("diffucore").info(
         "logging configured (run_id=%s, level=%s, file=%s)",
-        _RUN_ID, level.upper(), log_file or "—",
+        _RUN_ID, level.upper(), log_file or "none",
     )
     return _RUN_ID

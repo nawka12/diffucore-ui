@@ -8,7 +8,7 @@ outputs/
 last_load.json
 settings.json
 .auth_token
-# Local A/B / verification harnesses — not part of the shipped product
+# Local A/B / verification harnesses, not part of the shipped product
 scripts/
 # Model files: ignore everything under models/ except the directory skeleton,
 # so user weights/archives (.safetensors, .pth, .zip, .gguf, ...) never get
@@ -16,9 +16,8 @@ scripts/
 models/**
 !models/**/
 !models/**/.gitkeep
-# Extensions: ignore user-installed extensions + runtime state, ship the example
-# and this folder's README. The example-watermark/ folder is tracked so the
-# reference extension ships with the repo.
+# Extensions: ignore user-installed extensions + runtime state; ship the README
+# and the example-watermark/ reference extension.
 extensions/*
 !extensions/README.md
 !extensions/example-watermark
@@ -26,7 +25,7 @@ extensions/*
 dist/
 build/
 wandb/
-# Local bug-hunt report — not part of the shipped product
+# Local bug-hunt report, not part of the shipped product
 BUG.md
 
 # Internal agent workspace state

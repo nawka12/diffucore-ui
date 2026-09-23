@@ -1,16 +1,10 @@
 """Extension platform for Diffucore UI.
 
-AUTO1111 / ComfyUI style: each subdirectory of ``extensions/`` is one
-extension, declared by an ``extension.json`` manifest. The loader scans the
-directory at startup, imports each enabled extension's Python entry point, and
-hands it an :class:`ExtensionAPI` it can use to register API routes, static
-assets, generation hooks, custom job types, and SSE broadcasts. Extension JS
-assets are served and injected into the index page so extensions can add their
-own UI.
-
-One broken extension never breaks the app: each load and each hook call is
-wrapped, failures are recorded on the extension and surfaced in the Extensions
-settings panel, and a disabled extension is simply never imported.
+Each subdirectory of ``extensions/`` with an ``extension.json`` manifest is one
+extension. Enabled ones are imported at startup and handed an
+:class:`ExtensionAPI` for routes, static assets, hooks, jobs and SSE
+broadcasts. Loads and hook calls are isolated, so one broken extension only
+records an error on itself.
 """
 
 from __future__ import annotations
@@ -43,14 +37,13 @@ ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS_DIR = ROOT / "extensions"
 STATE_PATH = EXTENSIONS_DIR / "state.json"
 
-# The character set install() sanitizes a manifest name down to; uninstall()
-# requires the same shape so a crafted name can't point outside extensions/.
+# install() sanitizes manifest names to this; uninstall() requires it so a
+# crafted name can't point outside extensions/.
 _EXT_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    """Write ``text`` to ``path`` atomically (temp file + os.replace) so a crash
-    mid-write leaves the previous state intact instead of a truncated file."""
+    """Write ``text`` to ``path`` via a temp file + os.replace."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix="." + path.name + "-", dir=str(path.parent))
@@ -66,11 +59,9 @@ def _atomic_write_text(path: Path, text: str) -> None:
         pass
 
 
-# Schemes permitted for ``/api/extensions/install``. Restricting to HTTPS closes
-# the SSRF / local-file-read vector (``file://``, ``http://localhost``, the
-# ``169.254.169.254`` metadata service, ``gopher://``, ``ftp://``) and the SSH
-# agent exfil vector (``git@host:``, ``ssh://``). Users with private repos can
-# clone manually into extensions/ or use an https URL with an embed token.
+# Install URLs must be https: that closes file://, localhost / metadata-service
+# SSRF and the ssh / git@ agent-exfil vectors. Private repos can be cloned by
+# hand into extensions/.
 _BLOCKED_HOSTS = {"169.254.169.254", "metadata.google.internal"}
 
 
@@ -89,22 +80,17 @@ def _validate_install_url(url: str) -> None:
 def _random_suffix() -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
 
-# Events an extension can hook via ``api.on(event, handler)``. Handlers receive
-# a :class:`HookContext` and may mutate it; the server reads the relevant
-# fields back after running the hooks (e.g. ``post_generate`` can replace
-# ``ctx.image``).
+# Events for ``api.on(event, handler)``. Handlers get a mutable
+# :class:`HookContext`; e.g. ``post_generate`` may replace ``ctx.image``.
 HOOK_EVENTS = {
     "startup", "shutdown",
     "pre_generate", "post_generate", "post_save",
     "pre_load", "post_load",
 }
 
-# The manifest fields we read out of extension.json, with their defaults. An
-# unknown field is left in place but ignored, so a newer manifest never breaks
-# an older loader. ``default_enabled`` controls whether a freshly-discovered
-# extension (no state.json entry yet) loads on startup — an example or opt-in
-# extension sets it to False so it shows up in the panel but doesn't run until
-# the user turns it on.
+# Manifest fields read from extension.json, with defaults; unknown fields are
+# ignored. ``default_enabled=False`` lists a new extension without loading it
+# until the user turns it on.
 _DEFAULTS = dict(
     title="",
     version="0.0.0",
@@ -119,16 +105,14 @@ _DEFAULTS = dict(
 
 @dataclass
 class HookContext:
-    """Mutable bag passed through a hook chain. Fields are only set for the
-    events that carry them; an extension should check before use.
+    """Mutable bag passed through a hook chain; only the event's own fields
+    are set.
 
     - ``pre_generate`` / ``post_generate`` / ``post_save``: ``payload`` is the
-      :class:`GeneratePayload`, ``image`` is the PIL image (post-gen / post-save
-      only), ``info`` is the human-readable info string, ``path`` is the saved
-      file Path (post_save only).
+      :class:`GeneratePayload`; ``image`` and ``info`` are set post-gen and
+      post-save, ``path`` post-save.
     - ``pre_load`` / ``post_load``: ``payload`` is the :class:`LoadPayload`,
-      ``status`` is the load result string (post_load only).
-    - ``startup`` / ``shutdown``: nothing is set.
+      ``status`` the load result (post_load only).
     """
     event: str
     payload: Any = None
@@ -170,26 +154,19 @@ class Extension:
             "load_error": self.load_error,
             "web_scripts": self.web_scripts,
             "has_ui": bool(self.web_scripts),
-            # A git checkout can be pulled to its latest version; a zip install
-            # has no remote we recorded, so the UI offers Update only when True.
+            # Only a git checkout can be pulled; a zip install has no remote.
             "updatable": (self.path / ".git").is_dir(),
         }
 
 
 class ExtensionAPI:
-    """The surface a single extension is given to register itself.
-
-    All registration flows through this object so the loader can track what an
-    extension installed (routes, hooks, job types) and unwind it cleanly if the
-    extension is disabled or reloaded.
-    """
+    """The surface an extension registers itself through, so the loader can
+    unwind everything it added on disable or reload."""
 
     def __init__(self, ext: Extension, loader: "ExtensionLoader"):
         self._ext = ext
         self._loader = loader
-        # Read-only access to the Engine singleton. Reloading a model outside
-        # the shared job worker would race with generation, so extensions should
-        # only inspect state here and do model work through enqueue_job.
+        # Inspect only: model work outside the job worker would race generation.
         self.engine = loader.engine
         self.root_dir = ROOT
         self.ext_dir = ext.path
@@ -205,15 +182,12 @@ class ExtensionAPI:
         self._loader._routers.append((self._ext.name, router, full))
 
     def serve_static(self, path: str, directory: Path) -> None:
-        """Serve a directory at ``/ext-static/<name>/<path>``. The prefix is
-        separate from the app's ``/static`` mount so the two never collide on
-        path resolution."""
+        """Serve a directory at ``/ext-static/<name>/<path>``."""
         self._loader._statics.append((self._ext.name, path, Path(directory)))
 
     def enqueue_job(self, label: str, run: Callable, *, kind: str = "ext") -> int:
-        """Queue a callable on the shared background worker (one at a time with
-        generation, so it shares the GPU safely). ``run`` receives the server's
-        Job object. Returns the job id."""
+        """Queue ``run(job)`` on the shared worker, which serializes it with
+        generation. Returns the job id."""
         return self._loader._enqueue_job_fn(self._ext.name, label, run, kind=kind)
 
     def broadcast(self, event: dict) -> None:
@@ -221,9 +195,8 @@ class ExtensionAPI:
         self._loader._broadcast_fn(event)
 
     def add_web_scripts(self, files: List[str]) -> None:
-        """Explicit JS files (relative to the extension's web dir) to inject
-        into the index page. By default every ``.js`` file directly in the web
-        dir is injected; this overrides that list."""
+        """JS files (relative to the web dir) to inject, replacing the default of
+        every ``.js`` file directly in it."""
         self._ext.web_scripts = list(files)
 
     def get_setting(self, key: str, default: Any = None) -> Any:
@@ -234,8 +207,7 @@ class ExtensionAPI:
 
 
 class ExtensionLoader:
-    """Owns the extension registry, the hook chains, and the install/toggle
-    lifecycle. The server constructs one and wires it into FastAPI."""
+    """Extension registry, hook chains, and install/toggle lifecycle."""
 
     def __init__(
         self,
@@ -251,8 +223,7 @@ class ExtensionLoader:
         self._hooks: Dict[str, List[Tuple[str, Callable]]] = {}
         self._routers: List[Tuple[str, APIRouter, str]] = []
         self._statics: List[Tuple[str, str, Path]] = []
-        # Keys of what mount_into has already attached to the app, so it can be
-        # re-called after a runtime install/enable/reload without double-mounting.
+        # What mount_into already attached, so re-calling it doesn't double-mount.
         self._mounted: set = set()
         self._state: Dict[str, Any] = self._read_state()
         EXTENSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -276,11 +247,7 @@ class ExtensionLoader:
         self._write_state()
 
     def _is_enabled(self, ext: Extension) -> bool:
-        # An explicit state.json entry (from the user toggling the extension)
-        # always wins. Without one, fall back to the manifest's
-        # ``default_enabled`` — True for a normal extension (so a freshly-dropped
-        # folder works immediately), False for one that opts out (e.g. an
-        # example extension that should show in the panel but not auto-load).
+        # A state.json entry (the user's toggle) wins over the manifest default.
         return bool(self._state.get("enabled", {}).get(ext.name, ext.default_enabled))
 
     def _set_enabled(self, name: str, enabled: bool) -> None:
@@ -321,7 +288,7 @@ class ExtensionLoader:
         return Extension(
             name=str(data["name"]),
             path=path,
-            enabled=True,  # refined by _is_enabled in load()
+            enabled=True,  # refined by _is_enabled
             **kw,
         )
 
@@ -340,8 +307,7 @@ class ExtensionLoader:
         if not entry.is_file():
             ext.load_error = f"entry file {ext.entry!r} not found"
             return
-        # Unique module name so a reload after an edit doesn't hit a cached
-        # sys.modules entry from the previous version.
+        # Fixed module name; the old entry is dropped from sys.modules on unload.
         mod_name = f"_diffucore_ext_{ext.name}"
         spec = importlib.util.spec_from_file_location(mod_name, entry)
         if spec is None or spec.loader is None:
@@ -359,7 +325,7 @@ class ExtensionLoader:
                 setup(api)
             ext.module = module
             ext.load_error = None
-        except Exception as e:  # noqa: BLE001 — isolate one extension's failure
+        except Exception as e:  # noqa: BLE001  isolate one extension's failure
             ext.load_error = f"{type(e).__name__}: {e}"
             log.exception("extension %s failed to load", ext.name)
             sys.modules.pop(mod_name, None)
@@ -373,8 +339,8 @@ class ExtensionLoader:
         return sorted(f.name for f in web.iterdir() if f.is_file() and f.suffix == ".js")
 
     def reload_one(self, name: str) -> None:
-        """Re-scan the manifest and re-import one extension (after an edit or a
-        toggle). Drops its old hooks/routes/statics so they don't double up."""
+        """Re-scan the manifest and re-import one extension, dropping its old
+        hooks/routes/statics first."""
         self._unload_one(name)
         path = EXTENSIONS_DIR / name
         if not path.is_dir():
@@ -392,7 +358,6 @@ class ExtensionLoader:
         ext = self.extensions.pop(name, None)
         if ext is None:
             return
-        # Drop this extension's hooks / routes / statics so a reload is clean.
         for ev, handlers in self._hooks.items():
             self._hooks[ev] = [(n, h) for (n, h) in handlers if n != name]
         self._routers = [(n, r, p) for (n, r, p) in self._routers if n != name]
@@ -402,17 +367,14 @@ class ExtensionLoader:
     # ── hook dispatch ───────────────────────────────────────────────
 
     def run_hook(self, event: str, **fields) -> HookContext:
-        """Run every handler registered for ``event`` in registration order.
-        A handler that raises is logged and skipped — a buggy extension can't
-        abort a generation or a load."""
+        """Run every handler for ``event`` in registration order. A handler that
+        raises is logged and recorded on its extension, then skipped."""
         ctx = HookContext(event=event, **fields)
         for name, handler in list(self._hooks.get(event, [])):
             try:
                 handler(ctx)
             except Exception as e:  # noqa: BLE001
                 log.exception("extension %s hook %s failed", name, event)
-                # Surface the failure on the extension so the settings panel
-                # can show it, without disabling the extension outright.
                 ext = self.extensions.get(name)
                 if ext is not None and ext.load_error is None:
                     ext.load_error = f"{event} hook: {type(e).__name__}: {e}"
@@ -421,21 +383,12 @@ class ExtensionLoader:
     # ── install / uninstall / toggle ────────────────────────────────
 
     def install(self, url: str, *, install_pip_deps: bool = False) -> Extension:
-        """Install from a git URL or a .zip archive URL. Returns the new
-        extension's record (loaded, if it succeeded).
+        """Install from a git URL or a .zip archive URL and load it.
 
-        The final directory name is the manifest's ``name`` field (not the URL
-        basename), so uninstall/toggle keyed on the manifest name always find
-        the right folder. Extraction happens into a scratch name first, then
-        the folder is moved to its canonical slot once the manifest is known.
-
-        ``install_pip_deps`` is opt-in (default ``False``): a ``requirements.txt``
-        in the source is **not** auto-``pip install``'d unless the caller
-        explicitly requests it. Running ``pip install -r`` against an untrusted
-        file is remote code execution (build hooks, post-install scripts,
-        arbitrary wheels), so the default is the safe one — the extension loads
-        and a note on its record tells the user requirements exist and how to
-        install them. See IMPROVE.md #1 / docs/EXTENSIONS.md threat model.
+        The folder is named after the sanitized manifest ``name``, not the URL.
+        A ``requirements.txt`` is only pip-installed when ``install_pip_deps``
+        is set: ``pip install -r`` on an untrusted file is remote code
+        execution. Otherwise the record carries a note.
         """
         import re as _re
         EXTENSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -446,17 +399,14 @@ class ExtensionLoader:
                 self._install_zip(url, scratch)
             else:
                 self._install_git(url, scratch)
-            # The cloned/extracted folder may contain the extension at its root
-            # or one level down (a common repo layout). Normalise to the root.
+            # The manifest may sit at the root or one level down.
             root = self._find_extension_root(scratch)
             if root is None:
                 raise ValueError("no extension.json found in the downloaded source")
             ext = self._parse_manifest(root)
             if ext is None:
                 raise ValueError("invalid manifest in the downloaded source")
-            # Sanitize the manifest name: only allow filename-safe chars and
-            # reject path escapes, so a malicious manifest can't write outside
-            # extensions/.
+            # Filename-safe chars only, so a manifest can't escape extensions/.
             safe = _re.sub(r"[^A-Za-z0-9._-]", "_", ext.name)
             if not safe or safe in (".", ".."):
                 raise ValueError(f"invalid extension name {ext.name!r}")
@@ -468,27 +418,18 @@ class ExtensionLoader:
             shutil.rmtree(scratch, ignore_errors=True)
             raise
         finally:
-            # Clean up the scratch dir if a failed install left it behind and
-            # it wasn't already moved into place.
             if scratch.exists() and scratch.name.startswith("__installing__"):
                 shutil.rmtree(scratch, ignore_errors=True)
         ext = self._parse_manifest(target)
         if ext is None:
             raise ValueError("invalid manifest after install")
-        # Use the sanitized name for the registry key, URL prefix
-        # (/api/ext/<name>), and state — matching the on-disk directory — so a
-        # manifest with odd characters can't escape via path or URL.
+        # The sanitized name is the registry key, URL prefix and state key.
         ext.name = target.name
         ext.enabled = True
         self._set_enabled(ext.name, True)
         self.extensions[ext.name] = ext
         self._load_one(ext)
-        # Dependency install is opt-in (IMPROVE.md #1). pip install -r against
-        # an untrusted requirements.txt is RCE, so by default we *don't* run it:
-        # the extension loads and a note on its record tells the user a
-        # requirements.txt exists and how to install it. When the caller opts
-        # in, a pip failure surfaces on the record (the extension is already on
-        # disk) instead of silently "succeeding".
+        # A pip failure surfaces on the record; the extension is already on disk.
         req = target / "requirements.txt"
         if req.is_file():
             if install_pip_deps:
@@ -507,18 +448,9 @@ class ExtensionLoader:
         return ext
 
     def update(self, name: str, *, install_pip_deps: bool = False) -> Extension:
-        """Pull the latest version of a git-installed extension and reload it.
-
-        Only works for an extension whose folder is a git checkout (installed
-        from a git URL). A zip install has no remote we recorded, so it can't be
-        updated — re-install it instead. Local edits in the folder are discarded
-        (hard reset to the fetched upstream), matching the "fetch the published
-        version" intent and keeping the result deterministic regardless of a
-        force-pushed or rebased upstream.
-
-        Like :meth:`install`, a changed ``requirements.txt`` is **not**
-        auto-``pip install``'d unless ``install_pip_deps`` is True — running
-        ``pip install -r`` is RCE on an untrusted file.
+        """Fetch and hard-reset a git-installed extension to its upstream, then
+        reload it. Local edits are discarded; zip installs can't be updated. Pip
+        runs only with ``install_pip_deps``.
         """
         ext = self.extensions.get(name)
         if ext is None:
@@ -529,8 +461,7 @@ class ExtensionLoader:
                 f"extension {name!r} is not a git checkout; update is git-only "
                 "(re-install a zip extension to update it)")
         self._git_update(path)
-        # Re-parse the manifest and re-import the entry module so a new version /
-        # new code takes effect; reload_one drops the old hooks/routes/statics.
+        # reload_one drops the old hooks/routes/statics.
         self.reload_one(name)
         ext = self.extensions.get(name)
         if ext is None:
@@ -545,14 +476,9 @@ class ExtensionLoader:
 
     @staticmethod
     def _git_update(path: Path) -> None:
-        """Shallow-fetch the configured remote and hard-reset onto it.
-
-        Re-validates the remote URL first so a tampered ``.git/config`` can't
-        turn update into the SSRF / local-file fetch that install's HTTPS-only
-        guard blocks. Uses ``fetch --depth 1`` + ``reset --hard FETCH_HEAD`` so a
-        force-pushed or rebased upstream still lands cleanly (a plain
-        ``git pull --ff-only`` would fail there), mirroring the ``--depth 1``
-        clone the install used.
+        """Shallow-fetch origin and hard-reset onto it (survives force-pushes).
+        The remote is re-validated so a tampered .git/config can't bypass the
+        https-only guard.
         """
         try:
             remote = subprocess.run(
@@ -596,9 +522,7 @@ class ExtensionLoader:
     @staticmethod
     def _install_git(url: str, target: Path) -> None:
         _validate_install_url(url)
-        # Abort if the clone stalls for 30s of <1KB/s (e.g. a tarpit host), and
-        # cap the whole clone at 5 minutes so a slow/malicious server can't hang
-        # the install request forever.
+        # Abort a clone stalled below 1 KB/s for 30 s; cap it at 5 minutes.
         env = {
             **os.environ,
             "GIT_HTTP_LOW_SPEED_TIME": "30",
@@ -618,8 +542,7 @@ class ExtensionLoader:
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
             tmp_path = Path(tmp.name)
         try:
-            # 60s connect/read timeout: same stall protection as the git path,
-            # since urlretrieve has no per-host timeout of its own.
+            # urlretrieve has no timeout of its own.
             with urllib.request.urlopen(url, timeout=60) as resp, \
                     open(tmp_path, "wb") as out:
                 shutil.copyfileobj(resp, out)
@@ -641,14 +564,8 @@ class ExtensionLoader:
 
     @staticmethod
     def _pip_install_requirements(ext_path: Path) -> Optional[str]:
-        """Run ``pip install -r requirements.txt`` if present.
-
-        Returns ``None`` on success (or no requirements.txt); returns the pip
-        stderr on failure so ``install()`` can surface it on the extension
-        record instead of silently reporting a successful install of an
-        extension that won't load. Does not raise — the extension is already on
-        disk, so we register it and let the user retry a reload after fixing the
-        dependency."""
+        """``pip install -r requirements.txt``. Returns None on success, else an
+        error string for the extension record. Never raises."""
         req = ext_path / "requirements.txt"
         if not req.is_file():
             return None
@@ -671,10 +588,7 @@ class ExtensionLoader:
         return None
 
     def uninstall(self, name: str) -> None:
-        # Validate before touching state: the name must be a plain directory
-        # name, matching what install() sanitizes it to. Bare ".", "..", "" and
-        # anything with a separator resolve to extensions/ itself or outside it,
-        # which would make the rmtree below wipe every extension.
+        # A bare ".", ".." or "" would make the rmtree below wipe extensions/.
         if (not _EXT_NAME_RE.fullmatch(name or "") or name in (".", "..")
                 or name != Path(name).name):
             raise ValueError(f"invalid extension name {name!r}")
@@ -683,8 +597,7 @@ class ExtensionLoader:
         self._state.get("ext_settings", {}).pop(name, None)
         self._write_state()
         target = EXTENSIONS_DIR / name
-        # Only delete a real *direct child* of extensions/ — never extensions/
-        # itself, a parent, or a symlink that escapes it.
+        # Only a real direct child of extensions/, never a symlink out of it.
         try:
             resolved = target.resolve()
             if resolved.parent != EXTENSIONS_DIR.resolve():
@@ -696,8 +609,7 @@ class ExtensionLoader:
 
     def set_enabled(self, name: str, enabled: bool) -> Extension:
         self._set_enabled(name, enabled)
-        # Reload picks up the new state: load if just enabled, unload if just
-        # disabled (so its routes/hooks go away).
+        # Loads it if just enabled; drops its hooks/routes if just disabled.
         self.reload_one(name)
         return self.extensions.get(name) or Extension(
             name=name, title=name, path=EXTENSIONS_DIR / name, enabled=False,
@@ -707,14 +619,10 @@ class ExtensionLoader:
     # ── introspection (for the server + UI) ─────────────────────────
 
     def list_serializable(self) -> List[dict]:
-        # Refresh manifest fields (title/description may have changed on disk)
-        # without reloading modules, so the panel reflects edits after a
-        # restart-free file change only if the user reloads.
         return [ext.to_dict() for ext in self.extensions.values()]
 
     def web_script_urls(self) -> List[dict]:
-        """The <script src=...> entries the index page should inject, one per
-        enabled, loaded extension JS file."""
+        """``<script>`` entries for every enabled, loaded extension JS file."""
         out = []
         for ext in self.extensions.values():
             if not ext.enabled or ext.load_error or ext.module is None:
@@ -727,14 +635,9 @@ class ExtensionLoader:
         return out
 
     def mount_into(self, app) -> None:
-        """Attach loaded extensions' routers and static mounts to the FastAPI app.
-
-        Safe to call repeatedly: each router/static is mounted at most once
-        (tracked in ``self._mounted``), so re-calling it after a runtime install,
-        enable, or reload attaches a newly-loaded extension's routes without
-        doubling up the ones already there. Starlette has no unmount, so the
-        routes/statics of a *disabled* or *uninstalled* extension keep serving
-        until the server restarts (documented in docs/EXTENSIONS.md)."""
+        """Attach loaded extensions' routers and static mounts, each at most
+        once, so it can be re-called after install/enable/reload. Starlette has
+        no unmount: a disabled extension's routes serve until restart."""
         from fastapi.staticfiles import StaticFiles
         for _name, router, prefix in self._routers:
             if ("router", prefix) in self._mounted:
@@ -753,9 +656,7 @@ class ExtensionLoader:
                 self._mounted.add(("static", mount))
             except Exception as e:  # noqa: BLE001
                 log.warning("mounting static %s failed: %s", mount, e)
-        # Always serve each extension's own web/ dir under the canonical URL so
-        # the injected script tags resolve even if the extension didn't call
-        # serve_static for it.
+        # Serve each extension's web/ dir so the injected script tags resolve.
         for ext in self.extensions.values():
             if ("web", ext.name) in self._mounted:
                 continue
@@ -777,10 +678,7 @@ class ExtensionLoader:
 
 class InstallPayload(BaseModel):
     url: str
-    # Opt-in: pip install -r requirements.txt is RCE on an untrusted file, so it
-    # defaults to off. The UI sends true only when the user explicitly checks
-    # "install dependencies" for a trusted source. See docs/EXTENSIONS.md.
-    install_pip_deps: bool = False
+    install_pip_deps: bool = False  # opt-in: pip install -r is RCE on untrusted files
 
 
 class TogglePayload(BaseModel):
@@ -790,8 +688,6 @@ class TogglePayload(BaseModel):
 
 class UpdatePayload(BaseModel):
     name: str
-    # Same opt-in as install: an update may change requirements.txt, but
-    # pip install -r against an untrusted file is RCE, so it defaults off.
     install_pip_deps: bool = False
 
 

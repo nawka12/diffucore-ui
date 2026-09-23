@@ -1,9 +1,5 @@
-"""PNG metadata: write generation params, read them back, parse foreign formats.
-
-Pure helpers (no web framework) so the server layer stays thin. Mirrors the
-AUTO1111 / Forge ``parameters`` text format and also parses ComfyUI workflow
-JSON found in the ``prompt`` chunk.
-"""
+"""PNG metadata: write generation params, read them back, parse foreign formats
+(AUTO1111/Forge ``parameters`` text, SwarmUI JSON, ComfyUI workflow JSON)."""
 
 from __future__ import annotations
 
@@ -22,21 +18,12 @@ from diffucore import __version__ as _DIFFUCORE_VERSION
 _ROOT = Path(__file__).resolve().parent.parent
 
 # ── NSFW content rating (gallery blur) ─────────────────────────────
-# Rating is derived from the generation prompt alone — no tagging, no model —
-# because an output's prompt is the one signal that reliably says what it
-# depicts. Tiered like Civitai's ratings so the gallery can blur "R and up".
-# _RATING_TIERS is ordered most-restrictive first; the first tier with a match
-# wins. Word-boundary regexes keep "ass" from firing on "badass" or "anal" on
-# "analysis". A trailing "-" marks a prefix stem ("masturbat-" covers
-# masturbating/masturbation) — without it a stem would need a word boundary
-# right after it and could never fire. False positives are cheap (a click
-# reveals); false negatives just stay unblurred.
+# Keyword rating of the prompt, tiered like Civitai's and checked most
+# restrictive first. A trailing "-" marks a prefix stem ("masturbat-").
 _RATING_TIERS: tuple = (
-    # XXX — gore and the extremes that make even explicit content a step further.
     ("XXX", ("guro", "snuff", "necrophil-", "zoophil-", "bestiality", "scat",
              "coprophag-", "gore", "lolita", "loli", "shota", "lolicon",
              "shotacon", "underage", "child porn", "rape", "raped")),
-    # X — explicit sexual content.
     ("X", ("nsfw", "18+", "explicit", "porn", "porno", "pornstar", "sex",
            "sexual", "sexuality", "intercourse", "penetrat-", "fuck",
            "fucking", "blowjob", "cunnilingus", "fellatio", "handjob",
@@ -45,7 +32,6 @@ _RATING_TIERS: tuple = (
            "anal", "boobjob", "titfuck", "paizuri", "bukkake",
            "gangbang", "hentai", "ahegao", "incest", "bdsm", "domination",
            "erotica", "xxx", "x-rated", "hardcore")),
-    # R — nudity / strong suggestion.
     ("R", ("nude", "nudity", "nudist", "topless", "bottomless", "nipple",
            "areola", "lingerie", "underwear", "panties", "thong", "cleavage",
            "sexy", "seduct-", "risque", "skimpy", "scantily", "sensual",
@@ -55,11 +41,9 @@ _RATING_TIERS: tuple = (
 
 
 def _rating_alt(word: str) -> str:
-    """One alternative of a tier's regex, with the right boundaries.
-
-    A trailing "-" makes it a prefix stem (any word continuation matches); a
-    word ending in punctuation ("18+") gets no trailing ``\\b``, which would
-    demand a word character after the "+" and never match.
+    """Regex alternative for one rating word. A trailing "-" makes a prefix stem;
+    a word ending in punctuation ("18+") gets no trailing ``\\b``, which could
+    never match there.
     """
     if word.endswith("-"):
         return rf"\b{re.escape(word[:-1])}\w*"
@@ -74,19 +58,12 @@ _RATING_RES: list = [
 
 
 def prompt_rating(prompt: str) -> str:
-    """Classify a prompt as ``"PG" | "PG13" | "R" | "X" | "XXX"``.
-
-    PG13 when the prompt mentions age-gating or near-adult topics (the
-    boundary is fuzzy; keep anything plausibly safe below R). Only the
-    positive prompt is scanned — the negative prompt requests what the image
-    must NOT contain, so it never counts against an output.
-    """
+    """Classify a prompt as ``"PG" | "PG13" | "R" | "X" | "XXX"``. Only the
+    positive prompt counts."""
     text = prompt or ""
-    # A caller handing over the whole parameters string must not let the
-    # negative prompt (what the image must NOT contain) count against it.
+    # Callers may pass a whole parameters string; drop the negative prompt.
     text = text.split("\nNegative prompt: ", 1)[0]
-    # Underscores glue words together in prompt tags (<lora:nsfw_v2:1.0>,
-    # nsfw_art_style) — fold them to spaces so \b word boundaries still fire.
+    # Tags glue words with underscores (nsfw_art_style); split them so \b fires.
     text = re.sub(r"[_]", " ", text)
     for tier, res in _RATING_RES:
         if res.search(text):
@@ -145,12 +122,9 @@ def _ordinal(n: int) -> str:
 
 
 def _detailer_fields(detail: dict) -> list[str]:
-    """ADetailer-compatible ``Key: value`` pairs for the ``parameters`` line.
-
-    This app shares one set of knobs across the stack, while ADetailer stores
-    them per detection unit — so each model repeats the shared knobs under its
-    own ``2nd``/``3rd`` suffix, which is what AUTO1111 + ADetailer expects.
-    """
+    """ADetailer-compatible ``Key: value`` pairs. ADetailer stores knobs per
+    detection unit, so each model repeats the shared knobs under its own
+    ``2nd``/``3rd`` suffix."""
     neg = detail.get("neg", "")
     fields: list[str] = []
     for i, m in enumerate(detail.get("models") or []):
@@ -188,17 +162,12 @@ def _upscale_fields(upscale: dict) -> list[str]:
 def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
                     upscale: dict | None = None, seed: int | None = None) -> str:
     """Build the AUTO1111-style ``parameters`` string for a finished generation.
-
-    Reads loaded-model name, resolved seed, and perf flags off ``engine``.
-    ``seed`` overrides ``engine.last_seed`` for outputs that aren't a generation
-    (a standalone upscale, whose tile passes use their own base seed).
-    """
+    ``seed`` overrides ``engine.last_seed`` (a standalone upscale uses its own)."""
     prompt = gen_kwargs.get("prompt", "")
     neg = gen_kwargs.get("negative_prompt", "")
     model = model_hash.clean_model_name(engine.loaded_name or "unknown")
-    # AutoV2 hashes (first 10 hex of the full-file SHA256) for Civitai resource
-    # detection: the checkpoint's goes in "Model hash:", the LoRAs' in the quoted
-    # "Lora hashes:" map. Read from the startup-scan cache (None until hashed).
+    # AutoV2 (full-file SHA256[:10]) is what Civitai matches resources on.
+    # Read from the startup-scan cache; None until hashed.
     model_av2 = model_hash.get_autov2(
         model_hash.resolve_model_file(engine.loaded_name) if engine.loaded_name else None)
     lora_hashes = []
@@ -212,8 +181,7 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     fields.append(f"Sampler: {gen_kwargs.get('sampler', 'euler')}")
     fields.append(f"Scheduler: {gen_kwargs.get('scheduler', 'karras')}")
     fields.append(f"CFG scale: {gen_kwargs.get('cfg_scale', 7.0)}")
-    # Guidance interval — only injected (and only written) when it actually
-    # restricted CFG, so older metadata stays byte-identical.
+    # Only present when the interval restricted CFG.
     if "cfg_interval_start" in gen_kwargs:
         fields.append(f"CFG interval: {gen_kwargs['cfg_interval_start']}-"
                       f"{gen_kwargs.get('cfg_interval_end', 1.0)}")
@@ -227,8 +195,7 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
         fields.append(f"Model hash: {model_av2}")
     fields.append(f"Model: {model}")
     if lora_hashes:
-        # Forge always double-quotes this map (even a single entry); match that so
-        # Civitai's parser reads it, and so the internal commas don't split fields.
+        # Forge always quotes this map, even with one entry, and Civitai expects it.
         fields.append(f"Lora hashes: {json.dumps(', '.join(lora_hashes), ensure_ascii=False)}")
     if "strength" in gen_kwargs:
         fields.append(f"Denoising strength: {gen_kwargs['strength']}")
@@ -237,13 +204,10 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     if gen_kwargs.get("teacache_thresh", 0):
         calib = "" if gen_kwargs.get("teacache_use_coeffs", True) else " (raw)"
         fields.append(f"TeaCache: {gen_kwargs['teacache_thresh']}{calib}")
-        # Written whenever TeaCache ran, so the absence of the key means the
-        # image predates the hermite forecast (i.e. it was taylor).
+        # Always written, so a missing key marks an older image (taylor / drift).
         fields.append(f"TeaCache forecast: {gen_kwargs.get('teacache_forecast', 'hermite')}")
-        # Likewise: absent means the image predates the rule choice (drift).
         fields.append(f"TeaCache rule: {gen_kwargs.get('teacache_rule', 'drift')}")
-        # Settings-level, so written for the record but never restored on load
-        # (same handling as the CFG interval line above).
+        # Settings-level: recorded, never restored on load.
         if gen_kwargs.get("teacache_uncond_scale", 1.0) != 1.0:
             fields.append(f"TeaCache uncond scale: {gen_kwargs['teacache_uncond_scale']}")
     if gen_kwargs.get("deepcache_interval", 1) > 1:
@@ -267,9 +231,7 @@ def _aspect_ratio(w, h) -> str:
     return f"{w // g}:{h // g}"
 
 
-# Matches the engine's LoRA prompt tag (engine.LORA_PROMPT_RE) so we split out
-# exactly what was applied. SwarmUI stores LoRAs structurally, not inline in the
-# prompt, so its writer strips these and records loras/loraweights + sui_models.
+# Same pattern as engine.LORA_PROMPT_RE.
 _LORA_TAG_RE = re.compile(r"<lora:([^:]+):([^>]+)>")
 
 
@@ -295,17 +257,11 @@ def _extra_pairs_to_dict(fields: list[str]) -> dict:
 
 def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
                             upscale: dict | None = None, seed: int | None = None) -> str:
-    """Build a SwarmUI-format ``parameters`` JSON blob for a finished generation.
-
-    Standard knobs go in ``sui_image_params`` under SwarmUI's own parameter IDs;
-    app-specific extras (shift, TeaCache, detailer, upscale, the build ids) live
-    in ``sui_extra_data`` under the same snake_case keys the A1111 reader
-    produces, so :func:`parse_swarmui_metadata` restores them losslessly. See
-    https://github.com/mcmonkeyprojects/SwarmUI docs (Image Metadata Format).
-    """
+    """Build a SwarmUI-format ``parameters`` JSON blob. App-specific extras go in
+    ``sui_extra_data`` under the A1111 reader's snake_case keys, so
+    :func:`parse_swarmui_metadata` restores them losslessly."""
     loaded = engine.loaded_name or "unknown"
-    # SwarmUI records LoRAs structurally (loras/loraweights + sui_models), not as
-    # inline <lora:…> prompt tags, so split them out of the prompt/negative here.
+    # SwarmUI stores LoRAs structurally, not as inline <lora:…> tags.
     clean_prompt, prompt_loras = _split_loras(gen_kwargs.get("prompt", ""))
     clean_neg, neg_loras = _split_loras(gen_kwargs.get("negative_prompt", ""))
     lora_pairs = prompt_loras + neg_loras
@@ -320,7 +276,7 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
         "cfgscale": gen_kwargs.get("cfg_scale", 7.0),
     }
     if lora_pairs:
-        # Comma-joined, index-aligned lists (SwarmUI's format, not JSON arrays).
+        # Comma-joined, index-aligned lists, not JSON arrays.
         params["loras"] = ",".join(
             model_hash.clean_model_name(n, strip_ext=True) for n, _ in lora_pairs)
         params["loraweights"] = ",".join(w for _, w in lora_pairs)
@@ -331,8 +287,6 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
         params["height"] = gen_kwargs["height"]
         params["aspectratio"] = _aspect_ratio(gen_kwargs["width"], gen_kwargs["height"])
 
-    # App-specific extras: same snake_case keys parse_metadata would yield, so the
-    # gallery / load-into-form paths read them through workspace_fields unchanged.
     extra: dict = {"date": date.today().isoformat(), "diffucore_ui": UI_ID, "diffucore": DIFF_ID}
     if "strength" in gen_kwargs:
         extra["denoising_strength"] = gen_kwargs["strength"]
@@ -361,9 +315,8 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
     if flags != "default":
         extra["perf_flags"] = flags
 
-    # One sui_models entry for the checkpoint, then one per LoRA (param "loras").
-    # Hashes come from the startup-scan cache (never computed here, so the save
-    # doesn't block); null until the background scan reaches that file.
+    # Hashes come from the startup-scan cache so saving never blocks; null until
+    # the scan reaches that file.
     models = [{
         "name": model_hash.clean_model_name(loaded),
         "param": "model",
@@ -381,17 +334,12 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
 
 
 def read_png_metadata(path: str) -> str:
-    """Return the AUTO1111 ``parameters`` chunk of a PNG, or ``""``.
-
-    Uses a context manager so the file handle is released promptly — under heavy
-    gallery use (lightbox paging, search indexing), the prior lazy-open form
-    leaked descriptors until the GC closed the underlying PIL image."""
+    """Return the AUTO1111 ``parameters`` chunk of a PNG, or ``""``."""
     with Image.open(path) as img:
         return img.info.get("parameters", "")
 
 
-# key: value, where value is a JSON-quoted string (so commas/colons inside a
-# free-text prompt survive) or a bare run up to the next comma. Mirrors AUTO1111.
+# key: value, where value is JSON-quoted or a bare run up to the next comma.
 _PARAM_RE = re.compile(r'\s*([\w \-/]+?):\s*("(?:\\.|[^"\\])*"|[^,]*)\s*(?:,|$)')
 
 
@@ -403,8 +351,7 @@ def parse_metadata(params_str: str) -> dict:
     """
     if not params_str:
         return {}
-    # SwarmUI writes its JSON blob into the same "parameters" chunk; dispatch so
-    # every reader (gallery, viewer, load-into-form) handles both transparently.
+    # SwarmUI writes its JSON blob into the same chunk.
     if params_str.lstrip().startswith("{"):
         swarm = parse_swarmui_metadata(params_str)
         if swarm:
@@ -432,10 +379,8 @@ def parse_metadata(params_str: str) -> dict:
 
 
 def parse_swarmui_metadata(json_str: str) -> dict:
-    """Parse a SwarmUI ``parameters`` JSON blob into the same flat dict shape as
-    :func:`parse_metadata` (lowercased, underscore-separated keys), so downstream
-    helpers work identically for both formats. ``{}`` if it isn't SwarmUI JSON.
-    """
+    """Parse a SwarmUI ``parameters`` JSON blob into :func:`parse_metadata`'s
+    flat dict shape. ``{}`` if it isn't SwarmUI JSON."""
     try:
         data = json.loads(json_str)
     except json.JSONDecodeError:
@@ -454,9 +399,7 @@ def parse_swarmui_metadata(json_str: str) -> dict:
             result[dst] = params[src]
     if "width" in params and "height" in params:
         result["size"] = f"{params['width']}x{params['height']}"
-    # Rebuild <lora:name:weight> tags from the structured loras/loraweights and
-    # append them to the prompt, so loading a SwarmUI image restores the LoRA
-    # selection into the prompt box the same way an A1111 image does.
+    # Rebuild <lora:name:weight> tags into the prompt, as an A1111 image has them.
     loras = [s for s in str(params.get("loras", "")).split(",") if s]
     if loras:
         weights = str(params.get("loraweights", "")).split(",")
@@ -464,8 +407,6 @@ def parse_swarmui_metadata(json_str: str) -> dict:
             f"<lora:{n}:{weights[i].strip() if i < len(weights) and weights[i].strip() else '1'}>"
             for i, n in enumerate(loras))
         result["prompt"] = f"{result['prompt']} {tags}".strip() if result["prompt"] else tags
-    # App-specific extras were written under snake_case keys matching the A1111
-    # reader, so extract_detailer/extract_upscale/workspace_fields read them as-is.
     extra = data.get("sui_extra_data")
     if isinstance(extra, dict):
         for k, v in extra.items():
@@ -509,12 +450,8 @@ def parse_comfyui_metadata(prompt_json: str) -> dict:
 
 
 def extract_detailer(meta: dict) -> dict:
-    """Reconstruct this app's detailer settings from the ADetailer-compatible
-    keys on a parsed ``parameters`` line. ``{}`` when no detailer ran.
-
-    Models come from the ``ADetailer model``/``... 2nd``/... stack; the shared
-    knobs and negative are read from the first unit (this app shares them).
-    """
+    """Rebuild the detailer settings from ADetailer keys; ``{}`` when none ran.
+    Shared knobs and the negative are read from the first unit."""
     if "adetailer_model" not in meta:
         return {}
     models = []
@@ -549,12 +486,8 @@ def extract_detailer(meta: dict) -> dict:
 
 
 def extract_upscale(meta: dict) -> dict:
-    """Reconstruct this app's upscaler settings from the ``Upscale …`` keys on a
-    parsed ``parameters`` line. ``{}`` when no upscaler ran.
-
-    Mirrors :func:`extract_detailer`: ``base`` "Lanczos" maps back to the form's
-    empty default (no ESRGAN model); the rest are cast to the form's types.
-    """
+    """Rebuild the upscaler settings from ``Upscale …`` keys; ``{}`` when none ran.
+    ``base`` "Lanczos" maps back to the form's empty default."""
     if "upscale_scale" not in meta:
         return {}
     up = {"enabled": True}
@@ -576,11 +509,7 @@ def extract_upscale(meta: dict) -> dict:
 
 
 def workspace_fields(meta: dict) -> dict:
-    """Normalise a parsed metadata dict into typed workspace form values.
-
-    Returns only the keys that were present and parseable, so the caller can
-    leave the rest of the form untouched.
-    """
+    """Typed workspace form values for the keys present and parseable in ``meta``."""
     out: dict = {}
     if meta.get("prompt"):
         out["prompt"] = meta["prompt"]
@@ -614,9 +543,7 @@ def workspace_fields(meta: dict) -> dict:
         out["strength"] = float(meta["denoising_strength"])
     except (TypeError, ValueError, KeyError):
         pass
-    # TeaCache is only written when it ran: "TeaCache: <thresh>" (calibrated) or
-    # "TeaCache: <thresh> (raw)". Absent means it was off — additive, like the
-    # detailer/upscale chunks, so we don't toggle it off on older metadata.
+    # Only written when TeaCache ran; absence leaves the form's toggle alone.
     tc = meta.get("teacache")
     if tc is not None:
         raw = str(tc).strip()
@@ -628,15 +555,12 @@ def workspace_fields(meta: dict) -> dict:
             out["teacacheOn"] = True
             out["teacache"] = thresh
             out["teacacheCalibrated"] = not raw.endswith("(raw)")
-            # Absent on pre-HiCache images, which forecast with taylor — restore
-            # that so the params reproduce the image, not the current default.
+            # Absent on pre-HiCache images, which used taylor.
             fc = str(meta.get("teacache_forecast", "taylor")).strip()
             out["teacacheForecast"] = fc if fc in ("hermite", "taylor") else "hermite"
             # Absent on pre-EasyCache images, which all used the drift rule.
             rl = str(meta.get("teacache_rule", "drift")).strip()
             out["teacacheRule"] = rl if rl in ("drift", "easy") else "drift"
-    # DeepCache is only written when it ran: "DeepCache: <interval>". Absent
-    # means off — additive, like TeaCache above.
     dc = meta.get("deepcache")
     if dc is not None:
         try:

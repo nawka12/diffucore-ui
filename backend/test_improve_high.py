@@ -1,19 +1,6 @@
-"""Tests for the Critical + High IMPROVE.md fixes shipped after the first round.
-
-Covers:
-- #1 (Critical) extension install: opt-in pip deps, install routed through the
-  job queue (#8), URL scheme fast-fail stays a 400.
-- #2 share URL written to a chmod 600 file, not stdout.
-- #3 gallery delete is a soft-delete to outputs/.trash/ with age-based purge;
-  scan_outputs skips dot-dirs.
-- #4 shutdown saves a partial preview for the in-flight job.
-- #5 _decode_image composites RGBA onto white (not black); _decode_mask uses
-  the alpha channel as the mask.
-- #6 priority enqueue: load jobs jump the queue.
-- #9 structured logging: --log-file writes a run-id-stamped, chmod 600 file.
-- #10 X/Y/Z Checkpoint LRU cache: stash / restore / eviction / FLUX-skip.
-
-Run from the project root::
+"""Tests for extension install/update, share URL, gallery trash, shutdown
+partial save, alpha decode, queue priority, logging, the ratings pipeline and
+the X/Y/Z checkpoint cache.
 
     .venv/bin/python -m pytest backend/test_improve_high.py -v
 """
@@ -50,7 +37,7 @@ def test_blur_min_rating_defaults_to_r_and_rejects_unknown_tiers():
         with pytest.raises(ValueError):
             server.Settings(blur_min_rating=bad)
 
-# ── #1 + #8: opt-in pip + install routed through the job queue ───────
+# ── opt-in pip + install routed through the job queue ─────────────────
 
 def test_install_payload_pip_deps_defaults_off():
     from extensions import InstallPayload
@@ -61,18 +48,16 @@ def test_install_payload_pip_deps_defaults_off():
 
 
 def test_install_endpoint_rejects_non_https_with_400(client):
-    # Fast-fail scheme validation happens before enqueueing.
     r = client.post("/api/extensions/install",
                     json={"url": "file:///etc/passwd"})
     assert r.status_code == 400
 
 
-# ── BUG.md H1: uninstall must never target extensions/ itself ────────
+# ── uninstall must never target extensions/ itself ─────────────────────
 
 @pytest.mark.parametrize("name", [".", "", "..", "sub/dir", "../elsewhere"])
 def test_uninstall_rejects_non_child_names(tmp_path, monkeypatch, name):
-    """``name="."`` used to resolve to EXTENSIONS_DIR itself and pass the
-    guard, so the rmtree wiped every extension plus state.json."""
+    """``name="."`` once resolved to EXTENSIONS_DIR itself and wiped it."""
     import extensions as extmod
 
     ext_dir = tmp_path / "extensions"
@@ -95,7 +80,6 @@ def test_uninstall_endpoint_returns_400_not_500(client):
 
 
 def test_install_endpoint_enqueues_install_job_and_passes_pip_flag(client, monkeypatch):
-    # Stub the real install so no network / git / pip runs.
     captured = {}
 
     class _FakeExt:
@@ -113,7 +97,6 @@ def test_install_endpoint_enqueues_install_job_and_passes_pip_flag(client, monke
     enqueued = {}
     def fake_enqueue(job):
         enqueued["job"] = job
-        # Don't touch the real queue / wake — the worker must not run this.
     monkeypatch.setattr(server, "_enqueue", fake_enqueue)
 
     r = client.post("/api/extensions/install",
@@ -123,7 +106,6 @@ def test_install_endpoint_enqueues_install_job_and_passes_pip_flag(client, monke
     assert "job" in r.json()
     job = enqueued["job"]
     assert job.kind == "install"  # routed through the queue, not the request thread
-    # Run the job body directly and confirm the opt-in flag propagates.
     result = job.run(job)
     assert captured["install_pip_deps"] is True
     assert result["extension"]["name"] == "fake"
@@ -142,14 +124,11 @@ def test_install_endpoint_defaults_pip_off(client, monkeypatch):
     monkeypatch.setattr(server, "_enqueue", lambda job: held.__setitem__("job", job))
     client.post("/api/extensions/install",
                 json={"url": "https://github.com/foo/bar.git"})
-    # Run the held job body; the default payload must pass install_pip_deps=False.
     held["job"].run(held["job"])
     assert captured["pip"] is False
 
 
 def test_update_endpoint_enqueues_update_job_and_passes_pip_flag(client, monkeypatch):
-    # Update mirrors install: 404 for an unknown name, otherwise routed through
-    # the job queue with the opt-in pip flag propagated.
     server.EXTENSIONS.extensions["fake"] = object()
     captured = {}
 
@@ -167,7 +146,6 @@ def test_update_endpoint_enqueues_update_job_and_passes_pip_flag(client, monkeyp
     held = {}
     monkeypatch.setattr(server, "_enqueue", lambda job: held.__setitem__("job", job))
 
-    # Unknown extension → 404 before any job is enqueued.
     assert client.post("/api/extensions/update", json={"name": "nope"}).status_code == 404
 
     r = client.post("/api/extensions/update",
@@ -182,7 +160,6 @@ def test_update_endpoint_enqueues_update_job_and_passes_pip_flag(client, monkeyp
 
 
 def test_update_rejects_non_git_checkout(monkeypatch, tmp_path):
-    # A zip install (no .git dir) has no remote to update from.
     import extensions as extmod
     loader = extmod.ExtensionLoader.__new__(extmod.ExtensionLoader)
     loader.extensions = {"z": extmod.Extension(name="z", title="z", version="1",
@@ -194,9 +171,7 @@ def test_update_rejects_non_git_checkout(monkeypatch, tmp_path):
 
 
 def test_install_skips_pip_by_default_and_notes_requirements(monkeypatch, tmp_path):
-    # Drive ExtensionLoader.install() with a fake clone so we can observe the
-    # pip-skip note without network. We bypass _install_git/_install_zip by
-    # pre-creating the scratch dir with a manifest + requirements.txt.
+    # Pre-create the scratch dir (manifest + requirements.txt) instead of cloning.
     import extensions as extmod
 
     ext_dir = tmp_path / "exts"
@@ -222,18 +197,16 @@ def test_install_skips_pip_by_default_and_notes_requirements(monkeypatch, tmp_pa
         (target / "requirements.txt").write_text("numpy\n")
     monkeypatch.setattr(extmod.ExtensionLoader, "_install_git", staticmethod(fake_git))
     monkeypatch.setattr(extmod.ExtensionLoader, "_install_zip", staticmethod(lambda *a: None))
-    # No pip should run: assert _pip_install_requirements is never called.
     monkeypatch.setattr(extmod.ExtensionLoader, "_pip_install_requirements",
                         staticmethod(lambda *a, **k: pytest.fail("pip must not run by default")))
 
     ext = loader.install("https://github.com/foo/demo.git")
     assert ext.name == "demo"
-    # A requirements.txt was present and pip skipped → note surfaced on the record.
     assert ext.load_error and "requirements.txt" in ext.load_error
     assert "opt-in" in ext.load_error
 
 
-# ── #2: share URL written to a chmod 600 file, not stdout ─────────────
+# ── share URL written to a chmod 600 file, not stdout ─────────────────
 
 def test_share_url_file_is_chmod_600_and_contains_url(monkeypatch, tmp_path):
     import share
@@ -250,7 +223,6 @@ def test_share_warning_omits_url_when_file_written(monkeypatch, tmp_path, capsys
     monkeypatch.setattr(share, "_BIN_DIR", tmp_path)
     share._print_share_warning("https://abc.trycloudflare.com", "?token=secret")
     out = capsys.readouterr().out
-    # The path is named, but the full secret URL is NOT printed.
     assert "share_url.txt" in out
     assert "secret" not in out
     assert "trycloudflare.com?token" not in out
@@ -259,7 +231,6 @@ def test_share_warning_omits_url_when_file_written(monkeypatch, tmp_path, capsys
 def test_share_warning_falls_back_to_printing_url_on_file_failure(monkeypatch, tmp_path, capsys):
     import share
     monkeypatch.setattr(share, "_BIN_DIR", tmp_path)
-    # Force the file write to fail.
     def boom(_url):
         return None
     monkeypatch.setattr(share, "_write_share_url_file", boom)
@@ -269,7 +240,7 @@ def test_share_warning_falls_back_to_printing_url_on_file_failure(monkeypatch, t
     assert "WARNING" in out
 
 
-# ── #3: gallery soft-delete + trash purge + scan_outputs skips dot-dirs ─
+# ── gallery soft-delete, trash purge, scan_outputs skips dot-dirs ─────
 
 def _setup_outputs(tmp_path, monkeypatch):
     out = tmp_path / "outputs"
@@ -291,7 +262,6 @@ def test_gallery_delete_moves_to_trash(monkeypatch, tmp_path):
     target = server.OUTPUTS_DIR / "01-01-2026" / "01-123.png"
     assert target.is_file()
     from fastapi import HTTPException
-    # Call the handler directly with a relative path under outputs/.
     resp = server.api_gallery_delete(path="01-01-2026/01-123.png")
     assert not target.exists()  # gone from the gallery
     trash = server._TRASH_DIR
@@ -316,7 +286,6 @@ def test_gallery_entries_carry_prompt_rating(monkeypatch, tmp_path):
     import utils
     out, target = _setup_outputs(tmp_path, monkeypatch)
     monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
-    # Re-save the fixture with generation metadata ("nude" → R → nsfw).
     _save_with_params(
         target,
         "nude woman, portrait\nNegative prompt: landscape\n"
@@ -344,7 +313,6 @@ def test_gallery_entries_carry_prompt_rating(monkeypatch, tmp_path):
     assert sfw["nsfw"] is False
     assert sfw["rating"] == "PG"
 
-    # The search path carries the same flags.
     hit = server.api_gallery(q="nude")["images"]
     assert len(hit) == 1 and hit[0]["nsfw"] is True
 
@@ -373,12 +341,12 @@ def test_gallery_index_prefers_vision_rating(monkeypatch, tmp_path, _isolated_ra
     import utils
     out, target = _setup_outputs(tmp_path, monkeypatch)
     monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
-    # Prompt says safe, so without a vision rating the image stays unblurred…
+    # Prompt says safe, so without a vision rating the image stays unblurred...
     _save_with_params(target, "a cat\nSteps: 20, Sampler: euler, Seed: 1")
     server._invalidate_gallery_index()
     utils.invalidate_outputs_cache()
     assert server._gallery_index()[0]["nsfw"] is False
-    # …but a cached vision verdict overrides the prompt.
+    # ...but a cached vision verdict overrides the prompt.
     server._store_ratings({"01-01-2026/01-123.png": {
         "rating": "X", "nsfw": True, "conf": 0.9,
         "key": server._image_key(target)}})
@@ -386,7 +354,7 @@ def test_gallery_index_prefers_vision_rating(monkeypatch, tmp_path, _isolated_ra
     entry = server._gallery_index()[0]
     assert entry["rating"] == "X"
     assert entry["nsfw"] is True
-    # A file that changed since being rated busts the entry (falls back).
+    # A file changed since rating busts the entry.
     server._store_ratings({"01-01-2026/01-123.png": {
         "rating": "X", "nsfw": True, "conf": 0.9, "key": "stale-key"}})
     server._invalidate_gallery_index()
@@ -395,20 +363,16 @@ def test_gallery_index_prefers_vision_rating(monkeypatch, tmp_path, _isolated_ra
 
 def test_cached_rating_invalidated_by_decision_version(monkeypatch, tmp_path,
                                                        _isolated_ratings):
-    # A verdict cached under an older decision layer is stale once the layer
-    # changes — even with the file untouched — so the change takes effect
-    # without stale blur states.
+    # A verdict from an older decision layer is stale even for an unchanged file.
     import utils
     out, target = _setup_outputs(tmp_path, monkeypatch)
     monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
     server._store_ratings({"01-01-2026/01-123.png": {
         "rating": "X", "nsfw": True, "conf": 0.5, "key": server._image_key(target)}})
     assert server._cached_rating(target)["rating"] == "X"
-    # Simulate a decision-layer upgrade: the stored verdict is now stale.
     monkeypatch.setattr(server.tagger_mod, "DECISION_VERSION",
                         server.tagger_mod.DECISION_VERSION + 1)
     assert server._cached_rating(target) is None
-    # A fresh re-rate under the new version is current again.
     server._store_ratings({"01-01-2026/01-123.png": {
         "rating": "PG", "nsfw": False, "conf": 0.9, "key": server._image_key(target)}})
     assert server._cached_rating(target)["rating"] == "PG"
@@ -421,17 +385,14 @@ def test_maybe_auto_rescan_rerates_stale_only(_isolated_queue, monkeypatch,
     monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
     monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: True)
     monkeypatch.setitem(server.SETTINGS, "nsfw_blur", True)
-    # Nothing rated → nothing stale → no rescan enqueued.
     server._maybe_auto_rescan()
     with server.QUEUE_LOCK:
         assert len(server.QUEUE) == 0
-    # A current-version entry → still nothing to do.
     server._store_ratings({"01-01-2026/01-123.png": {
         "rating": "PG", "nsfw": False, "conf": 0.9, "key": server._image_key(target)}})
     server._maybe_auto_rescan()
     with server.QUEUE_LOCK:
         assert len(server.QUEUE) == 0
-    # A stale-version entry → one re-rate job, lowest priority.
     monkeypatch.setattr(server.tagger_mod, "DECISION_VERSION",
                         server.tagger_mod.DECISION_VERSION + 1)
     server._maybe_auto_rescan()
@@ -451,11 +412,9 @@ def test_enqueue_tag_job_gated_by_timm(_isolated_queue, monkeypatch,
     assert job.kind == "tag"
     assert job.priority == -10  # never delays a generation
     assert job.total == 1
-    # timm missing → silently falls back to the prompt heuristic.
+    # timm missing: falls back to the prompt heuristic.
     monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: False)
     assert server._enqueue_tag_job([target], "Rate") is None
-    # Whether a rating is *wanted* is the caller's call — the gallery blur
-    # setting alone no longer decides it (see the blur_check test below).
     monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: True)
     monkeypatch.setitem(server.SETTINGS, "nsfw_blur", False)
     assert server._enqueue_tag_job([target], "Rate") is not None
@@ -463,25 +422,21 @@ def test_enqueue_tag_job_gated_by_timm(_isolated_queue, monkeypatch,
 
 def test_auto_tag_wanted_by_either_blur_surface(_isolated_queue, monkeypatch,
                                                 tmp_path, _isolated_ratings):
-    # The gallery setting and the Generate page's own "Blur NSFW" toggle are
-    # independent; either one asking for a verdict is enough to rate the save.
+    # The gallery setting and the page's "Blur NSFW" toggle are independent;
+    # either one is enough.
     out, target = _setup_outputs(tmp_path, monkeypatch)
     monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: True)
     monkeypatch.setattr(server, "_PENDING_TAG", [])
 
-    # Gallery blur off and the page not blurring → no rating wanted.
     monkeypatch.setitem(server.SETTINGS, "nsfw_blur", False)
     server._maybe_auto_tag(target, blur_check=False)
     assert server._PENDING_TAG == []
-    # Gallery blur off but the page will blur the result → rate it anyway.
     server._maybe_auto_tag(target, blur_check=True)
     assert server._PENDING_TAG == [target]
-    # Gallery blur on → rated regardless of the page toggle.
     server._PENDING_TAG.clear()
     monkeypatch.setitem(server.SETTINGS, "nsfw_blur", True)
     server._maybe_auto_tag(target, blur_check=False)
     assert server._PENDING_TAG == [target]
-    # timm missing → nothing to run, whoever asked.
     server._PENDING_TAG.clear()
     monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: False)
     server._maybe_auto_tag(target, blur_check=True)
@@ -503,8 +458,7 @@ def test_tag_job_run_rates_caches_and_invalidates(monkeypatch, tmp_path,
     job = server.Job("tag", "rate", lambda j: {})
     job.total = 1
     assert server._tag_job_run(job, [target]) == {"rated": 1}
-    # The index is patched in place, not dropped: rebuilding re-opens every PNG
-    # in outputs/, and a rating changes nothing but these two fields.
+    # Patched in place: a rebuild would re-open every PNG in outputs/.
     assert len(patched) == 1
     assert patched[0]["01-01-2026/01-123.png"]["rating"] == "R"
     entry = server._read_ratings()["01-01-2026/01-123.png"]
@@ -514,8 +468,7 @@ def test_tag_job_run_rates_caches_and_invalidates(monkeypatch, tmp_path,
 
 def test_gallery_index_add_splices_without_rebuilding(monkeypatch, tmp_path,
                                                       _isolated_ratings):
-    # A save must not drop the index — rebuilding re-opens every PNG under
-    # outputs/ (~1.4 s at 2.3k images), and _save_output runs every generation.
+    # A save must not drop the index: rebuilding re-opens every PNG.
     import utils
     out, target = _setup_outputs(tmp_path, monkeypatch)
     monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
@@ -524,7 +477,7 @@ def test_gallery_index_add_splices_without_rebuilding(monkeypatch, tmp_path,
     utils.invalidate_outputs_cache()
     assert len(server._gallery_index()) == 1
 
-    # Reading a PNG now would be a rebuild; make that loud.
+    # Reading a PNG now would mean a rebuild.
     monkeypatch.setattr(server.md, "read_png_metadata",
                         lambda p: pytest.fail("rebuilt the index instead of splicing"))
     newer = out / "01-01-2026" / "01-124.png"
@@ -533,7 +486,6 @@ def test_gallery_index_add_splices_without_rebuilding(monkeypatch, tmp_path,
 
     index = server._gallery_index()
     assert len(index) == 2
-    # Newest-first, matching scan_outputs().
     assert index[0]["path"] == "01-01-2026/01-124.png"
     assert index[0]["prompt"] == "nude woman"
     assert index[0]["nsfw"] is True and index[0]["rating"] == "R"
@@ -542,8 +494,7 @@ def test_gallery_index_add_splices_without_rebuilding(monkeypatch, tmp_path,
 
 def test_gallery_index_add_is_a_noop_while_cold(monkeypatch, tmp_path,
                                                 _isolated_ratings):
-    # Cold index: the next read builds it from disk anyway, so the splice must
-    # not resurrect a half-populated one.
+    # Cold index: the next read builds it from disk, so don't half-populate it.
     import utils
     out, target = _setup_outputs(tmp_path, monkeypatch)
     monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
@@ -573,8 +524,7 @@ def test_gallery_index_patch_ratings_updates_in_place(monkeypatch, tmp_path,
 
 def test_auto_tag_coalesces_into_one_job(_isolated_queue, monkeypatch, tmp_path,
                                          _isolated_ratings):
-    # One queue row per saved image would put 16 rows behind a batch and 26
-    # behind a 5x5 sweep. Saves accumulate instead, and flush as one job.
+    # Saves accumulate and flush as one job, not one queue row per image.
     out, target = _setup_outputs(tmp_path, monkeypatch)
     monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: True)
     monkeypatch.setitem(server.SETTINGS, "nsfw_blur", True)
@@ -594,7 +544,6 @@ def test_auto_tag_coalesces_into_one_job(_isolated_queue, monkeypatch, tmp_path,
     assert job.kind == "tag" and job.total == 2
     assert job.label == "Rate NSFW (2 images)"
     assert server._PENDING_TAG == []
-    # Flushing again with nothing pending adds no row.
     with server.QUEUE_LOCK:
         server.QUEUE.clear()
     server._flush_pending_tags()
@@ -604,8 +553,7 @@ def test_auto_tag_coalesces_into_one_job(_isolated_queue, monkeypatch, tmp_path,
 
 def test_pending_tags_wait_for_the_rest_of_the_queue(_isolated_queue, monkeypatch,
                                                      tmp_path, _isolated_ratings):
-    # Mid-batch, the remaining generate jobs are still queued — flushing then
-    # would produce one tag job per image after all.
+    # Mid-batch, flushing would still make one tag job per image.
     out, target = _setup_outputs(tmp_path, monkeypatch)
     monkeypatch.setattr(server.tagger_mod, "timm_available", lambda: True)
     monkeypatch.setitem(server.SETTINGS, "nsfw_blur", True)
@@ -618,7 +566,6 @@ def test_pending_tags_wait_for_the_rest_of_the_queue(_isolated_queue, monkeypatc
         assert [j.kind for j in server.QUEUE] == ["generate"]
     assert server._PENDING_TAG == [target]   # still held
 
-    # Once the generation is off the queue, the rating goes in.
     with server.QUEUE_LOCK:
         server.QUEUE.clear()
     server._flush_pending_tags()
@@ -650,10 +597,8 @@ def test_gallery_scan_enqueues_job_and_skips_rated(_isolated_queue, monkeypatch,
     r = server.api_gallery_scan()
     assert r["total"] == 1 and r["job"] is not None
     with server.QUEUE_LOCK:
-        # Same lowest priority as the auto/rescan jobs: a full-gallery scan
-        # takes minutes and must never run ahead of a queued generation.
+        # Lowest priority, like the auto/rescan jobs.
         assert server.QUEUE[0].priority == -10
-    # Once rated (unchanged), the scan finds nothing to do.
     server._store_ratings({"01-01-2026/01-123.png": {
         "rating": "PG", "nsfw": False, "conf": 0.9,
         "key": server._image_key(target)}})
@@ -675,13 +620,11 @@ def test_tagger_status_reports_counts(monkeypatch, tmp_path, _isolated_ratings):
         "rating": "PG", "nsfw": False, "conf": 0.9,
         "key": server._image_key(target)}})
     assert server.api_tagger_status()["rated"] == 1
-    # Stale rows don't count: a stale verdict is exactly what a scan re-does,
-    # so counting it would report "all rated" with a rescan still pending.
+    # Stale rows don't count: a scan would re-do them.
     monkeypatch.setattr(server.tagger_mod, "DECISION_VERSION",
                         server.tagger_mod.DECISION_VERSION + 1)
     assert server.api_tagger_status()["rated"] == 0
-    # Nor do rows for images that no longer exist (which could push rated past
-    # total and read as "2400 / 2320 rated").
+    # Nor do rows for deleted images (would read as "2400 / 2320 rated").
     monkeypatch.setattr(server.tagger_mod, "DECISION_VERSION",
                         server.tagger_mod.DECISION_VERSION - 1)
     server._store_ratings({"01-01-2026/gone.png": {
@@ -692,8 +635,7 @@ def test_tagger_status_reports_counts(monkeypatch, tmp_path, _isolated_ratings):
 
 def test_tag_job_cancel_keeps_what_it_already_rated(monkeypatch, tmp_path,
                                                     _isolated_ratings):
-    # A full-gallery scan runs for minutes; cancelling it must persist the
-    # verdicts already computed instead of throwing the work away.
+    # Cancelling must keep the verdicts already computed.
     import utils
     out, target = _setup_outputs(tmp_path, monkeypatch)
     monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
@@ -723,7 +665,6 @@ def test_purge_trash_removes_aged_entries(monkeypatch, tmp_path):
     old.write_bytes(b"x")
     new = trash / "9999999999_new.png"
     new.write_bytes(b"x")
-    # Backdate the old entry below the retention cutoff.
     old_time = time.time() - (server.TRASH_RETENTION_DAYS + 1) * 86400
     os.utime(old, (old_time, old_time))
     purged = server._purge_trash()
@@ -750,7 +691,7 @@ def test_scan_outputs_skips_dot_trash(tmp_path, monkeypatch):
     assert "trashed.png" not in names
 
 
-# ── #11: scan_outputs in-memory cache ────────────────────────────────
+# ── scan_outputs in-memory cache ─────────────────────────────────────
 
 def test_scan_outputs_cache_avoids_rewalk_and_invalidates(tmp_path, monkeypatch):
     import utils
@@ -779,7 +720,7 @@ def test_scan_outputs_cache_avoids_rewalk_and_invalidates(tmp_path, monkeypatch)
     assert calls["n"] == 1                       # cache hit: no re-walk
     assert [f.name for f in second] == ["01-1.png"]
 
-    # A new file appears only after the save/delete invalidation hook fires.
+    # A new file appears only after the invalidation hook fires.
     (day / "02-2.png").write_bytes(b"x")
     utils.invalidate_outputs_cache()
     third = utils.scan_outputs()
@@ -789,9 +730,7 @@ def test_scan_outputs_cache_avoids_rewalk_and_invalidates(tmp_path, monkeypatch)
 
 
 def test_scan_outputs_cache_misses_when_outputs_dir_repointed(tmp_path, monkeypatch):
-    """A repointed OUTPUTS_DIR (tests, a future DIFFUCORE_DATA_DIR) must always
-    miss — the cache key includes the dir path so a stale list from another dir
-    is never served."""
+    """A repointed OUTPUTS_DIR must always miss (the key includes the path)."""
     import utils
     utils.invalidate_outputs_cache()
 
@@ -807,23 +746,20 @@ def test_scan_outputs_cache_misses_when_outputs_dir_repointed(tmp_path, monkeypa
     (out_b / "02-02-2026").mkdir()
     (out_b / "02-02-2026" / "02-b.png").write_bytes(b"x")
     monkeypatch.setattr(utils, "OUTPUTS_DIR", out_b)
-    # No explicit invalidate — the dir change alone must force a fresh walk.
     assert [f.name for f in utils.scan_outputs()] == ["02-b.png"]
 
 
-# ── #12: /api/thumb cache keyed by source mtime+size ─────────────────
+# ── /api/thumb cache keyed by source mtime+size ──────────────────────
 
 def test_thumb_cache_busts_on_source_overwrite(monkeypatch, tmp_path):
     _setup_outputs(tmp_path, monkeypatch)  # outputs/01-01-2026/01-123.png (8x8)
     target = server.OUTPUTS_DIR / "01-01-2026" / "01-123.png"
     assert target.is_file()
 
-    # First request generates and caches the thumbnail.
     server.api_thumb(path="01-01-2026/01-123.png")
     cache1 = server._thumb_cache_path(target)
     assert cache1.is_file()                       # thumbnail generated on first hit
 
-    # Overwrite the source with different content + a clearly newer mtime.
     Image.new("RGB", (16, 16), (200, 100, 50)).save(target)
     now = time.time()
     os.utime(target, (now + 5, now + 5))           # guarantee an mtime advance
@@ -842,7 +778,6 @@ def test_thumb_cache_hit_serves_existing_without_regen(monkeypatch, tmp_path):
     cache = server._thumb_cache_path(target)
     assert cache.is_file()
     mtime_before = cache.stat().st_mtime_ns
-    # A second hit must not regenerate the webp (the cache file is untouched).
     server.api_thumb(path="01-01-2026/01-123.png")
     assert cache.stat().st_mtime_ns == mtime_before
 
@@ -859,7 +794,7 @@ def test_gallery_delete_purges_thumb_cache(monkeypatch, tmp_path):
     assert not cache.exists()                      # thumbnail dropped with the image
 
 
-# ── #4: shutdown partial-preview save ─────────────────────────────────
+# ── shutdown partial-preview save ────────────────────────────────────
 
 def test_save_partial_preview_writes_file(monkeypatch, tmp_path):
     job = server.Job("generate", "t", lambda j: {})
@@ -871,7 +806,6 @@ def test_save_partial_preview_writes_file(monkeypatch, tmp_path):
     assert path == out and out.is_file()
     with Image.open(out) as im:
         assert im.size == (64, 64)
-    # The PNG parameters flag it as a partial.
     assert "PARTIAL" in server.md.read_png_metadata(str(out))
 
 
@@ -881,7 +815,7 @@ def test_save_partial_preview_noop_without_preview(monkeypatch, tmp_path):
     assert server._save_partial_preview(None) is None
 
 
-# ── #5: alpha-preserving image + mask decode ──────────────────────────
+# ── alpha-aware image + mask decode ──────────────────────────────────
 
 def _png_bytes(img: Image.Image) -> bytes:
     buf = io.BytesIO()
@@ -890,21 +824,18 @@ def _png_bytes(img: Image.Image) -> bytes:
 
 
 def test_decode_image_composites_rgba_onto_white_not_black():
-    # Transparent center on an RGBA image: dropping alpha via convert("RGB")
-    # would leave black; compositing onto white leaves white.
+    # convert("RGB") alone would leave the transparent center black.
     rgba = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
     import base64
     data = "data:image/png;base64," + base64.b64encode(_png_bytes(rgba)).decode()
     rgb = server._decode_image(data)
     assert rgb.mode == "RGB"
-    # The previously-transparent pixel is now white, not black.
     px = rgb.getpixel((0, 0))
     assert px == (255, 255, 255)
 
 
 def test_decode_mask_uses_alpha_as_mask():
-    # An RGBA image where alpha is the mask: opaque on the left, transparent
-    # on the right. The mask should be 255 (opaque) on the left and 0 on the right.
+    # Alpha is the mask: opaque (paint) on the left, transparent on the right.
     rgba = Image.new("RGBA", (4, 2), (0, 0, 0, 0))
     for x in range(2):
         rgba.putpixel((x, 0), (0, 0, 0, 255))   # opaque → paint
@@ -924,17 +855,15 @@ def test_decode_mask_luminance_fallback_for_no_alpha():
     data = "data:image/png;base64," + base64.b64encode(_png_bytes(rgb)).decode()
     mask = server._decode_mask(data)
     assert mask.mode == "L"
-    # Luminance of (200,100,50) ≈ 132 — not 255 (alpha path) nor 0.
+    # Luminance of (200,100,50) ≈ 132, neither 255 (alpha path) nor 0.
     assert 120 < mask.getpixel((0, 0)) < 145
 
 
-# ── #6: priority enqueue (load jobs jump the queue) ───────────────────
+# ── priority enqueue (load jobs jump the queue) ──────────────────────
 
 class _NoOpWake:
-    """A stand-in for QUEUE_WAKE that never wakes the (possibly lingering)
-    daemon worker thread, so a priority-insert test isn't raced by the worker
-    popping the job before we inspect — and doesn't broadcast on a closed loop
-    left behind by a prior TestClient session."""
+    """QUEUE_WAKE stand-in that never wakes the lingering daemon worker, so it
+    can't pop the job before the test inspects the queue."""
     def set(self): pass
     def clear(self): pass
     def wait(self, timeout=None): return True
@@ -972,8 +901,7 @@ def test_enqueue_preserves_fifo_within_equal_priority(_isolated_queue):
 
 
 def test_load_job_priority_jumps_queue(_isolated_queue):
-    # A load-shaped job built the same way the /api/load handler builds it
-    # (priority=10) jumps ahead of a queued generate.
+    # Built like the /api/load handler builds it (priority=10).
     job = server.Job("load", "load SD/SDXL", lambda j: {}, priority=10)
     assert job.priority == 10
     gen = server.Job("generate", "g", lambda j: {})
@@ -983,7 +911,7 @@ def test_load_job_priority_jumps_queue(_isolated_queue):
         assert server.QUEUE[0].kind == "load"
 
 
-# ── #9: structured logging (--log-file, run-id, chmod 600) ────────────
+# ── structured logging (--log-file, run-id, chmod 600) ────────────────
 
 def test_log_setup_writes_run_id_stamped_file(monkeypatch, tmp_path):
     import log_setup
@@ -1013,7 +941,7 @@ def test_log_runtime_env_does_not_crash(caplog):
     assert any("runtime:" in r.getMessage() for r in caplog.records)
 
 
-# ── #10: X/Y/Z Checkpoint LRU cache ───────────────────────────────────
+# ── X/Y/Z Checkpoint LRU cache ────────────────────────────────────────
 
 class _FakeModel:
     def __init__(self, name):
@@ -1069,9 +997,7 @@ def test_ckpt_cache_skips_flux_and_offloaded():
 
 
 def test_teacache_rejected_on_cuda_graphs_anima():
-    """TeaCache keeps tensors from inside the compiled forward alive across
-    steps; CUDA Graphs replays overwrite them — the engine must refuse the
-    combination up front instead of crashing mid-generation."""
+    """TeaCache + CUDA Graphs on Anima is refused up front."""
     eng = _cache_engine()
     eng._loaded = _fake_loaded("A", family="anima")
     eng._cuda_graphs = True
@@ -1079,8 +1005,7 @@ def test_teacache_rejected_on_cuda_graphs_anima():
         eng.generate_t2i(prompt="x", teacache_thresh=0.4)
     with pytest.raises(RuntimeError, match="incompatible with CUDA Graphs"):
         eng.calibrate_teacache(prompt="x")
-    # TeaCache off passes the guard — it then fails later on the fake model,
-    # which is fine; just assert the guard isn't what trips.
+    # TeaCache off passes the guard (then fails later on the fake model).
     try:
         eng.generate_t2i(prompt="x", teacache_thresh=0.0)
     except Exception as e:  # noqa: BLE001
@@ -1097,19 +1022,16 @@ def test_ckpt_cache_restore_rejects_settings_mismatch():
     assert "A" not in eng._ckpt_cache
 
 
-# ── BUG.md L8: compare against the *entry's* settings, not the live ones ──
+# ── compare against the entry's settings, not the live ones ───────────
 
 def test_ckpt_cache_restore_uses_entry_settings_not_live_flags():
-    """A stashed model records what it was staged under. The comparison used
-    the engine's live flags instead, which by then described whichever model
-    was loaded after it — so a changed offload policy went unnoticed and the
-    stale placement was reused."""
+    """A stashed model must be compared against the settings it was staged
+    under, not the live flags, which describe whichever model loaded after."""
     eng = _cache_engine()
     # A is stashed while the engine is on offload="none".
     eng._loaded = _fake_loaded("A")
     assert eng._stash_loaded() is True
-    # B is then loaded with a different policy (this is what a real load does
-    # after the restore attempt), leaving the live flags describing B.
+    # B then loads with a different policy, leaving the live flags on B.
     eng._offload = "stream"
     # Asking for A under B's policy must miss: A's placement is "none".
     assert eng._try_cache_restore("A", "stream", True, False, False,
@@ -1117,12 +1039,11 @@ def test_ckpt_cache_restore_uses_entry_settings_not_live_flags():
     assert "A" not in eng._ckpt_cache
 
 
-# ── BUG.md M4: calibration caches must never feed NaN into generation ──
+# ── calibration caches must never feed NaN into generation ────────────
 
 def test_cache_json_rejects_nan_and_corruption(tmp_path):
-    """``json.dumps`` writes NaN as the non-standard ``NaN`` token and
-    ``json.load`` reads it straight back, so a degenerate polyfit would poison
-    every later TeaCache decision with no error at all."""
+    """json round-trips NaN silently, so a degenerate fit must read as
+    "not calibrated"."""
     from engine import _read_cache_json, _finite_series, _write_cache_json
 
     good = tmp_path / "good.json"
@@ -1159,18 +1080,15 @@ def test_cache_json_write_is_atomic(tmp_path):
     assert not list(tmp_path.glob("*.tmp*")), "temp file cleaned up"
 
 
-# ── BUG.md M2: "oss" is a t2i-only schedule ─────────────────────────
+# ── "oss" is a t2i-only schedule ─────────────────────────────────────
 
 def test_oss_scheduler_degrades_outside_t2i():
-    """The scheduler dropdown is shared across modes; picking oss in t2i and
-    switching to img2img used to fail the job, where the detailer/upscaler
-    would have fallen back."""
+    """Picking oss in t2i, then switching to img2img, used to fail the job."""
     eng = _cache_engine()
     eng._loaded = _fake_loaded("A", family="anima")
     assert eng._degrade_oss("oss") == "flow"
     eng._loaded = _fake_loaded("A", family="sdxl")
     assert eng._degrade_oss("oss") == "karras"
-    # Anything else passes through untouched.
     assert eng._degrade_oss("beta") == "beta"
 
 

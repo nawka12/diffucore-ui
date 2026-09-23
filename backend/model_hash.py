@@ -1,15 +1,10 @@
-"""SwarmUI-style tensor hashes for model files: compute, cache, and scan.
+"""Model file hashes: compute, cache, and scan.
 
-SwarmUI's model hash is a SHA256 over the safetensors *tensor-data* section —
-the 8-byte header-length prefix and the JSON header are skipped — formatted as
-``"0x"`` + hexdigest. (See SwarmUI ``T2IModel.GetOrGenerateTensorHashSha256``.)
-We also compute the *full-file* SHA256 in the same pass: its first 10 hex chars
-are Civitai/A1111's AutoV2 hash, which is what Civitai matches resources on and
-what the A1111 ``Model hash:`` / ``Lora hashes:`` fields carry.
-Hashing a multi-GB checkpoint is slow, so results are cached in a JSON file
-keyed by the model's path + mtime + size (a re-download busts its entry). A
-background scan at startup fills in any missing hashes; the metadata writer
-only ever *reads* the cache, so saving an image never blocks on a hash.
+Two SHA256s from one read: SwarmUI's tensor hash (``"0x"`` + hex over the
+tensor-data section, header skipped; ``T2IModel.GetOrGenerateTensorHashSha256``)
+and the full-file hash, whose first 10 hex chars are the AutoV2 value Civitai
+and A1111 metadata use. Cached by path + mtime + size and filled by a startup
+scan; the metadata writer only reads the cache.
 """
 
 from __future__ import annotations
@@ -35,9 +30,7 @@ _CACHE: dict | None = None  # {rel_path: {"mtime": int_ns, "size": int, "hash": 
 
 _MODEL_EXTS = {".safetensors", ".ckpt", ".pt", ".pth"}
 
-# Anima/FLUX load a split DiT and wrap its filename as ``Anima(dit.safetensors)``
-# / ``FLUX(dit.safetensors)`` (see engine.load_anima/load_flux); everything else
-# is a single-file checkpoint whose loaded name is the filename itself.
+# Split-DiT loads are named ``Anima(dit.safetensors)`` / ``FLUX(dit.safetensors)``.
 _WRAP_RE = re.compile(r"^(?:Anima|FLUX)\((.*)\)$")
 
 
@@ -52,9 +45,8 @@ def _unwrap(loaded_name: str) -> tuple[str, bool]:
 
 
 def clean_model_name(loaded_name: str, strip_ext: bool = False) -> str:
-    """Human/tool-friendly model name: drop the ``Anima(...)``/``FLUX(...)``
-    family wrapper. With ``strip_ext``, also drop a trailing model extension
-    (SwarmUI's ``model`` param carries no extension; its ``sui_models`` name does)."""
+    """Model name without the ``Anima(...)``/``FLUX(...)`` wrapper; with
+    ``strip_ext``, also without the file extension."""
     name = _unwrap(loaded_name)[0]
     if strip_ext:
         p = Path(name)
@@ -64,10 +56,8 @@ def clean_model_name(loaded_name: str, strip_ext: bool = False) -> str:
 
 
 def resolve_model_file(loaded_name: str) -> Path | None:
-    """Reverse an engine ``loaded_name`` to its on-disk weights file, or ``None``.
-
-    ``None`` for a name that isn't a plain filename, same as for a missing one:
-    this runs while writing metadata, which must not fail over it."""
+    """Reverse an engine ``loaded_name`` to its weights file, or ``None`` (also
+    for a name that isn't a plain filename; metadata writing must not fail)."""
     fname, is_dm = _unwrap(loaded_name)
     try:
         path = diffusion_model_path(fname) if is_dm else checkpoint_path(fname)
@@ -77,12 +67,8 @@ def resolve_model_file(loaded_name: str) -> Path | None:
 
 
 def resolve_lora_file(name: str) -> Path | None:
-    """Resolve a ``<lora:name:…>`` name to its on-disk file, or ``None``.
-
-    ``lora_path`` accepts the bare name (no extension), as LoRA prompt tags use.
-    A name that isn't a plain filename resolves to ``None`` like any other
-    miss — this runs while writing metadata, which must not fail over a typo in
-    a prompt tag."""
+    """Resolve a ``<lora:name:…>`` name to its file, or ``None`` (also for a
+    name that isn't a plain filename)."""
     try:
         p = lora_path(name)
     except ValueError:
@@ -121,12 +107,8 @@ def _rel_key(path: Path) -> str:
 
 
 def _hash_file(path: Path) -> tuple[str | None, str | None]:
-    """One-pass ``(tensor_hash, full_sha256)`` for a safetensors file, or ``(None, None)``.
-
-    ``tensor_hash`` is SwarmUI's ``"0x"`` + SHA256 over just the tensor-data
-    section (header skipped); ``full_sha256`` is the SHA256 over the *whole*
-    file — Civitai/A1111's key, whose first 10 hex chars are AutoV2. Both are
-    fed from a single read so hashing a multi-GB file only touches disk once."""
+    """One-pass ``(tensor_hash, full_sha256)`` for a safetensors file, or
+    ``(None, None)``."""
     try:
         with open(path, "rb") as f:
             head = f.read(8)
@@ -134,10 +116,10 @@ def _hash_file(path: Path) -> tuple[str | None, str | None]:
             full = hashlib.sha256()
             tensor = hashlib.sha256()
             full.update(head)
-            full.update(f.read(header_len))          # 8-byte prefix + JSON header
+            full.update(f.read(header_len))
             for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                full.update(chunk)                   # …then the tensor data:
-                tensor.update(chunk)                 # full = whole file, tensor = data only
+                full.update(chunk)
+                tensor.update(chunk)
     except (OSError, struct.error) as e:
         log.warning("model-hash failed for %s: %s", path, e)
         return None, None
@@ -158,11 +140,8 @@ def _fresh_entry(cache: dict, key: str, st: os.stat_result) -> dict | None:
 
 
 def get_hash(path: Path | None) -> str | None:
-    """Cached tensor hash for a model file, or ``None`` if not yet computed.
-
-    Non-blocking: never hashes here (that's :func:`ensure_hash` / :func:`scan_all`),
-    so the metadata write path stays fast. ``None`` for non-safetensors or a
-    stale/missing cache entry."""
+    """Cached tensor hash for a model file, or ``None``. Never hashes here
+    (see :func:`ensure_hash`), so the metadata write path stays fast."""
     if path is None or path.suffix.lower() != ".safetensors":
         return None
     try:
@@ -175,10 +154,8 @@ def get_hash(path: Path | None) -> str | None:
 
 
 def get_autov2(path: Path | None) -> str | None:
-    """Cached AutoV2 (first 10 hex of the full-file SHA256) for Civitai/A1111, or None.
-
-    Non-blocking, same contract as :func:`get_hash`: ``None`` for a non-safetensors
-    file or a stale/missing/tensor-only (pre-upgrade) cache entry."""
+    """Cached AutoV2 (full-file SHA256[:10]), or ``None``. Non-blocking, like
+    :func:`get_hash`."""
     if path is None or path.suffix.lower() != ".safetensors":
         return None
     try:
@@ -192,11 +169,8 @@ def get_autov2(path: Path | None) -> str | None:
 
 
 def ensure_hash(path: Path) -> str | None:
-    """Return the tensor hash, computing + caching it if missing/stale. Blocking.
-
-    Computes both the tensor hash and the full-file SHA256 in one pass; an older
-    cache entry carrying only ``hash`` (no ``sha256``) is treated as stale so the
-    AutoV2 value gets filled in on the next scan."""
+    """Return the tensor hash, computing and caching it if missing or stale
+    (an entry without ``sha256`` counts as stale). Blocking."""
     if path.suffix.lower() != ".safetensors":
         return None
     try:
@@ -208,7 +182,7 @@ def ensure_hash(path: Path) -> str | None:
         entry = _fresh_entry(_load_cache(), key, st)
         if entry and entry.get("hash") and entry.get("sha256"):
             return entry.get("hash")
-    tensor, full = _hash_file(path)  # slow — computed outside the lock
+    tensor, full = _hash_file(path)  # slow, so outside the lock
     if tensor is None:
         return None
     with _LOCK:
@@ -239,12 +213,8 @@ def _total_size(paths: "list[Path]") -> int:
 
 
 def scan_all(background: bool = True) -> None:
-    """Hash every checkpoint / diffusion model / LoRA missing a fresh cache entry.
-
-    Runs once at startup. With ``background=False`` the caller blocks until every
-    file is hashed (the server does this before serving, so hashing never contends
-    with generation I/O); ``background=True`` runs it on a daemon thread instead.
-    Either way, progress is logged per file so a big first batch shows advancement."""
+    """Hash every checkpoint / diffusion model / LoRA missing a fresh entry,
+    logging per-file progress. ``background=False`` blocks until done."""
     def _run() -> None:
         targets: list[Path] = []
         for d in (CHECKPOINTS_DIR, DIFFUSION_DIR, LORAS_DIR):
@@ -260,15 +230,14 @@ def scan_all(background: bool = True) -> None:
                  total, _fmt_size(total_bytes))
         started = time.monotonic()
         for i, p in enumerate(missing, 1):
-            # A file deleted between the listing and here must not abort the
-            # scan — the models after it would stay unhashed until restart.
+            # A file deleted since the listing must not abort the scan.
             try:
                 size = p.stat().st_size
             except OSError:
                 log.info("[model-hash] [%d/%d] %s vanished; skipping", i, total, p.name)
                 continue
             log.info("[model-hash] [%d/%d] %s (%s)", i, total, p.name, _fmt_size(size))
-            ensure_hash(p)   # already tolerates a file that vanished mid-hash
+            ensure_hash(p)
         log.info("[model-hash] scan complete: %d hashed in %.1fs",
                  total, time.monotonic() - started)
 

@@ -5,7 +5,7 @@ Each subdirectory here is one Diffucore UI extension, declared by an
 every enabled extension. Install new ones from the **Settings → Extensions**
 panel (git URL or .zip archive URL), or drop a folder here and restart.
 
-`example-watermark/` ships with the app as a reference — read its
+`example-watermark/` ships with the app as a reference. Read its
 `extension.py` and `web/example.js` alongside [`../docs/EXTENSIONS.md`](../docs/EXTENSIONS.md)
 for the full API.
 

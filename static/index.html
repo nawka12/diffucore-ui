@@ -29,9 +29,7 @@
       </button>
     </header>
 
-    <!-- ── SSE connection banner (#7): a stalled stream freezes the queue
-         panel silently; this surfaces "lost connection" so the user knows the
-         UI is no longer live and the queue panel may be stale. -->
+    <!-- ── SSE connection banner: the UI is no longer live ──────── -->
     <div class="conn-banner reconnecting" role="status" aria-live="polite"
          x-show="connState === 'reconnecting'"
          x-transition>
@@ -344,7 +342,7 @@
               <p class="sub">What decides a skip. TeaCache accumulates drift of the timestep-modulated
                 block input; EasyCache accumulates the model's own predicted output change. On this
                 repo's Anima setups EasyCache measured <em>worse</em> at matched skip counts and its τ
-                does not transfer between ancestral and multistep samplers — keep Input drift unless
+                does not transfer between ancestral and multistep samplers. Keep Input drift unless
                 you are experimenting (see the guide).</p>
               <label class="chip toggle" :class="{on: form.teacacheCalibrated}"
                      x-show="form.teacacheRule === 'drift'">
@@ -645,7 +643,7 @@
           <input type="checkbox" x-model="preview"> Live preview
         </label>
         <label class="chip toggle preview-toggle" :class="{on: genBlur}"
-               title="Blur freshly generated results at or above the rating chosen in Settings → Gallery until clicked. Independent of the gallery blur setting — with this on, results are AI-rated either way.">
+               title="Blur freshly generated results at or above the rating chosen in Settings → Gallery until clicked. Independent of the gallery blur setting; with this on, results are AI-rated either way.">
           <input type="checkbox" x-model="genBlur"> Blur NSFW
         </label>
         <div class="progress" x-show="busy">
@@ -653,7 +651,7 @@
           <span class="progress-label"><span x-show="calibrating">Calibrating (one-time) · </span><span x-text="progressLabel"></span></span>
         </div>
 
-        <!-- shared queue — visible to every device -->
+        <!-- shared queue, visible to every device -->
         <div class="queue" x-show="queue.length">
           <template x-for="j in queue" :key="j.id">
             <div class="queue-item" :class="{running: j.status==='running', mine: j.id===myJobId || _myBatchIds.includes(j.id)}">
@@ -668,8 +666,7 @@
         <div class="canvas" :class="{stack: sweeping}">
           <template x-if="sweeping">
             <div class="grids">
-              <!-- first in the DOM so the sticky pill stays reachable above a
-                   tall stack of grids -->
+              <!-- first in the DOM so the sticky pill stays reachable -->
               <div class="grids-hint hint-pill" x-show="blurOn && xyzNsfwFlag && xyzGrids.length">
                 <span class="hint-pill-txt" x-show="xyzBlurred"
                       x-text="'NSFW (' + ((xyzMeta && xyzMeta.rating) || '?') + ')'"></span>
@@ -749,8 +746,7 @@
                @input.debounce.300ms="searchGallery()"
                placeholder="Search prompts, models, samplers…"
                aria-label="Search gallery">
-        <!-- Refresh re-runs the current query (empty query = full list);
-             openGallery() would silently wipe an active search. -->
+        <!-- Refresh re-runs the current query; openGallery() would wipe it. -->
         <button class="btn" @click="searchGallery()" :disabled="gallerySearching"
                 x-text="gallerySearching ? 'Indexing…' : 'Refresh'"></button>
       </div>
@@ -935,7 +931,7 @@
                   <summary>Why this is not a free win</summary>
                   <p>At CFG <em>s</em> the guided velocity is
                     <code>v_uncond + s·(v_cond − v_uncond)</code>, so an error in the uncond pass
-                    enters with weight <code>|1 − s|</code> — 3.5 at CFG 4.5, against the positive
+                    enters with weight <code>|1 − s|</code>: 3.5 at CFG 4.5, against the positive
                     branch's 4.5. The uncond stream is not less important, only smoother, and at an
                     equal threshold it already skips more. Raise this only if an A/B says the extra
                     skips cost nothing.</p>
@@ -980,7 +976,7 @@
                   <span class="field-tag">guidance interval</span></label>
               </div>
               <p class="sub" x-show="settings.cfg_interval_start >= settings.cfg_interval_end"
-                 x-text="'CFG start must be below CFG end — changes save once the pair is valid.'"></p>
+                 x-text="'CFG start must be below CFG end. Changes save once the pair is valid.'"></p>
               <p class="set-foot">Guidance interval: apply CFG only between these fractions of the sampling
                 run. Outside the band the negative-prompt pass is skipped, saving a full model pass per
                 skipped step. 0 / 1 = every step. Anima + SD/SDXL (FLUX has no CFG pass).</p>
@@ -1033,13 +1029,13 @@
                       x-text="settings.nsfw_blur ? 'On' : 'Off'"></span>
                 <span class="set-badge" :class="{accent: taggerStatus.available}"
                       x-text="taggerStatus.available ? 'AI rating' : 'Prompt only'"
-                      :title="taggerStatus.available ? 'WD EVA02-Large Tagger v3' : 'timm not installed — blur uses prompt heuristics'"></span>
+                      :title="taggerStatus.available ? 'WD EVA02-Large Tagger v3' : 'timm not installed: blur uses prompt heuristics'"></span>
               </div>
               <p class="set-purpose">Blur gallery thumbnails and lightbox images at or above a chosen rating, so
                 NSFW outputs don't show at a glance. Every image is rated by the
-                WD EVA02-Large Tagger v3 (a 315M-param vision model) — a
-                diffusion-capable machine runs it in milliseconds — with the
-                prompt heuristic as fallback.</p>
+                WD EVA02-Large Tagger v3 (a 315M-param vision model that runs in
+                milliseconds on any diffusion-capable machine), with the prompt
+                heuristic as fallback.</p>
               <label class="chip" :class="{on: settings.nsfw_blur}">
                 <input type="checkbox" x-model="settings.nsfw_blur" @change="saveSettings()">
                 Blur NSFW

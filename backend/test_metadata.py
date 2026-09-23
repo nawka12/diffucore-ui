@@ -1,9 +1,4 @@
-"""Tests for the PNG metadata round-trip (pure functions, no GPU needed).
-
-Run from the project root::
-
-    .venv/bin/python -m pytest backend/test_metadata.py -v
-"""
+"""Tests for the PNG metadata round-trip (pure functions, no GPU)."""
 
 from __future__ import annotations
 
@@ -28,8 +23,8 @@ def _roundtrip(gen_kwargs: dict, **kw) -> dict:
 
 
 def _roundtrip_swarm(gen_kwargs: dict, **kw) -> dict:
-    """Same round-trip as :func:`_roundtrip`, but through the SwarmUI formatter.
-    parse_metadata auto-detects the JSON blob, so the reader path is identical."""
+    """:func:`_roundtrip` through the SwarmUI formatter (parse_metadata
+    auto-detects the JSON)."""
     params = md.format_swarmui_metadata(gen_kwargs, _StubEngine(), **kw)
     return md.workspace_fields(md.parse_metadata(params))
 
@@ -100,8 +95,7 @@ def test_teacache_forecast_roundtrips():
 
 
 def test_teacache_forecast_absent_restores_taylor():
-    """Pre-HiCache images carry no forecast key but were generated with the
-    taylor forecast — restore that, not the current hermite default."""
+    """Pre-HiCache images carry no forecast key but used taylor."""
     fields = md.workspace_fields({"teacache": "0.15"})
     assert fields["teacacheForecast"] == "taylor"
 
@@ -122,8 +116,7 @@ def test_teacache_rule_absent_restores_drift():
 
 
 def test_teacache_uncond_scale_written_only_when_set():
-    """A settings-level knob: written for the record when raised, absent at the
-    1.0 default, and never restored onto the form (like the CFG interval)."""
+    """Written when raised, absent at 1.0, never restored onto the form."""
     gen = {**_BASE_GEN, "teacache_thresh": 0.15}
     assert "TeaCache uncond scale" not in md.format_metadata(gen, _StubEngine())
     gen2 = {**gen, "teacache_uncond_scale": 2.0}
@@ -174,7 +167,7 @@ def test_swarmui_blob_shape_and_ids():
     assert p["cfgscale"] == 5.0
     assert p["seed"] == 2150942283
     assert p["width"] == 1024 and p["height"] == 1536
-    assert p["aspectratio"] == "2:3"          # gcd(1024,1536)=512
+    assert p["aspectratio"] == "2:3"
     assert blob["sui_models"][0]["param"] == "model"
 
 
@@ -210,7 +203,7 @@ def test_swarmui_cleans_wrapped_model_name():
     blob = json.loads(md.format_swarmui_metadata(_BASE_GEN, _WrappedEngine()))
     assert blob["sui_image_params"]["model"] == "AnimaPulse-1.1"          # no wrapper, no ext
     assert blob["sui_models"][0]["name"] == "AnimaPulse-1.1.safetensors"  # no wrapper, keeps ext
-    assert blob["sui_models"][0]["hash"] is None    # file not on disk → uncached, null (not faked)
+    assert blob["sui_models"][0]["hash"] is None    # not on disk, so uncached (not faked)
 
 
 def test_a1111_cleans_wrapped_model_name():
@@ -221,8 +214,8 @@ def test_a1111_cleans_wrapped_model_name():
 
 
 def test_a1111_emits_civitai_hashes(monkeypatch):
-    """AutoV2 hashes land in ``Model hash:`` + a quoted ``Lora hashes:`` for Civitai,
-    and the new fields don't disturb the round-trip."""
+    """AutoV2 hashes land in ``Model hash:`` and a quoted ``Lora hashes:``
+    without disturbing the round-trip."""
     from pathlib import Path
     hashes = {"AnimaPulse-1.1.safetensors": "aaaaaaaaaa",
               "add-detail.safetensors": "bbbbbbbbbb"}
@@ -242,7 +235,7 @@ def test_a1111_emits_civitai_hashes(monkeypatch):
 
 
 def test_a1111_no_hashes_when_uncached(monkeypatch):
-    """No cached hash → no ``Model hash:`` / ``Lora hashes:`` lines (older metadata stays clean)."""
+    """No cached hash, no ``Model hash:`` / ``Lora hashes:`` lines."""
     monkeypatch.setattr(md.model_hash, "get_autov2", lambda path: None)
     params = md.format_metadata({**_BASE_GEN, "prompt": "a fox <lora:x:1>"}, _WrappedEngine())
     assert "Model hash:" not in params
@@ -263,8 +256,8 @@ def test_swarmui_loras_structured_not_inline():
     assert p["loras"] == "add-detail,bad-hands"      # comma-joined, prompt then neg
     assert p["loraweights"] == "0.8,1"
     lora_models = [m for m in blob["sui_models"] if m["param"] == "loras"]
-    assert [m["name"] for m in lora_models] == ["add-detail", "bad-hands"]  # not on disk → bare name
-    assert all(m["hash"] is None for m in lora_models)  # uncached (files absent), not faked
+    assert [m["name"] for m in lora_models] == ["add-detail", "bad-hands"]  # not on disk: bare name
+    assert all(m["hash"] is None for m in lora_models)
 
 
 def test_swarmui_loras_roundtrip_into_prompt():
@@ -296,7 +289,7 @@ def test_swarmui_detailer_and_upscale_roundtrip():
     fields = _roundtrip_swarm(_BASE_GEN, detailer=detailer, upscale=upscale)
     det = fields["detailer"]
     assert det["models"][0]["model"] == "face_yolov8n.pt"
-    assert det["models"][0]["prompt"] == "a face, sharp"   # comma-free but quoted-safe
+    assert det["models"][0]["prompt"] == "a face, sharp"
     assert det["strength"] == 0.4
     up = fields["upscale"]
     assert up["scale"] == 4.0
@@ -304,21 +297,19 @@ def test_swarmui_detailer_and_upscale_roundtrip():
     assert up["prompt"] == "a fox, sharp"                   # comma survives quote/unquote
 
 
-# ── BUG.md L22: workspace_fields returns only keys that were present ──
+# ── workspace_fields returns only keys that were present ──────────────
 
 def test_workspace_fields_omits_absent_seed():
-    """A metadata blob with no Seed used to yield ``seed: -1``, which the form
-    then applied as "random" — overwriting whatever the user had set."""
+    """No Seed once yielded ``seed: -1``, which overwrote the form as "random"."""
     assert "seed" not in md.workspace_fields({"prompt": "a fox"})
     assert "seed" not in md.workspace_fields({"seed": "not-a-number"})
     assert md.workspace_fields({"seed": "1234"})["seed"] == 1234
 
 
-# ── BUG.md L11: an explicit seed overrides engine.last_seed ──────────
+# ── an explicit seed overrides engine.last_seed ──────────────────────
 
 def test_format_metadata_seed_override():
-    """A standalone upscale has no generation of its own, so it must not
-    inherit the *previous* generation's seed from the engine."""
+    """A standalone upscale must not inherit the previous generation's seed."""
     params = md.format_metadata(_BASE_GEN, _StubEngine(), seed=777)
     assert "Seed: 777" in params
     assert md.workspace_fields(md.parse_metadata(params))["seed"] == 777
@@ -335,8 +326,8 @@ def test_format_swarmui_metadata_seed_override():
 # ── gallery NSFW rating (prompt-derived, drives the blur) ──────────
 
 def test_prompt_rating_tiers_and_false_positive_guards():
-    # Safe prompts stay below R — including substrings that would trip naive
-    # matching ("ass" in "badass", "anal" in "analog", "sex" in "sextant").
+    # Safe prompts stay below R, including substrings that trip naive matching
+    # ("ass" in "badass", "anal" in "analog", "sex" in "sextant").
     for p in ("portrait of a woman", "woman in bikini on the beach",
               "a badass knight", "analog photography", "a sextant at sea",
               "18-year-old student in class"):
@@ -356,17 +347,14 @@ def test_prompt_rating_tiers_and_false_positive_guards():
 
 
 def test_prompt_rating_stems_match_word_forms():
-    # Stem entries ("masturbat-") must fire on their inflections. Spelled as a
-    # bare stem with a trailing \b they could never match anything, which
-    # silently punched holes in the fallback rating.
+    # Stem entries ("masturbat-") must fire on their inflections.
     assert md.prompt_rating("masturbating") == "X"
     assert md.prompt_rating("ejaculation") == "X"
     assert md.prompt_rating("penetrating") == "X"
     assert md.prompt_rating("seductive pose") == "R"
     assert md.prompt_rating("necrophilia") == "XXX"
     assert md.prompt_rating("zoophilia") == "XXX"
-    # "18+" ends in punctuation; a trailing \b would demand a word char after
-    # the "+" and never fire.
+    # "18+" ends in punctuation, so it takes no trailing \b.
     assert md.prompt_rating("a photo, 18+") == "X"
     # Stems still can't swallow unrelated words that merely start the same way.
     for p in ("assassin creed", "classic car", "cumulus clouds",
@@ -375,7 +363,6 @@ def test_prompt_rating_stems_match_word_forms():
 
 
 def test_prompt_rating_ignores_negative_prompt():
-    # The negative prompt requests what the image must NOT contain — someone
-    # banning "nude" isn't generating nudity.
+    # Someone banning "nude" in the negative isn't generating nudity.
     assert md.prompt_rating("a cat") == "PG"
     assert md.prompt_rating("a cat\nNegative prompt: nude, gore") == "PG"

@@ -1,9 +1,4 @@
-"""Tests for the tiled upscaler (pure functions, no GPU needed).
-
-Run from the project root::
-
-    .venv/bin/python -m pytest backend/test_upscale.py -v
-"""
+"""Tests for the tiled upscaler geometry and blending (pure functions)."""
 
 from __future__ import annotations
 
@@ -47,12 +42,12 @@ def test_tile_starts_degenerate():
     assert starts[-1] == 1025 - 1024
 
 
-# ── BUG.md H3: overlap >= tile ─────────────────────────────────────
+# ── overlap >= tile ────────────────────────────────────────────────
 
 @pytest.mark.parametrize("overlap", [1024, 2048])
 def test_tile_starts_clamps_overlap_at_or_above_tile(overlap):
-    """``overlap == tile`` divided by zero; ``overlap > tile`` produced an empty
-    start list, so nothing was accumulated and the blend saved a black image."""
+    """``overlap == tile`` divided by zero; ``overlap > tile`` gave no starts
+    and a black image."""
     starts = tile_starts(4096, 1024, overlap)
     assert starts, "an overlap >= tile must still yield a covering grid"
     assert starts[0] == 0
@@ -150,12 +145,9 @@ def test_feather_weights_corner_ne_zero():
 
 
 def test_feather_spans_actual_overlap_no_hard_seam():
-    """When the actual tile overlap exceeds the requested value (few tiles span
-    the axis), feathering over the *actual* overlap avoids a wide flat 50/50
-    band that would average divergent tile detail into blur.
-
-    Reproduces the reported blur: a 2x of 1024 → 2048 packs 3 tiles/axis with a
-    512px overlap; a 128px ramp leaves ~260px of hard 50/50 averaging per seam.
+    """Feathering over the actual overlap (2x of 1024 packs 3 tiles/axis with
+    512px overlaps) leaves no wide flat 50/50 band; a 128px ramp left ~260px of
+    hard averaging per seam.
     """
     starts = tile_starts(2048, 1024, 128)
     ov = 1024 - (starts[1] - starts[0])
@@ -199,7 +191,6 @@ def test_blend_gradient_seamless():
     boxes = tile_grid(w, h, tile, overlap)
     acc = np.zeros((h, w, 3), dtype=np.float64)
     wsum = np.zeros((h, w, 1), dtype=np.float64)
-    # Build a reference gradient
     yy, xx = np.mgrid[:h, :w]
     gradient = np.stack([xx / w, yy / h, (xx + yy) / (w + h)], axis=-1)
     for x1, y1, x2, y2 in boxes:
@@ -209,7 +200,6 @@ def test_blend_gradient_seamless():
         acc[y1:y2, x1:x2] += tile_arr * fw
         wsum[y1:y2, x1:x2] += fw
     result = acc / np.clip(wsum, 1e-6, None)
-    # Check neighbour deltas across the tile seam
     ys = tile_starts(h, tile, overlap)
     for y_seam in ys[1:]:
         if y_seam < h:

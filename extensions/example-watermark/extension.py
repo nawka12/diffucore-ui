@@ -1,4 +1,4 @@
-"""Example Diffucore UI extension — a seed watermark.
+"""Example Diffucore UI extension: a seed watermark.
 
 Demonstrates the full extension surface:
 

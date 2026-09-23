@@ -1,29 +1,14 @@
 """Token + cookie authentication and CSRF/Origin guards for Diffucore UI.
 
-The local single-user case (no ``--listen`` / ``--share``) needs no auth — the
-loopback interface is already private. The moment the UI is exposed beyond
-localhost (``--share`` publishes it to the public internet; ``--listen`` to the
-LAN), an unauthenticated surface lets anyone drive the GPU, delete gallery
-images, and install extensions (RCE). This module gates that surface with a
-bearer token round-tripped through an HttpOnly ``SameSite=Lax`` cookie, plus an
-Origin allowlist that blocks cross-site POSTs (CSRF) regardless of auth.
+Off for plain localhost use. Once the UI is exposed (``--share``, ``--listen``)
+anyone could drive the GPU, delete images or install extensions (RCE), so a
+bearer token gates every non-public path. It travels in an HttpOnly
+``SameSite=Lax`` cookie, a ``?token=`` query or an ``Authorization: Bearer``
+header. ``--share`` / ``--auth-token`` enable the gate; a generated token is
+persisted to ``.auth_token`` (chmod 600) so it survives restarts.
 
-Flow:
-  - ``--share`` (or explicit ``--auth-token``) enables the gate. A token is
-    generated if one isn't supplied, printed once, and written to ``.auth_token``
-    (chmod 600) so a restarted server keeps the same token.
-  - ``GET /`` without a valid cookie serves a small login page. Submitting the
-    token (or visiting ``/?token=<token>``) sets the cookie and redirects to ``/``.
-  - Every other request (API, SSE, /outputs, /api/thumb) requires the cookie, a
-    ``?token=`` query, or an ``Authorization: Bearer <token>`` header. Same-origin
-    fetch / EventSource / <img> send the Lax cookie automatically, so the existing
-    frontend needs no changes.
-  - State-changing methods (POST/PUT/DELETE/PATCH) additionally require the
-    ``Origin`` (or ``Referer``) host to match the request ``Host`` — blocking
-    cross-site browser attacks. Requests with no Origin (curl, native clients)
-    pass through, since the CSRF risk is browser-only.
-
-Token comparison uses ``secrets.compare_digest`` to avoid timing oracles.
+State-changing requests with an ``Origin``/``Referer`` must match ``Host``
+(CSRF), whether or not auth is on. Requests without one (curl) pass.
 """
 
 from __future__ import annotations
@@ -42,9 +27,7 @@ _TOKEN_PATH = Path(__file__).resolve().parent.parent / ".auth_token"
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _STATE_CHANGE = {"POST", "PUT", "DELETE", "PATCH"}
 
-# Paths reachable without a valid cookie when auth is enabled. ``GET /`` serves
-# the login page (and the app once the cookie is set); the auth endpoints
-# obviously can't require a cookie to log in. Everything else is gated.
+# Paths reachable without a valid cookie when auth is enabled.
 _PUBLIC_PATHS = {"/", "/api/auth/login", "/api/auth/status"}
 
 
@@ -53,11 +36,8 @@ def generate_token() -> str:
 
 
 def load_or_create_token(path: Path = _TOKEN_PATH) -> str:
-    """Return the persisted token, creating + chmod-600-ing one if absent.
-
-    A stable token across restarts matters: a user who bookmarks the share URL
-    with ``?token=…`` keeps working after a restart, and other devices that
-    already hold the cookie aren't logged out.
+    """Return the persisted token, creating a chmod-600 one if absent, so
+    bookmarked ``?token=`` URLs and existing cookies survive a restart.
     """
     try:
         if path.is_file():
@@ -69,21 +49,15 @@ def load_or_create_token(path: Path = _TOKEN_PATH) -> str:
     token = generate_token()
     try:
         path.write_text(token + "\n", encoding="utf-8")
-        # 600: owner read/write only — the token grants full UI access.
         path.chmod(0o600)
     except OSError:
-        # Read-only install / sandboxed FS: carry on with an in-memory token.
+        # Read-only FS: carry on with an in-memory token.
         pass
     return token
 
 
 def _header_origin_host(request: Request) -> Optional[str]:
-    """The host part of the request's ``Origin`` or ``Referer`` header, or None.
-
-    Used for the CSRF check: a browser-driven cross-site POST carries an Origin
-    whose host differs from the server's; a same-origin fetch carries a matching
-    one; a non-browser client (curl) sends neither.
-    """
+    """The host part of the request's ``Origin`` or ``Referer`` header, or None."""
     for header in ("origin", "referer"):
         val = request.headers.get(header)
         if not val:
@@ -98,22 +72,18 @@ def _header_origin_host(request: Request) -> Optional[str]:
 
 
 def origin_ok(request: Request) -> bool:
-    """True if a state-changing request is same-origin (or has no Origin).
-
-    Browsers always emit an ``Origin`` on cross-site POSTs and (in modern
-    browsers) same-origin ones too; an absent Origin means a non-browser client,
-    which isn't a CSRF vector. We only reject when an Origin *is* present and its
-    host doesn't match the request's ``Host``.
+    """True unless a state-changing request carries an Origin whose host
+    differs from ``Host``. No Origin means a non-browser client, which isn't a
+    CSRF vector.
     """
     if request.method not in _STATE_CHANGE:
         return True
     origin_host = _header_origin_host(request)
     if origin_host is None:
-        return True  # curl / native client — not a browser CSRF vector
+        return True
     request_host = (request.headers.get("host") or "").split("@")[-1].lower()
-    # ``Host`` may carry the port; compare the hostname portion only. Parse it
-    # rather than splitting on ":" — an IPv6 host is bracketed (``[::1]:8000``),
-    # so a naive split yields "[" and rejects every same-origin request.
+    # Parse the port off rather than split on ":", which breaks bracketed IPv6
+    # hosts ([::1]:8000).
     try:
         request_hostname = urlparse("//" + request_host).hostname
     except ValueError:
@@ -161,7 +131,7 @@ class AuthGate:
             "httponly": True,
             "samesite": "lax",
             "path": "/",
-            "max_age": 30 * 24 * 3600,  # 30 days; a restart keeps the token
+            "max_age": 30 * 24 * 3600,
         }
         if self.secure_cookie:
             opts["secure"] = True
@@ -174,15 +144,13 @@ class AuthGate:
         return HTMLResponse(_LOGIN_HTML, headers={"Cache-Control": "no-store"})
 
     def accept(self, token: Optional[str]) -> Optional[Response]:
-        """Validate a presented token; return a redirect that sets the cookie,
-        or None if the token is wrong (caller returns 401)."""
-        # A JSON body can carry any type under "token"; compare_digest raises
-        # TypeError on a non-string, which would 500 this security path.
+        """Return a cookie-setting redirect for a valid token, else None."""
+        # A JSON body can carry any type; compare_digest raises on non-strings.
         if not isinstance(token, str) or not token:
             return None
         if not secrets.compare_digest(token, self.token):
             return None
-        # Redirect to bare "/" so the token isn't left in the browser history.
+        # Bare "/" keeps the token out of the browser history.
         resp = RedirectResponse("/", status_code=303)
         self._set_cookie(resp)
         return resp
@@ -192,17 +160,15 @@ class AuthGate:
         if self.has_access(request):
             return None
         if request.method == "GET" and request.url.path == "/api/events":
-            # EventSource can't surface 401 to the user; return a short text
-            # so the reconnect loop doesn't spin silently.
+            # EventSource can't show a 401; keep the reconnect loop from spinning silently.
             return JSONResponse({"error": "unauthorized"}, status_code=401,
                                 headers={"WWW-Authenticate": 'Bearer realm="diffucore"'})
         return JSONResponse({"error": "unauthorized"}, status_code=401,
                             headers={"WWW-Authenticate": 'Bearer realm="diffucore"'})
 
 
-# Reading an arbitrary body inside the auth gate (form/json) without consuming it
-# for the route handler is fiddly; for the login endpoint we accept either a
-# query param (used by the redirect-after-?token= flow) or a small JSON/form body.
+# The login endpoint takes the token from a query param (the ?token= flow) or a
+# small JSON / form body.
 async def read_login_token(request: Request) -> Optional[str]:
     qp = request.query_params.get("token")
     if qp:
@@ -230,7 +196,7 @@ async def read_login_token(request: Request) -> Optional[str]:
 _LOGIN_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Diffucore — sign in</title>
+<title>Diffucore · Sign in</title>
 <style>
   html,body{height:100%;margin:0;background:#0f1115;color:#e6e6e6;
     font-family:Inter,system-ui,Segoe UI,sans-serif}
@@ -251,7 +217,7 @@ _LOGIN_HTML = """<!DOCTYPE html>
   .err{color:#ff6b6b;margin-top:.6rem;font-size:.82rem;min-height:1em}
 </style></head><body>
 <div class="card"><form method="POST" action="/api/auth/login">
-  <h1>Diffucore — sign in</h1>
+  <h1>Sign in to Diffucore</h1>
   <label for="token">Access token</label>
   <input name="token" id="token" type="password" autofocus required
          placeholder="Paste the token printed by the server">

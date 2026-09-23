@@ -1,16 +1,8 @@
-"""AI NSFW rating for gallery images — SmilingWolf/wd-eva02-large-tagger-v3.
+"""AI NSFW rating for gallery images with SmilingWolf/wd-eva02-large-tagger-v3
+(EVA02-L, 448px, ~600 MB in fp16).
 
-A 315M-param ViT (EVA02-L, 448px) that classifies each output's content rating
-as general / sensitive / questionable / explicit. Ratings feed the gallery
-blur (questionable and up = this app's "R and up"), replacing the prompt
-heuristic when the model is available — a machine that can run a diffusion
-model has plenty of headroom for this one.
-
-The model is loaded lazily on the first rating and held across tag jobs; the
-server calls :func:`TAGGER.unload` before any GPU generation so the ~600 MB
-(fp16) never competes with a checkpoint. ``timm`` is an optional dependency
-(guarded import): without it the server silently falls back to the prompt
-rating and everything else keeps working.
+Loaded lazily on the first rating. ``timm`` is optional; without it the server
+falls back to the prompt rating.
 """
 
 from __future__ import annotations
@@ -26,7 +18,6 @@ from PIL import Image
 
 REPO_ID = "SmilingWolf/wd-eva02-large-tagger-v3"
 IMG_SIZE = 448
-# Inference batch size for scan jobs — keeps the VRAM spike modest.
 BATCH_SIZE = 4
 
 # WD rating tag -> this app's rating tier (mirrors Civitai's names).
@@ -39,25 +30,20 @@ RATING_TO_TIER = {
 NSFW_TIERS = ("R", "X")
 
 # ── decision layer ────────────────────────────────────────────────────
-# The 4 rating heads are *independent sigmoids* (multi-label BCE), not a
-# softmax — so argmax is a brittle mutual-exclusion assumption that breaks on
-# near-ties (an image can be sensitive=0.98 AND explicit=0.92). Ratings are
-# therefore re-derived with a calibrated cascade that cross-checks the model's
-# own content tags against its rating head:
-#   * any hard explicit tag (anatomy/sex) ≥ HARD_TAG_THRESH  →  forced X
-#   * explicit-headed but zero suggestive/nudity tags  →  de-escalated (the
-#     stylized-VTuber false positive: bare shoulders, choker, no anatomy tags),
-#     but never below R when the questionable head agrees (≥ 0.5)
-#   * otherwise the rating sigmoids are logit-normalised with a temperature
-#     and cascaded down to R / PG13 / PG.
-# DECISION_VERSION stamps every cached verdict; a bump invalidates the whole
-# cache so a logic change forces a re-rate instead of serving stale verdicts.
+# The 4 rating heads are independent sigmoids, not a softmax, so argmax breaks
+# on near-ties (sensitive=0.98 AND explicit=0.92). The cascade cross-checks the
+# model's content tags against its rating head:
+#   * any hard explicit tag ≥ HARD_TAG_THRESH → X
+#   * explicit-headed with no strong suggestive tags → de-escalated (stylized
+#     false positives), but not below R when the questionable head is ≥ 0.5
+#   * otherwise temperature-scaled rating logits cascade to R / PG13 / PG.
+# Bumping DECISION_VERSION invalidates every cached verdict.
 DECISION_VERSION = 3
-HARD_TAG_THRESH = 0.35   # ≥ this probability on any hard tag → explicit
+HARD_TAG_THRESH = 0.35
 SOFT_TAG_THRESH = 0.25   # corroborating evidence for R/PG13 escalation
 SOFTMAX_TEMP = 0.7       # temperature on the logit-normalised rating head
 
-# Verified present in selected_tags.csv (checked against the v3 tag list).
+# All present in the v3 selected_tags.csv.
 HARD_EXPLICIT_TAGS = frozenset((
     "nipples", "pussy", "penis", "fellatio", "cunnilingus", "sex", "vaginal",
     "anal", "uncensored", "clitoris", "erection", "ejaculation",
@@ -65,15 +51,13 @@ HARD_EXPLICIT_TAGS = frozenset((
     "vibrator", "masturbation", "paizuri", "facial", "cum", "tentacles",
     "incest", "gangbang", "handjob", "orgasm", "oral",
 ))
-# Strong suggestive tags — enough to corroborate an explicit rating head.
-# Genuinely sexualized context, not just an outfit.
+# Genuinely sexualized context, enough to corroborate an explicit rating head.
 STRONG_SUGGESTIVE_TAGS = frozenset((
     "lingerie", "panties", "underwear", "underboob", "sideboob", "thong",
     "bondage", "upskirt", "skirt_lift", "undressing", "cameltoe",
     "covered_nipples",
 ))
-# Weak suggestive tags — fire on tons of SFW anime (busty idol costumes,
-# swimsuits) and must never alone force an X; they only corroborate R/PG13.
+# Fire on plenty of SFW anime; they only corroborate R/PG13, never force X.
 SUGGESTIVE_TAGS = frozenset((
     "cleavage", "bra", "swimsuit", "bikini", "micro_bikini", "midriff",
     "short_shorts", "fishnets", "collar", "leash", "ass",
@@ -88,15 +72,12 @@ def _logit(p: np.ndarray) -> np.ndarray:
 
 def decide_rating(rating_scores: np.ndarray, tag_scores: np.ndarray,
                   hard_idx, strong_idx, soft_idx):
-    """Turn the raw WD output into a final tier.
+    """Turn the raw WD output into ``(tier, conf, reason)``.
 
-    ``rating_scores`` is the 4 sigmoid probabilities (general, sensitive,
-    questionable, explicit); ``tag_scores`` the full 10861-dim sigmoid vector;
-    ``hard_idx``/``strong_idx``/``soft_idx`` are the tag indices that
-    corroborate explicit / strongly-suggestive / weakly-suggestive content.
-    Returns ``(tier, conf, reason)`` where ``conf`` is the peak raw rating
-    probability (informational — gating happens in the cascade, not on a bare
-    threshold) and ``reason`` says which rule fired.
+    ``rating_scores`` are the 4 rating sigmoids (general, sensitive,
+    questionable, explicit), ``tag_scores`` the full tag vector, and the
+    ``*_idx`` lists the corroborating tag indices. ``conf`` is the peak raw
+    rating probability (informational only).
     """
     cal = _logit(rating_scores) / SOFTMAX_TEMP
     cal = np.exp(cal); cal = cal / cal.sum()
@@ -106,16 +87,13 @@ def decide_rating(rating_scores: np.ndarray, tag_scores: np.ndarray,
     n_hard = sum(1 for i in hard_idx if tag_scores[i] >= HARD_TAG_THRESH)
     n_strong = sum(1 for i in strong_idx if tag_scores[i] >= SOFT_TAG_THRESH)
     n_soft = sum(1 for i in soft_idx if tag_scores[i] >= SOFT_TAG_THRESH)
-    # Hard anatomy/sex tags override a contradictory rating head.
     if n_hard:
         return "X", conf, f"hard_tag({n_hard})"
-    # Explicit-headed. Only hard or *strong* suggestive evidence keeps it X —
-    # cleavage/bikini fire on plenty of SFW anime and must not force a blur.
+    # Only strong suggestive evidence keeps an explicit head at X.
     if s_expl >= 0.40 or r_expl >= 0.70:
         if n_strong == 0:
-            # A questionable head that also fires is evidence on its own: the
-            # real misses scored 0.53–0.67 there (anatomy tags just under the
-            # hard cutoff), the false positives ≤ 0.38. Land on R, not PG.
+            # Real misses scored 0.53–0.67 on the questionable head, false
+            # positives ≤ 0.38.
             if r_ques >= 0.50:
                 tier = "R"
             else:
@@ -147,9 +125,7 @@ def _preprocess(img: Image.Image) -> torch.Tensor:
 
 
 class Tagger:
-    """Lazily-loaded process-global tagger. Not thread-safe for concurrent
-    inference — the server runs it on the single job worker thread, and the
-    unload path takes the same lock that load/infer hold."""
+    """Lazily loaded process-global tagger, run on the single job worker."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -171,7 +147,7 @@ class Tagger:
         with self._lock:
             if self._model is not None:
                 return self._model
-            import timm  # guarded import — the caller checks timm_available()
+            import timm  # the caller checks timm_available()
             model = timm.create_model(f"hf_hub:{REPO_ID}", pretrained=True)
             model.eval()
             if self._device == "cuda":
@@ -180,7 +156,7 @@ class Tagger:
             return model
 
     def unload(self) -> None:
-        """Free the model + its VRAM so a generation can use the card."""
+        """Free the model and its VRAM."""
         with self._lock:
             if self._model is None:
                 return
@@ -188,20 +164,17 @@ class Tagger:
         if self._device == "cuda":
             try:
                 torch.cuda.empty_cache()
-            except Exception:  # noqa: BLE001 — best-effort
+            except Exception:  # noqa: BLE001
                 pass
 
     # ── tag table ───────────────────────────────────────────────────
     def _rating_spec(self):
-        """The 4 rating rows (category 9) of selected_tags.csv — found by
-        category, never by position, so tag order can't break the mapping.
+        """Output indices of the 4 rating rows (category 9) of selected_tags.csv,
+        found by category, plus the corroborating tag index sets.
 
-        WARNING: the model's output index i corresponds to CSV data row i+1
-        (row 0 is the header), so the category-9 rows live at output indices
-        0..3 — enumerate with start=0, not 1. A one-off shift here puts the
-        `1girl` tag (≈0.99 on any anime image) into the explicit slot and
-        blurs the whole gallery.
-        Also builds the decision layer's corroborating tag index sets."""
+        Output index i is CSV data row i+1 (row 0 is the header), so enumerate
+        ``rows[1:]`` from 0. Off by one puts ``1girl`` (≈0.99 on any anime
+        image) in the explicit slot and blurs the whole gallery."""
         if self._rating_idx is None:
             from huggingface_hub import hf_hub_download
             csv_path = hf_hub_download(REPO_ID, "selected_tags.csv")
@@ -213,8 +186,7 @@ class Tagger:
                 if len(r) > 2 and r[2] == "9"
             ]
             by_name = {r[1]: i for i, r in enumerate(rows[1:])}
-            # Missing tag names drop out silently — the decision layer only
-            # ever *adds* corroboration, never invents it.
+            # Missing tag names drop out: corroboration is only ever added.
             self._hard_idx = [by_name[t] for t in HARD_EXPLICIT_TAGS if t in by_name]
             self._strong_idx = [by_name[t] for t in STRONG_SUGGESTIVE_TAGS if t in by_name]
             self._soft_idx = [by_name[t] for t in SUGGESTIVE_TAGS if t in by_name]
@@ -222,21 +194,15 @@ class Tagger:
 
     # ── inference ───────────────────────────────────────────────────
     def rate(self, paths: List[Path]) -> List[Optional[dict]]:
-        """Rate each image; returns one entry per input, ``None`` on failure.
-
-        Entry: ``{"rating": tier, "nsfw": bool, "confidence": float,
-        "reason": str}``. The verdict comes from the tag-corroborated decision
-        layer, not the raw rating argmax. Batching amortises the fixed forward
-        cost for gallery scans.
+        """Rate each image: ``{"rating", "nsfw", "confidence", "reason"}`` per
+        input, or ``None`` for a file that fails to open.
         """
         if not paths:
             return []
         self.load()
         self._rating_spec()
         idx = self._rating_idx
-        # One slot per input, filled by position: a file that fails to open
-        # leaves its own slot None instead of shifting every later verdict of
-        # the batch onto the wrong image.
+        # Filled by position, so a bad file can't shift later verdicts.
         out: List[Optional[dict]] = [None] * len(paths)
         with torch.no_grad():
             for start in range(0, len(paths), BATCH_SIZE):
@@ -248,7 +214,7 @@ class Tagger:
                         with Image.open(p) as im:
                             tensors.append(_preprocess(im))
                         slots.append(start + j)
-                    except Exception:  # noqa: BLE001 — one bad file skips only itself
+                    except Exception:  # noqa: BLE001
                         pass
                 if not tensors:
                     continue

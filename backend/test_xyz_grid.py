@@ -1,9 +1,4 @@
-"""Tests for X/Y/Z axis value parsing (pure functions, no GPU needed).
-
-Run from the project root::
-
-    .venv/bin/python -m pytest backend/test_xyz_grid.py -v
-"""
+"""Tests for X/Y/Z axis parsing and cell/plain-generation parity."""
 
 from __future__ import annotations
 
@@ -25,7 +20,7 @@ def test_empty_or_none_falls_back_to_base():
     assert resolve_values("Steps", "   ", 25) == [25]
 
 
-# ── BUG.md L14: a malformed numeric axis must not kill the grid ─────
+# ── a malformed numeric axis must not kill the grid ───────────────────
 
 @pytest.mark.parametrize("param_type,values", [
     ("Steps", "10, twenty, 30"),
@@ -36,26 +31,26 @@ def test_malformed_numeric_axis_names_the_token(param_type, values):
     with pytest.raises(ValueError) as e:
         resolve_values(param_type, values, 1)
     assert param_type in str(e.value)
-    assert "invalid literal" not in str(e.value)   # not the bare int() message
+    assert "invalid literal" not in str(e.value)
 
 
 @pytest.mark.parametrize("token", ["nan", "inf", "-inf", "Infinity"])
 def test_cfg_axis_rejects_non_finite(token):
-    """float() happily accepts these; they'd flow into the sampler as CFG."""
+    """float() accepts these; they'd reach the sampler as CFG."""
     with pytest.raises(ValueError, match="finite"):
         resolve_values("CFG Scale", f"3, {token}", 7.0)
 
 
-# ── BUG.md L15: Prompt S/R's first value is the search token ────────
+# ── Prompt S/R's first value is the search token ────────────────────
 
 def test_prompt_sr_keeps_trailing_empty():
-    """A trailing comma means "and a cell without the term" — still supported."""
+    """A trailing comma means "and a cell without the term"."""
     assert resolve_values("Prompt S/R", "sunny,", "") == ["sunny", ""]
 
 
 def test_prompt_sr_rejects_empty_search_token():
-    """A leading empty token made str.replace("", val) splice the replacement
-    between every character of the prompt."""
+    """An empty search token made str.replace("", val) splice the replacement
+    between every character."""
     with pytest.raises(ValueError, match="cannot be empty"):
         resolve_values("Prompt S/R", ",foo", "")
     with pytest.raises(ValueError, match="cannot be empty"):
@@ -63,9 +58,7 @@ def test_prompt_sr_rejects_empty_search_token():
 
 
 # ── a cell samples what the Generate page would ─────────────────────
-# The X/Y/Z path used to build its own kwargs and skip the settings-panel
-# knobs (CFG interval, eta_max, …), so its cells silently ran at the engine's
-# defaults and looked different from a plain generation with the same seed.
+# X/Y/Z cells once skipped the settings-panel knobs and ran at engine defaults.
 
 import inspect
 from types import SimpleNamespace
@@ -80,8 +73,8 @@ _T2I_SIG = inspect.signature(Engine.generate_t2i)
 
 
 def _effective(kw: dict) -> dict:
-    """The arguments ``generate_t2i`` actually sees, its defaults filled in —
-    so an omitted kwarg and an explicit default compare equal."""
+    """The arguments ``generate_t2i`` actually sees, defaults filled in, so an
+    omitted kwarg and an explicit default compare equal."""
     bound = _T2I_SIG.bind(None, **kw)
     bound.apply_defaults()
     args = dict(bound.arguments)
@@ -150,7 +143,7 @@ def test_xyz_cells_match_plain_generation(monkeypatch):
             **common, sampler=smp, scheduler=sch), on_progress=lambda *a: None)
         assert cells[i] == _effective(fake.calls[0]), (smp, sch)
 
-    # Parity alone can't catch a knob both paths drop — pin the ones that were.
+    # Parity alone can't catch a knob both paths drop, so pin the ones that were.
     for cell in cells:
         assert (cell["cfg_interval_start"], cell["cfg_interval_end"]) == (0.1, 0.75)
         assert cell["teacache_uncond_scale"] == 1.5

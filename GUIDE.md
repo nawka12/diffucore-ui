@@ -1,4 +1,4 @@
-# Diffucore UI — Guide
+# Diffucore UI guide
 
 Everything beyond the [README](README.md) quick start: the full feature list,
 model setup, all three generation modes, the detailer, X/Y/Z sweeps, the gallery,
@@ -6,98 +6,98 @@ network/share flags, architecture, and status.
 
 ## Highlights
 
-- **Four model families, one interface** — Stable Diffusion 1.5, SDXL,
+- **Four model families, one interface**: Stable Diffusion 1.5, SDXL,
   **Anima** (a 2 B DiT built on Cosmos-Predict2), and **FLUX** (FLUX.1 and
-  FLUX.2 Klein). All four do txt2img, img2img, and inpaint — Anima and FLUX use
+  FLUX.2 Klein). All four do txt2img, img2img, and inpaint; Anima and FLUX use
   soft, latent-mask inpaint (no dedicated inpaint model). Switch between them
   from the model bar.
-- **Unified Generate workspace** — one shared control panel with a
+- **Unified Generate workspace**: one shared control panel with a
   txt2img / img2img / inpaint mode toggle; switching modes keeps your prompt and
   settings. Full sampler / scheduler / steps / CFG / seed controls.
-- **X/Y/Z parameter sweep** — toggle it on inside txt2img to render a comparison
+- **X/Y/Z parameter sweep**: toggle it on inside txt2img to render a comparison
   grid across samplers, schedulers, steps, CFG, or seed. The assembled grid and
   every individual cell are saved to `outputs/`, sharing one seed for a fair
   comparison.
-- **Prompt-based LoRA loading** — embed `<lora:name:mult>` directly in your
+- **Prompt-based LoRA loading**: embed `<lora:name:mult>` directly in your
   prompt to load adapters on the fly.
-- **Detailer** — an ADetailer-style toggle (and a standalone "Detail" action on
+- **Detailer**: an ADetailer-style toggle (and a standalone "Detail" action on
   any result or gallery image) that detects faces/hands with a YOLO model and
   inpaints each region at native resolution after generation. Works on
   UNet (SD/SDXL) and DiT (Anima, FLUX) backbones.
-- **Tiled upscaler** — an Ultimate-SD-Upscale-style toggle (and a standalone
+- **Tiled upscaler**: an Ultimate-SD-Upscale-style toggle (and a standalone
   "Upscale" action on any result or gallery image) that enlarges 2×/4× by
   re-running low-denoise img2img over overlapping tiles and feather-blending them
   back, so large factors fit in modest VRAM. Optional **ESRGAN** base (via
   `spandrel`) for genuine detail; Lanczos otherwise. Works on every family.
-- **Live preview** — watch the image form during sampling. A fast latent→RGB
+- **Live preview**: watch the image form during sampling. A fast latent→RGB
   approximation (no VAE decode) streams a rough preview each step; toggle it off
   in the Generate view. SD/SDXL and Anima.
-- **TeaCache** — opt-in sampling speedup for Anima: reuses the DiT's output on
+- **TeaCache**: opt-in sampling speedup for Anima that reuses the DiT's output on
   low-change steps, with a fidelity/speed threshold and optional calibration.
-- **CFG guidance interval** — opt-in speedup for Anima and SD/SDXL: apply CFG
-  only in a middle fraction of the sampling run and skip the negative-prompt
+- **CFG guidance interval**: opt-in speedup for Anima and SD/SDXL that applies
+  CFG only in a middle fraction of the sampling run and skips the negative-prompt
   model pass outside it (Settings → Sampler defaults).
-- **fp16 accumulation** — opt-in per-load perf flag: fp16-accumulated matmuls
+- **fp16 accumulation**: opt-in per-load perf flag. fp16-accumulated matmuls
   run at 2× the tensor-core rate on consumer GPUs (measured ~1.17× end-to-end
   on Anima on an RTX 2060, slight precision trade-off). All families.
-- **fp16 vae** — opt-in per-load perf flag: run the VAE in fp16 instead of
+- **fp16 vae**: opt-in per-load perf flag that runs the VAE in fp16 instead of
   fp32 (measured ~2.8× faster decode on Anima's Qwen-Image VAE on an RTX 2060,
   max pixel difference under 3/255). Also halves decode VRAM, so large decodes
   that used to fall back to (slower) tiling fit untiled. Safe by construction:
   if a checkpoint's VAE overflows fp16 (rare, the A1111 `--no-half-vae` cases)
   the non-finite output is detected and that model's VAE permanently drops
-  back to fp32 — one retried decode, never a black image. All families.
-- **fa2 attention (Turing GPUs)** — opt-in per-load perf flag for DiT families
+  back to fp32: one retried decode, never a black image. All families.
+- **fa2 attention (Turing GPUs)**: opt-in per-load perf flag for DiT families
   (Anima, FLUX) on Turing cards (RTX 20-series / GTX 16-series, sm75), where
   PyTorch has no flash-attention kernel. Swaps the DiT's attention for a
-  community FlashAttention-2 port — measured ~1.5× on the attention kernel and
+  community FlashAttention-2 port, measured ~1.5× on the attention kernel and
   ~1.10× end-to-end at 1024² on an RTX 2060 with fp16 accumulation on (stacks
   with it; grows with resolution). Not bit-exact; incompatible with
-  torch.compile. The chip only appears when the kernel is installed — it's a
+  torch.compile. The chip only appears when the kernel is installed; it's a
   local-build optional extra, never required:
   `pip install` the [flash-attention-turing](https://github.com/ssiu/flash-attention-turing)
   repo into the app venv with `--no-build-isolation` (needs nvcc; on GCC 15+
   hosts add `-std=c++20` and `-Xcompiler -fpermissive` to `nvcc_flags` in its
-  `setup.py`). Newer GPUs (sm80+) don't need it — they already use PyTorch's
+  `setup.py`). Newer GPUs (sm80+) don't need it: they already use PyTorch's
   built-in flash attention, and this flag never engages there.
-- **11 samplers, multiple schedulers** — Euler, Heun, DPM++ family, ER-SDE,
+- **11 samplers, multiple schedulers**: Euler, Heun, DPM++ family, ER-SDE,
   SECANT; Karras, exponential, sgm_uniform, flow, and more.
-- **Gallery with metadata round-trip** — every generated image saves its full
+- **Gallery with metadata round-trip**: every generated image saves its full
   generation parameters as PNG metadata. Browse past outputs grouped by date
   (phone-gallery style) in a swipeable fullscreen carousel and load any
   generation's settings back into the Generate view.
-- **Metadata reader** — drop in any PNG to inspect its AUTO1111 / Forge or
+- **Metadata reader**: drop in any PNG to inspect its AUTO1111 / Forge or
   ComfyUI parameters and send them straight to txt2img.
-- **Anima auto-defaults** — switching to Anima mode sets sampler / steps / CFG
+- **Anima auto-defaults**: switching to Anima mode sets sampler / steps / CFG
   to sensible values (er_sde, 30, 4.0) automatically.
-- **Seed recycle & randomize** — reuse the last seed or roll a new one with one
+- **Seed recycle & randomize**: reuse the last seed or roll a new one with one
   click.
-- **Selectable CPU offload & tiled VAE** — the offload default is auto-picked
+- **Selectable CPU offload & tiled VAE**: the offload default is auto-picked
   from your GPU's VRAM on startup (24 GB → keep everything resident, 16 GB → park
   encoders, 6–12 GB → full offload, ≤6 GB → `stream`), and you can override it
   per load (full / encoders / none / stream) to fit the model on your GPU.
   `stream` is the low-VRAM mode (ComfyUI `--lowvram` analog): it shuttles the
   backbone's blocks on/off the GPU one at a time, so SDXL's UNet or Anima's DiT
-  fit a ~4 GB card where whole-backbone staging would OOM — at the cost of some
+  fit a ~4 GB card where whole-backbone staging would OOM, at the cost of some
   speed. Works for SD/SDXL, FLUX, and Anima (FLUX always uses it). Because
   `stream` moves the backbone on and off the GPU per step, it can't be combined
-  with `torch.compile` — enabling both auto-disables compile (with a one-line
+  with `torch.compile`: enabling both auto-disables compile (with a one-line
   notice in the server log) instead of failing the load.
   Tiled VAE decode triggers automatically when a full-resolution decode
-  wouldn't fit free VRAM, keeping large images within budget — or set the
+  wouldn't fit free VRAM, keeping large images within budget, or set the
   **VAE decode** mode in Settings to *Always tiled* to force it every time
   (Anima and SD/SDXL; FLUX always tiles).
-- **Live progress** — sampling step/total streams to a real progress bar as the
+- **Live progress**: sampling step/total streams to a real progress bar as the
   image is generated.
-- **Multi-device & job queue** — drive it from several devices at once. Jobs
+- **Multi-device & job queue**: drive it from several devices at once. Jobs
   (generate, sweeps, calibrations, and model loads) run one at a time through a
-  shared FIFO queue, and one live event stream keeps every device in sync —
+  shared FIFO queue, and one live event stream keeps every device in sync:
   queue contents, progress, previews, and which model is loaded. A second device
   (or a refresh) picks up the already-loaded model without reloading weights, and
   any job can be cancelled from any device.
-- **Custom darkroom theme** — warm amber safelight aesthetics on a hand-rolled
+- **Custom darkroom theme**: warm amber safelight aesthetics on a hand-rolled
   dark UI, Fraunces serif + Inter + JetBrains Mono fonts.
-- **Extensions** — an AUTO1111 / ComfyUI-style extension platform. Drop a
+- **Extensions**: an AUTO1111 / ComfyUI-style extension platform. Drop a
   folder under `extensions/` (or install from a git/zip URL in Settings →
   Extensions) to add API endpoints, hook into generation and model loads, queue
   jobs on the shared worker, and add tabs/panels to the UI. A reference
@@ -137,7 +137,7 @@ revision, and refresh dependencies:
 update.bat           REM Windows
 ```
 
-Both reuse the existing `.venv` — run setup first if you don't have one yet.
+Both reuse the existing `.venv`, so run setup first if you don't have one yet.
 
 If you update with a plain `git pull` instead, the launch script has a safety
 net: it re-syncs `requirements.txt` whenever it changes (hash-gated, so it's a
@@ -159,10 +159,10 @@ models/
 ```
 
 The detailer needs `ultralytics` (installed via `requirements.txt`) and at least
-one YOLO model in `detailers/` — e.g. ADetailer's `face_yolov8n.pt` / `hand_yolov8n.pt`.
+one YOLO model in `detailers/`, e.g. ADetailer's `face_yolov8n.pt` / `hand_yolov8n.pt`.
 
 The upscaler's ESRGAN base is optional: it needs `spandrel` (installed via
-`requirements.txt`) and an ESRGAN-family model in `upscalers/` — e.g.
+`requirements.txt`) and an ESRGAN-family model in `upscalers/`, e.g.
 `4x-UltraSharp.pth`, or an anime model like `4x_IllustrationJaNai`. Without one
 the upscaler falls back to a Lanczos base.
 
@@ -187,7 +187,7 @@ By default the UI binds to `127.0.0.1` (localhost only). Flags passed to
 `launch.sh` are forwarded to `backend/app.py`:
 
 ```bash
-./launch.sh --listen        # bind 0.0.0.0 — reachable from other machines on the network
+./launch.sh --listen        # bind 0.0.0.0, reachable from other machines on the network
 ./launch.sh --port 8000     # serve on a different port (default: 7860)
 ./launch.sh --listen --port 8000
 ./launch.sh --share         # public link via a Cloudflare quick tunnel
@@ -199,11 +199,11 @@ browser once the server is up; running `python backend/app.py` directly skips it
 With `--listen`, several devices can use the UI at once. They share one job
 queue and one live event stream, so any device sees the running queue and
 progress, and a device that opens the page after a model is loaded starts
-already loaded — no reload. Generations from different devices simply queue up
+already loaded, with no reload. Generations from different devices simply queue up
 and run one at a time.
 
 With `--share`, the UI is exposed over a public `trycloudflare.com` URL (printed
-to the console) so you can reach it from anywhere — no Cloudflare account or
+to the console) so you can reach it from anywhere, with no Cloudflare account or
 login needed. The `cloudflared` binary is used from your `PATH` if present,
 otherwise downloaded once and cached in `.cloudflared/`. The tunnel closes when
 you stop the server. Anyone with the link can reach your UI, so treat it as
@@ -214,7 +214,7 @@ public.
 1. Select **SD/SDXL**, **Anima**, or **FLUX** from the top-bar radio.
 2. Pick your checkpoint files from the dropdowns. FLUX takes either an all-in-one
    checkpoint or split DiT / VAE / text-encoder files (CLIP-L for FLUX.1 only).
-3. Click **Load** — the status bar shows model info and VRAM usage. Loading a
+3. Click **Load**. The status bar shows model info and VRAM usage. Loading a
    large model (e.g. Anima's multi-GB files) prints per-stage progress to the
    server terminal, so a slow load is distinguishable from a stuck one.
 
@@ -227,12 +227,12 @@ the canvas as it samples (toggle it off beside the button), and the final result
 lands in the panel on the right.
 
 For **img2img** and **inpaint**, drag an image onto the input zone (or click to
-browse); in **inpaint**, paint over the region to repaint — tune the brush size
+browse); in **inpaint**, paint over the region to repaint; tune the brush size
 or clear the mask to start over.
 
 LoRAs can be activated inline: `a castle in autumn, <lora:autumn_style:0.8>`.
 
-> **The first image is slower** — and so is the first image at each new
+> **The first image is slower**, and so is the first image at each new
 > resolution. The first generation pays a one-time GPU warmup (CUDA kernel
 > loading + cuDNN autotune) that later images reuse, so subsequent images at the
 > same size are noticeably faster. This is expected, not a stall.
@@ -240,8 +240,8 @@ LoRAs can be activated inline: `a castle in autumn, <lora:autumn_style:0.8>`.
 ### Working with Anima
 
 Anima is an LLM-conditioned DiT, and its `shift = 3` flow schedule makes a few
-settings behave differently from SD/SDXL. A few things worth knowing — none are
-bugs, just how the model responds:
+settings behave differently from SD/SDXL. A few things worth knowing (none are
+bugs, just how the model responds):
 
 - **Write detailed prompts.** Anima conditions on a language model (Qwen3 +
   T5-XXL) trained on long, descriptive captions, so short tag-style prompts give
@@ -253,15 +253,15 @@ bugs, just how the model responds:
   encoder, but the newer `cosmos-qwen3.5` hybrid (Mamba2-SSM + gated-attention)
   encoders are also supported: the Anima-packaged **4B** (`qwen35_4b.safetensors`)
   and the raw **0.8B base** (`qwen_3_5_08b_base.safetensors`). Drop either into
-  `models/text-encoders/` and select it as the Anima text encoder — the right
+  `models/text-encoders/` and select it as the Anima text encoder; the right
   architecture and vocab are auto-detected (no other setting changes). The 0.8B
-  is the lighter pick (≈0.8 B params, BF16 — closer to the stock 0.6 B); the 4B
+  is the lighter pick (≈0.8 B params, BF16, closer to the stock 0.6 B); the 4B
   is heavier (fp8, higher VRAM/RAM, slower encoding). Treat output quality as
   experimental and uncalibrated for both.
 
 - **img2img strength is more aggressive than the number suggests.** The
   `shift = 3` schedule front-loads noise, so a given strength injects far more
-  than the same value on SD/SDXL — around `0.6` already noises away most of the
+  than the same value on SD/SDXL: around `0.6` already noises away most of the
   input's structure. To restyle while keeping the composition, use a **low
   strength (~0.2–0.4)** and a detailed prompt; reserve higher values for
   near-full regeneration. If img2img seems to "lose" your input, lower the
@@ -275,16 +275,16 @@ bugs, just how the model responds:
 - **For fast, low-step sampling, prefer a deterministic multistep sampler.**
   Anima's rectified-flow trajectory converges fine detail (faces, small text)
   faster under a deterministic 2nd-order solver than under the ancestral /
-  annealed samplers (`er_sde`, `secant_anneal`) — the ancestral noise injection
+  annealed samplers (`er_sde`, `secant_anneal`). The ancestral noise injection
   needs more steps to settle, so it can garble small details at low step counts.
   **`dpmpp_2m` on the `beta` schedule stays clean and coherent down to ~16–20
-  steps**, where `er_sde` / `secant_anneal` want ~24–30 for the same result — at
+  steps**, where `er_sde` / `secant_anneal` want ~24–30 for the same result, at
   the same per-step cost. `res_multistep` and `gradient_estimation` are
   equivalent, and the scheduler barely matters for these (`beta`, `flow`,
   `sgm_uniform`, `simple` all work). Avoid `lcm`, `dpmpp_sde`, `lms`, `ipndm_v`,
-  and `dpmpp_3m_sde` at low steps — they go muddy or break.
+  and `dpmpp_3m_sde` at low steps; they go muddy or break.
 
-- **`exp_heun_2_x0`** is a deterministic 2nd-order option in the same family — a
+- **`exp_heun_2_x0`** is a deterministic 2nd-order option in the same family: a
   true single-step exponential Heun (two model evaluations per step, no multistep
   history) instead of `dpmpp_2m`'s one-eval history-reuse multistep. It costs one
   extra evaluation per step but needs no warm-up history, which can help at very
@@ -292,7 +292,7 @@ bugs, just how the model responds:
 
 - **`uni_pc` / `uni_pc_bh2`** (UniPC, a unified predictor-corrector multistep
   solver) are deterministic and, like `dpmpp_2m`, stay ~one model evaluation per
-  step — the corrector's evaluation doubles as the next step's history. The
+  step, because the corrector's evaluation doubles as the next step's history. The
   corrector gives them an edge over `dpmpp_2m` at the same step count, so they're
   a strong low-step default. `uni_pc` uses the `bh1` solver variant and
   `uni_pc_bh2` the `bh2` variant (often a touch better at very low steps); both
@@ -301,18 +301,18 @@ bugs, just how the model responds:
 - **`sa_solver` / `sa_solver_pece`** (SA-Solver, Xue et al., NeurIPS 2023,
   arXiv:2309.05019) are a stochastic Adams *predictor-corrector* multistep in
   half-logSNR space, one of ComfyUI's core few-step workhorses. Each step first
-  re-derives the current latent from the x0 history (the corrector — more
+  re-derives the current latent from the x0 history (the corrector, more
   accurate than the raw prediction), then predicts the next latent with
   exponential-integrator coefficients; the SDE form re-injects seeded Gaussian
   noise on a middle 20–80% band of the schedule, and `eta=0` makes it the pure
   deterministic ODE. Offered for every family (flow-aware, like the DPM++
-  family). `sa_solver_pece` adds the final "E" — a re-evaluation of the
-  corrected state — for a few extra NFEs of accuracy.
+  family). `sa_solver_pece` adds the final "E", a re-evaluation of the
+  corrected state, for a few extra NFEs of accuracy.
 
 - **`uni_pc_anneal`** is the *stochastic* sibling of `uni_pc`: the same UniPC
   predictor-corrector core plus a light, σ-annealed ancestral noise term (noise at
   high σ, vanishing as σ→0) for stochastic sample diversity and a shot at the
-  merge-robustness that makes `er_sde` reliable — but on UniPC's higher-accuracy
+  merge-robustness that makes `er_sde` reliable, but on UniPC's higher-accuracy
   drift instead of a first-order one. It is a strict generalization of `uni_pc`
   (its `eta_max=0` limit is deterministic UniPC, exactly). Because the high-order
   core *amplifies* injected noise, it ships a deliberately small baked-in noise
@@ -329,8 +329,8 @@ bugs, just how the model responds:
   2nd-order correction is **measured every step** rather than hardcoded:
   `psi = max((1 + 2·rho)/3, 1 − e^−h)`, where `rho` is the cosine between the last
   two changes in the model's x0 estimate. That reads how much of the correction is
-  real signal versus noise — a merged or imperfect model damps itself
-  automatically, a clean one keeps the full textbook coefficient — and the
+  real signal versus noise (a merged or imperfect model damps itself
+  automatically, a clean one keeps the full textbook coefficient), and the
   `1 − e^−h` term is the integrator's own step weight acting as a floor, so a
   coarse step never loses the correction it needs. Two dot products per step; no
   extra model evaluations.
@@ -338,16 +338,16 @@ bugs, just how the model responds:
   On an analytically-solvable flow benchmark it tracks the exact trajectory ~2.3×
   more accurately than `secant_anneal` at matched steps, and lands 12–25% closer
   to the target distribution under a deliberately imperfect model at 8 and at
-  24–32 steps (it gives up a few percent in the 12–16 step band). **Use 24+ steps**
-  — that is where its margin is largest; at ≤12 steps a deterministic solver like
+  24–32 steps (it gives up a few percent in the 12–16 step band). **Use 24+ steps**,
+  where its margin is largest; at ≤12 steps a deterministic solver like
   `stork2` or `uni_pc_bh2` is still the better pick. It honours the shared
   `eta_max` knob (`eta_max=0` makes it fully deterministic), and unlike the rest
-  of the `*_anneal` family it is **not flow-only** — it is offered for SD/SDXL and
+  of the `*_anneal` family it is **not flow-only**: it is offered for SD/SDXL and
   FLUX too. Benchmarked offline against a known ground truth; not yet A/B'd on
   real images. See `docs/cogent.md`, and `scripts/ab_cogent.py` to re-run the
   numbers.
 
-  **Scheduler: use `flow` (or `simple` / `sgm_uniform` — near-identical), or
+  **Scheduler: use `flow` (or the near-identical `simple` / `sgm_uniform`), or
   `linear_quadratic` at 24–32 steps.** This is the one place cogent does *not*
   follow its siblings. `secant_anneal` and `euler_ancestral_anneal` want a
   high-σ-dense schedule; cogent inherits the exponential core's preference for
@@ -355,25 +355,25 @@ bugs, just how the model responds:
   `beta_mix` and `smoothstep` cost it 2–4× (after the shift map they leave a
   coarser minimum λ-step, which also pins the gate's floor too high to damp), and
   `normal`, `infinity`, `infinity_htds` and `kl_optimal` are worse still. That
-  ordering is a property of the shared DPM++(2M) core rather than of the gate —
+  ordering is a property of the shared DPM++(2M) core rather than of the gate:
   `dpmpp_2m_anneal` degrades on exactly the same schedules and by roughly twice as
-  much — so treat it as "cogent likes what `dpmpp_2m` likes", not as a quirk. Note
+  much. So treat it as "cogent likes what `dpmpp_2m` likes", not as a quirk. Note
   the absolute cross-scheduler ranking is the weaker half of the offline evidence:
   which σ placement suits a real model depends on where that model's error lives,
   so it is worth an A/B on your own checkpoint.
 
 - **`cogent3`** is `cogent`'s idea carried to third order: the same measured
   gate on the 2nd-order term (`psi_1 = max((1+2·rho_1)/3, 1 − e^−h)`) plus a
-  second measured gate on the 3rd-order term — a difference of differences, the
-  noisiest quantity in the family — scaled by `psi_2 = (2+3·rho_2)/5`, the
+  second measured gate on the 3rd-order term (a difference of differences, the
+  noisiest quantity in the family), scaled by `psi_2 = (2+3·rho_2)/5`, the
   Wiener shrink on the coherence of consecutive *second* differences of the x0
   history. With both gates pinned to 1 and `eta_max=0` it is bit-for-bit the
   deterministic DPM-Solver++(3M) flow integrator (`dpmpp_3m_sde` with `eta=0`);
   the point of the second gate is that on a rough / merged velocity field the
   3rd-order term damps itself back to cogent's 2nd-order behaviour instead of
   amplifying the model's error (the failure mode that made 3rd-order samplers
-  "go muddy or break" at low steps). **`psi_2` deliberately has no floor** — the
-  term is never load-bearing, so turning it fully off is not a failure mode —
+  "go muddy or break" at low steps). **`psi_2` deliberately has no floor**: the
+  term is never load-bearing, so turning it fully off is not a failure mode,
   and the first 3rd-order-capable step bootstraps `psi_2` from `psi_1`. Same
   family knobs as cogent (`eta_max`, shared panel knob; `eta_max=0` is
   deterministic), one model evaluation per step, all families, prefer 24+
@@ -395,16 +395,16 @@ bugs, just how the model responds:
   coherent dress and arms. Treat it as a checkpoint/step-dependent option, not
   a universal upgrade.
 
-- **`cogent3_pump`** is `cogent3` plus a **high-σ coherence pump** — the one
+- **`cogent3_pump`** is `cogent3` plus a **high-σ coherence pump**, the one
   mechanism `infinity_aether` actually owes its coarse-structure strength to,
   isolated from the band-pass stack it ships with and given a hard low-σ
   shutoff. Aether adds grain scaled by `1 − C` (the structure-tensor coherence
   of the denoised prediction) *on top of* a completed step, so the next model
   call sees a latent noisier than the σ it is handed and has to explain the
-  excess as signal — a structure-generation pump aimed at exactly the regions
+  excess as signal: a structure-generation pump aimed at exactly the regions
   that have not committed yet, held off the contours that have. At high σ the
   nearby modes it hops between differ in coarse properties (mass, pose,
-  proportion — why aether reads character stature well); at low σ they differ in
+  proportion, which is why aether reads character stature well); at low σ they differ in
   texture, which is why the same mechanism turns skin and gradients to mush.
   So here it is gated: full strength above `sigma_frac` 0.70, ramped to zero at
   0.45, **off below**, and it lives in the `σ_next != 0` branch so it can never
@@ -412,34 +412,34 @@ bugs, just how the model responds:
   which pins both to SD-tuned absolutes: the *gate* uses the family-invariant
   `σ` (flow) / `σ/(1+σ)` (VE) coordinate, and the *amplitude* scales with
   absolute σ. (Measured: on a 24-step `flow` schedule aether's terminal floor
-  injects 0.0289 into the *finished* latent — 34× what the same code does on an
+  injects 0.0289 into the *finished* latent, 34× what the same code does on an
   SDXL karras schedule, where the tail sits below its `σ > 0.02` gate. Running
   aether under `beta_mix` or `smoothstep` avoids this, since both land their
   last σ at 0.003–0.015; under plain `flow` it does not.) `pump_strength=0` is
   bit-for-bit plain `cogent3`. 4-D only, so not available on FLUX. Same
   `eta_max` panel knob as the rest of the family, at 28–32 steps. **Scheduler
   pairing is a real trade, measured on images:** `beta_mix` wins prompt
-  coherency, `smoothstep` wins fine detail. The detail half is explained —
+  coherency, `smoothstep` wins fine detail. The detail half is explained:
   beta_mix's final λ steps are 1.90–2.10 against smoothstep's 1.373, 38–53%
   coarser exactly where fine detail resolves, despite reaching a lower terminal
   σ (0.0030 vs 0.0086). The coherency half is **not** explained: beta_mix
   delivers *less* pump energy (0.88×) and fewer high-σ steps. The surviving
   candidate is that it covers the same λ distance in the pumped band (10.5–10.7
   for both) in fewer, bigger steps, so each injection gets 10–15% more
-  denoising before the next — a modest effect for a large perceptual gap, so
-  treat it as unproven.
+  denoising before the next. That is a modest effect for a large perceptual gap,
+  so treat it as unproven.
 
   **In practice the standout is prompt coherency**, not the character stature it
   was built to chase (that improved too, but it is not the headline). That fits
   the mechanism better than the original target: stature belongs to an object
   the model has already decided to draw, so it lives in *coherent* structure the
-  `1 − C` weighting deliberately protects — whereas prompt adherence is about
+  `1 − C` weighting deliberately protects, whereas prompt adherence is about
   what gets drawn at all in still-ambiguous regions, which is exactly what the
   pump perturbs, forcing the CFG-guided model to re-answer "what belongs here?"
   many more times than an accurate solver ever asks. A solver that commits to a
   partly prompt-compliant layout will then refine *that* layout faithfully; it
   has no mechanism to restructure. Two knock-on rules: if detail feels soft,
-  **raise** `pump_end` first (shut the pump off earlier — it earns its keep at
+  **raise** `pump_end` first (shut the pump off earlier; it earns its keep at
   high σ), and don't set a CFG guidance interval that drops the uncond pass
   inside the pumped band, since CFG re-deciding is the whole point.
 
@@ -486,12 +486,12 @@ bugs, just how the model responds:
   accessories came out right depended on the noise draw even at 50 and 100
   steps, so judge coherency over several seeds.
 
-- **`stork2`** (STORK-2, ICLR 2026, arXiv:2505.24210 — clean-room) is a
+- **`stork2`** (STORK-2, ICLR 2026, arXiv:2505.24210, clean-room) is a
   deterministic multistep solver built from a stabilized Runge–Kutta–Gegenbauer
-  stage cascade driven by Taylor-extrapolated "virtual" stage velocities — still
+  stage cascade driven by Taylor-extrapolated "virtual" stage velocities, still
   one model evaluation per step, like `dpmpp_2m`. In effect it is a 2-step
-  Adams–Bashforth whose derivative correction — the noisiest term of any
-  multistep solver — is slightly *damped* (≈0.463 instead of 0.5 at the default
+  Adams–Bashforth whose derivative correction (the noisiest term of any
+  multistep solver) is slightly *damped* (≈0.463 instead of 0.5 at the default
   9 stages), trading a sliver of formal accuracy for robustness. On
   flow-matching benchmarks (SANA, FLUX.1-dev) the paper measures it beating
   Flow-UniPC and Flow-DPM-Solver++ at 7–10 steps, which makes it worth an A/B
@@ -504,11 +504,11 @@ bugs, just how the model responds:
   (MIT, tracking the 2026-07-17 upstream rework): Euler plus an
   invariant-gated IIR correction that tracks both the *velocity* (first
   difference) and, from the third step, the *acceleration* (second
-  difference) of the denoising derivative through EMA filters — deterministic,
+  difference) of the denoising derivative through EMA filters: deterministic,
   one model evaluation per step, all families. Before each step three
   invariants gate the correction: its magnitude is clamped to 50% of the
   derivative's, it is halved if the derivative reversed direction, and it
-  drops to a pure Euler step when both trigger — so the correction only acts
+  drops to a pure Euler step when both trigger, so the correction only acts
   where the trajectory is smooth enough to trust it.
 
   One deliberate deviation from upstream: each difference is divided by the
@@ -530,14 +530,14 @@ bugs, just how the model responds:
   rewrote it wholesale on 2026-07-21, and what ships here now is that rewrite:
   the same first-order step as `infinity` (upstream writes it as
   `x ← r·x − (r−1)·x0`, which is Euler in σ space) plus a **variance
-  stabiliser** — before each step, every channel's spatial standard deviation
+  stabiliser**: before each step, every channel's spatial standard deviation
   is pulled toward its running average by a fraction that ramps smoothly with
   three things: how far the spread has drifted, how far into the trajectory you
   are, and the step count. The last of those is a Turbo/LCM guard: at 4 steps
   the running average has nothing useful to correct toward, so the correction
   is held to a third of its strength.
 
-  Everything that used to define this branch is gone — the x0-space EMA filter,
+  Everything that used to define this branch is gone: the x0-space EMA filter,
   the invariant gates, and the `0.2·σ` noise injection that gave it its grain.
   It is **deterministic** now, and the gentlest member of the family rather
   than the grainiest: plain Euler with a spread correction that is deliberately
@@ -547,8 +547,8 @@ bugs, just how the model responds:
   The upside of losing the injection is that the flow restriction goes with it.
   That injection was an absolute `0.2·σ` that ignored how far the step
   travelled: on Anima at flow shift=3.0 over 32 steps the first step injected
-  18.8× what it removed — 46× under the `infinity` scheduler, whose sine warp
-  shrinks that gap further — and 28 of 32 steps over-injected, which is why the
+  18.8× what it removed (46× under the `infinity` scheduler, whose sine warp
+  shrinks that gap further), and 28 of 32 steps over-injected, which is why the
   sampler was SD/SDXL-only. With it deleted there is no absolute noise scale
   left, so **Anima offers it again**. FLUX still does not: the stabiliser takes
   a per-channel statistic over the spatial axes, and FLUX packs its latent into
@@ -568,7 +568,7 @@ bugs, just how the model responds:
 
   Two stabilizers sit alongside it, and **which of them runs depends on the
   family**. NQVP holds the denoised prediction's per-channel spread near its
-  running average and is **SD/SDXL only** — upstream gates it on `sigmas[0] ≥ 5`
+  running average and is **SD/SDXL only**: upstream gates it on `sigmas[0] ≥ 5`
   as an explicit "not a flow model" test, since it exists to tame the large
   early-step swings that `σ·ε` produces on variance-exploding models. AVN damps
   each channel's *velocity* spread toward its running average and runs on
@@ -577,12 +577,12 @@ bugs, just how the model responds:
 
   AVN is new as of upstream's 2026-07-25 rework and it replaced ACS, which is
   worth knowing if you have used this sampler before. ACS pulled each channel's
-  spatial *mean* halfway to an early-seeded average every step — a DC-level
+  spatial *mean* halfway to an early-seeded average every step, a DC-level
   correction, and on a 16-channel flow latent that is how you manufacture a
   colour cast. An earlier build here dropped upstream's `σ_max < 8` gate,
   which left ACS running on Anima where ComfyUI never ran it, and produced
   exactly that: a heavy cyan cast and a flat, fogged image. Upstream reached
-  the same conclusion from the other end — first excluding flow models from
+  the same conclusion from the other end, first excluding flow models from
   ACS, then deleting ACS outright in favour of AVN, which touches only the
   spread, only downward, and acts on the velocity rather than the prediction.
   The gate is gone because nothing left in the stack can cast.
@@ -595,7 +595,7 @@ bugs, just how the model responds:
   inflates by construction, so it is not independent support for the detail
   claims.
 
-  **SD/SDXL and Anima only** — the band split is 2-D convolution over the
+  **SD/SDXL and Anima only**: the band split is 2-D convolution over the
   latent's spatial axes, and FLUX packs its latent into a token sequence before
   sampling, so omega is absent from the FLUX dropdown. Costs about 6 ms/step of
   extra CPU work on a 1024px Anima latent, i.e. well under 1% of a real step.
@@ -607,8 +607,8 @@ bugs, just how the model responds:
   constants only disagree on a partial-denoise SD img2img.
 
   Nano and omega used to differ on Anima by the near-no-op DoG term alone, so
-  the choice barely registered there. AVN changed that — omega damps the
-  velocity every step on flow and nano does not — so **nano is now the
+  the choice barely registered there. AVN changed that (omega damps the
+  velocity every step on flow and nano does not), so **nano is now the
   unstabilized option**: LPVD + AHFRI on Euler with nothing held back. That is
   the configuration upstream's original flow-model comparisons were made in, if
   you want to reproduce them. Same 4-D restriction (SD/SDXL and Anima, not
@@ -616,8 +616,8 @@ bugs, just how the model responds:
   than omega.
 
 - **`infinity_aether`** is upstream's newest branch (added 2026-07-30), built
-  on omega's stack. Everything omega does is still there — Euler, the pyramid,
-  the nano-band gain, NQVP on SD/SDXL, AVN everywhere — and the isotropic
+  on omega's stack. Everything omega does is still there (Euler, the pyramid,
+  the nano-band gain, NQVP on SD/SDXL, AVN everywhere), and the isotropic
   difference-of-Gaussians term is replaced by a **material-aware** one. Each
   step, nine Laws texture-energy filters label every pixel as flat, skin,
   line art, or fabric, a contrast-invariant edge map scores faint edges as
@@ -627,15 +627,15 @@ bugs, just how the model responds:
   shading on the coarse band masked to coherent structure, a normalization that
   rescales the enhanced velocity back to its original energy so none of this
   can push the trajectory, a decay that fades every enhancement to zero below
-  σ 0.15, and **stochastic grain** gated to low-coherence regions — the flat
+  σ 0.15, and **stochastic grain** gated to low-coherence regions: the flat
   walls and backgrounds where models tend to go smooth.
 
   It is the closest thing in this family to what `realism` used to be, and the
   right place to go for texture now. Seeds reproduce here (upstream's do not).
 
-  **Treat Anima results as unvalidated.** Every threshold in the branch — the
+  **Treat Anima results as unvalidated.** Every threshold in the branch (the
   σ 0.80/0.15 decay knees, the σ ≥ 0.80 shading window, the grain's `0.25·σ`
-  capped at 0.08 — is an absolute number compared against raw sigma, and the
+  capped at 0.08) is an absolute number compared against raw sigma, and the
   decay band alone spans nearly two thirds of a flow model's entire σ range
   against under 5% of an SD model's. This is the same construction that made
   old `realism` unusable on flow, though not the same severity: the grain here
@@ -643,13 +643,13 @@ bugs, just how the model responds:
   neither. Still, on flow this is substantially a different sampler from the
   one upstream tuned, and the grain is proportionally much heavier relative to
   what each step removes. **SD/SDXL and Anima only**, same 4-D reason as omega.
-  The most expensive sampler here — roughly 20 depthwise convolutions plus nine
-  5×5 Laws filters per step — though still small next to a real forward pass.
+  The most expensive sampler here (roughly 20 depthwise convolutions plus nine
+  5×5 Laws filters per step), though still small next to a real forward pass.
 
   The **`infinity` scheduler** (same project, all families) is `normal`'s
   linear timestep ramp warped by a sine perturbation: the first step's gap
   shrinks (a gentler start) and the last step's grows (more room for the
-  final cleanup), with the strength adapting to the step count — near-linear
+  final cleanup), with the strength adapting to the step count: near-linear
   at low steps, fully perturbed from 30 up. Every sigma still comes from the
   model's native σ(t), so unlike sigma-space schedules (`karras`,
   `exponential`) it never asks the model to denoise at a noise level it was
@@ -659,19 +659,19 @@ bugs, just how the model responds:
   that same linear ramp with a hyperbolic tangent whose curvature grows with
   the step count, flattening back to linear at 4 steps or fewer. Upstream
   calls it a "tail-density" schedule and claims it spends up to 45% of the
-  budget at low noise; the formula it ships does the opposite — the curve is
+  budget at low noise; the formula it ships does the opposite: the curve is
   convex, so sigma is held high through the early trajectory and plunges at
   the end. At 50 flow steps it puts 7 sigmas below half of σ_max where
   `normal` puts 13. It is ported as upstream wrote it, since that is what
   upstream's comparisons were made against, and it does pair coherently with
-  `infinity_omega` (whose detail gain is also strongest at high sigma) — just
+  `infinity_omega` (whose detail gain is also strongest at high sigma). Just
   reach for it to spend steps on structure, not on texture.
 
 - **`lumen`** is the same project's newest branch
   (`sampler/lumen-geometric-solver`, MIT): a deterministic second-order
   multistep at one model evaluation per step, all families. Upstream derives it
   by writing the ODE in `y = x/σ` and `u = log σ`, taking the x0 estimate linear
-  in `u` from one step of history, and integrating that in closed form — an
+  in `u` from one step of history, and integrating that in closed form: an
   Euler step minus `κ · slope · (ρ − log ρ − 1)`.
 
   **That correction is the one `res_multistep` already takes.** The closed-form
@@ -681,20 +681,20 @@ bugs, just how the model responds:
   test pins this). So the honest description is not "a new solver" but
   "`res_multistep` with three no-cost stability guards":
 
-  * **Damping** — the correction is scaled by `κ = min(1, 0.8·mean|D| /
+  * **Damping**: the correction is scaled by `κ = min(1, 0.8·mean|D| /
     mean|ΔD|)`, so a step where the x0 estimate jumps gets a smaller
     second-order term. It is step-size-blind: at high step counts `mean|ΔD|`
     shrinks on its own and `κ` sits at 1, so this only bites at low steps and
     high σ.
-  * **Euler tail** — the last two non-terminal steps take the plain Euler step,
+  * **Euler tail**: the last two non-terminal steps take the plain Euler step,
     keeping the extrapolation off the schedule's steepest `log σ` jumps as
     σ → 0.
-  * **Magnitude guard** — any step whose damped correction averages more than
+  * **Magnitude guard**: any step whose damped correction averages more than
     40% of its own Euler displacement falls back to Euler.
 
   All three are conservative and none costs an evaluation, so expect `lumen` to
-  read as `res_multistep` with a calmer tail rather than as a different sampler
-  — closer to Euler where the trajectory is rough, identical to `res_multistep`
+  read as `res_multistep` with a calmer tail rather than as a different sampler:
+  closer to Euler where the trajectory is rough, identical to `res_multistep`
   where it is smooth. Upstream's synthetic-probe table reports +1.4 to +6.9 dB
   PSNR over *Euler* at 8–32 steps, which is the gap you would expect from any
   second-order multistep and is not a measurement against `res_multistep`,
@@ -709,18 +709,18 @@ bugs, just how the model responds:
   σ, where the correction is small relative to the step). Keeping the tail costs
   ~5× terminal error at 20 steps, because the last steps are exactly where the
   x0 estimate is moving fastest and the second-order term earns the most. That
-  toy cannot show what the tail is *for* — a real denoiser's terminal overshoot,
-  which upstream tuned it against — so this is a reason to A/B it, not a verdict.
+  toy cannot show what the tail is *for* (a real denoiser's terminal overshoot,
+  which upstream tuned it against), so this is a reason to A/B it, not a verdict.
   Image-quality A/B against `res_multistep` and `dpmpp_2m` is pending.
 
-### TeaCache — faster Anima sampling
+### TeaCache: faster Anima sampling
 
 **TeaCache** (opt-in, Anima only) skips recomputing the 28-block DiT on steps
-where its output barely changes, reusing the cached result instead — a large
+where its output barely changes, reusing the cached result instead, a large
 speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
 
 - **Incompatible with CUDA Graphs.** TeaCache's cached tensors live inside the
-  compiled forward, and each graph replay overwrites them — the request is
+  compiled forward, and each graph replay overwrites them, so the request is
   rejected with a clear error at submit. Pick one: TeaCache (with plain
   `torch.compile` or no compile) for stochastic/varied work, or CUDA Graphs for
   maximum raw throughput at a fixed resolution.
@@ -728,18 +728,18 @@ speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
 - **Threshold is the speed/fidelity knob.** TeaCache accumulates how much the
   step input drifts and forces a real recompute once that crosses the threshold;
   higher = more skipping = faster but lower fidelity. There is no universal sweet
-  spot — it depends on your sampler and step count. High step counts with
+  spot; it depends on your sampler and step count. High step counts with
   single-step or secant-family samplers stay near-lossless up to ~0.3–0.5. Start
   low and raise it until quality dips.
 
 - **Multistep solvers (`dpmpp_2m`, `res_multistep`, `ipndm`) have essentially no
-  usable TeaCache window — get their speed from fewer steps instead.** These
+  usable TeaCache window; get their speed from fewer steps instead.** These
   linearly combine the current and previous model evaluations, so reusing a stale
   one on a skipped step breaks the update. The drift between their steps is also
   tiny, so the threshold scale is far smaller than for other samplers: even
   `≤0.012` only skips ~1 step (~4%, negligible), and pushing higher corrupts the
-  image in stages — color cast (~2 skips) → distorted anatomy (~5) → blur (~7+) —
-  long before you get a real speedup. Since `dpmpp_2m` already stays coherent at
+  image in stages (color cast at ~2 skips → distorted anatomy at ~5 → blur at
+  ~7+) long before you get a real speedup. Since `dpmpp_2m` already stays coherent at
   16–20 steps (see *Working with Anima*), lowering the step count is the clean,
   controlled way to go faster with it; reserve TeaCache for the single-step /
   ancestral samplers that tolerate skipping.
@@ -752,23 +752,23 @@ speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
 
 - **Use calibrated coefficients (toggle, on by default).** When on, generation
   applies that fitted polynomial. Turn it **off** to gate on the raw estimate
-  instead — the threshold then *means* something different, so re-tune it.
+  instead; the threshold then *means* something different, so re-tune it.
 
 - **Forecast basis (dropdown, HiCache by default).** Skipped steps don't freeze
-  the cached residual — they extrapolate it from its recent history. **HiCache**
+  the cached residual; they extrapolate it from its recent history. **HiCache**
   (arXiv:2508.16984) weights that history with damped Hermite polynomials
   (order 2, σ=0.5), which track the curved, turning trajectories where a linear
   forecast overshoots; **TaylorSeer** is the previous linear (order-1)
   extrapolation. The skip *decisions* (threshold, calibration) are identical
-  under both — only what a skipped step outputs changes, so no re-tuning is
+  under both; only what a skipped step outputs changes, so no re-tuning is
   needed when switching. Measured on Anima (RMSE vs the uncached image, same
   skip pattern): HiCache is clearly better with ancestral samplers (6–15%
-  lower error on `euler_ancestral` — TeaCache's recommended pairing); on
+  lower error on `euler_ancestral`, TeaCache's recommended pairing); on
   deterministic `euler`+`flow` it's a wash to marginally worse, so pick
   TaylorSeer there if you're chasing exactness. Images written before this
   option record TaylorSeer in their metadata and restore with it.
 
-- **Decision rule (dropdown, "Input drift" by default) — the EasyCache option is
+- **Decision rule (dropdown, "Input drift" by default). The EasyCache option is
   experimental and measured to be worse.** The rule decides *when* to skip, and
   is independent of the forecast basis above (which decides what a skip
   outputs). **Input drift** is TeaCache's own rule, described throughout this
@@ -777,7 +777,7 @@ speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
   a *predicted output change* per step, recomputing once that reaches the
   threshold (which it reads as the paper's τ; calibration does not apply and its
   chip is hidden). It is kept as an option because the theory is sound and it may
-  suit samplers not tested here — but on this repo's Anima setups the drift rule
+  suit samplers not tested here, but on this repo's Anima setups the drift rule
   won, so **leave this on Input drift unless you are experimenting**. Measured at
   768², CFG 4.5, three seeds, RMSE against the same config's uncached image:
 
@@ -790,7 +790,7 @@ speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
   | `dpmpp_2m`/`flow`/25 | 19 skips, RMSE 45.8 | 17 skips, RMSE 119.4 |
 
   Two things are worth knowing if you do experiment with it. **The paper's τ is
-  the wrong scale for Anima**: 0.05 skips *nothing* here — the useful range is
+  the wrong scale for Anima**: 0.05 skips *nothing* here; the useful range is
   roughly **0.2–0.9** on ancestral samplers and around **0.05** on `dpmpp_2m`, so
   it does not transfer across that divide the way it is supposed to. And the
   skips it does buy land in the wrong place: the predicted change falls
@@ -798,7 +798,7 @@ speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
   budget recomputing early and puts **every skip in the low-noise half**, where
   fine detail is being resolved. The one place it beat the drift rule on all
   three seeds is `cogent3_pump` at τ 0.4 (and, on one seed, `dpmpp_2m` at τ 0.05,
-  which gets a slightly wider usable window than it has under drift) — small
+  which gets a slightly wider usable window than it has under drift). Those are small
   wins, not a reason to switch. Images written before this option record `drift`
   in their metadata and restore with it.
 
@@ -807,7 +807,7 @@ speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
   than the positive one. Off by default and worth understanding before raising:
   the uncond pass is not the less important one. At CFG *s* the guided velocity
   is `v_uncond + s·(v_cond − v_uncond)`, so an error in the uncond branch enters
-  with weight `|1 − s|` — 3.5 at CFG 4.5, against the positive branch's 4.5. It
+  with weight `|1 − s|`: 3.5 at CFG 4.5, against the positive branch's 4.5. It
   is only empirically *smoother*, which is why it already skips more than the
   cond stream at an equal threshold (measured here: it skipped on 4.9% more
   steps than the cond stream did, across 88 cached runs). Raise it only if your
@@ -815,28 +815,28 @@ speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
 
 - **When to turn calibration off.** Calibration is fit on a single *deterministic
   Euler* trajectory over the flow schedule, so it matches deterministic samplers
-  best. Stochastic / second-order samplers — e.g. `secant_anneal` on the `beta`
-  schedule — run a trajectory the fit never saw, where it can both recompute
+  best. Stochastic / second-order samplers (e.g. `secant_anneal` on the `beta`
+  schedule) run a trajectory the fit never saw, where it can both recompute
   *more* (slower) and place those recomputes on the wrong steps (lower fidelity,
   i.e. "seed-breaking"). If a calibrated run is somehow **slower and worse** than
   uncalibrated, that's the mismatch: turn calibration off for that sampler and
-  tune the raw threshold directly. Re-calibrating won't fix it — the calibration
+  tune the raw threshold directly. Re-calibrating won't fix it: the calibration
   loop is deterministic and can't reproduce an ancestral sampler's dynamics.
 
-### CFG guidance interval — skip the negative-prompt pass
+### CFG guidance interval: skip the negative-prompt pass
 
 Every CFG step normally runs the model twice (positive + negative prompt).
 Research on guidance ([Kynkäänniemi et al., 2024](https://arxiv.org/abs/2404.07724))
-shows CFG only earns its keep in a middle band of noise levels — so the **CFG
+shows CFG only earns its keep in a middle band of noise levels, so the **CFG
 start / CFG end** knobs (Settings → Sampler & scheduler defaults) let you apply
 it only between those fractions of the run. Outside the band the negative-prompt
 pass is skipped entirely: each skipped step costs half as much.
 
-- `0 / 1` (the defaults) guide every step — behavior is unchanged.
+- `0 / 1` (the defaults) guide every step, so behavior is unchanged.
 - `0 / 0.75` is a good first try: full guidance while composition and palette
   form, conditioned-only for the final quarter, where CFG mostly sharpens what's
   already decided. At 12 steps on Anima that measured ~1.12× end-to-end.
-- **Raising `start` above 0 is a further free speedup — measured, and the
+- **Raising `start` above 0 is a further free speedup, measured, and the
   recommended tuning.** This is the paper's headline direction (skip guidance at
   the *highest* noise). Measured at 768², 3 seeds × 2 prompts × `secant_anneal`
   and `cogent3_pump`, TeaCache off, against `0 / 1`:
@@ -847,7 +847,7 @@ pass is skipped entirely: each skipped step costs half as much.
   | `0.1 / 0.75` | 1.19× |
   | `0.2 / 0.75` | **1.25×** |
 
-  No visible quality loss at either start value, on any seed — including on a
+  No visible quality loss at either start value, on any seed, including on a
   deliberately *short* prompt, which is where Anima's reliance on its LLM
   conditioning made a loss most likely. What does change is the **composition**:
   guidance at high noise is what decides framing and pose, so raising `start`
@@ -855,7 +855,7 @@ pass is skipped entirely: each skipped step costs half as much.
   prompt a composition tag like `full body` held less reliably at `0.2` than at
   `0.1`. So: **`0.1 / 0.75` if you lean on composition tags or want to stay near
   your existing seeds, `0.2 / 0.75` for the most speed.** The shipped default is
-  still `0 / 1` (off) — these are your knobs to set.
+  still `0 / 1` (off); these are your knobs to set.
 - Applies to Anima and SD/SDXL (t2i, img2img, inpaint) and composes with
   TeaCache. FLUX is guidance-distilled (no CFG pass), so it's unaffected. When
   active it's recorded in PNG metadata as `CFG interval: start-end`.
@@ -865,21 +865,21 @@ pass is skipped entirely: each skipped step costs half as much.
 Enable **Detailer** in the Generate view, or use the standalone **Detail**
 button on a result or any gallery image, to run an ADetailer-style refinement
 pass. A YOLO model detects regions (faces, hands, …); each is
-cropped, inpainted at the model's native resolution, and composited back — the
+cropped, inpainted at the model's native resolution, and composited back: the
 fix for soft, low-detail small faces. Unlike ADetailer it drives Diffucore's
 own inpaint, so it works for **UNet (SD/SDXL)** and **DiT (Anima, FLUX)** alike.
 
-**Stack multiple detection models** — add a pass per model (e.g. a face model
+**Stack multiple detection models**: add a pass per model (e.g. a face model
 then a hand model); each runs in sequence, refining the previous result, and
 carries its own optional prompt (blank reuses the main prompt). Confidence,
 denoise strength, and the mask padding / blur / dilation are shared across passes.
 
-**The standalone button refines an image that already exists** — a finished
-result, or any PNG in the gallery — without re-sampling it. It opens with the
+**The standalone button refines an image that already exists** (a finished
+result, or any PNG in the gallery) without re-sampling it. It opens with the
 Generate-view detailer settings pre-filled, and a gallery image supplies its own
 sampler/steps/CFG from its metadata so the passes match how it was made.
 
-**Denoise strength is model-aware** — the flow-matching DiTs (Anima, FLUX)
+**Denoise strength is model-aware**: the flow-matching DiTs (Anima, FLUX)
 front-load high σ, so a given strength turns into far more effective noise than
 SD/SDXL's EDM and regenerates much more of the face. Loading an Anima model
 therefore defaults the detailer strength to **0.25** (a true refine); SD/SDXL and
@@ -895,10 +895,10 @@ low-denoise img2img over overlapping tiles and feather-blended back. Because eac
 tile is only ~1024², 2× **and** 4× both fit in modest VRAM.
 
 **Pick a base upscaler.** With **Lanczos** (the default) the base is soft, so the
-refine needs high denoise to add detail — but high denoise makes each tile redraw
+refine needs high denoise to add detail, but high denoise makes each tile redraw
 the whole prompt and duplicate the subject. Drop an **ESRGAN** model into
 `models/upscalers/` and select it instead: it synthesises real per-pixel detail,
-so the refine only needs a low denoise (~0.2) to clean it up — sharp, with no
+so the refine only needs a low denoise (~0.2) to clean it up: sharp, with no
 duplication. ESRGAN is the recommended path; Lanczos is a fallback. (ESRGAN runs
 through `spandrel`; see [Place your models](#place-your-models).)
 
@@ -917,11 +917,11 @@ reuses the base you already have instead of re-sampling it. The same holds while
 you re-tune them: change the detailer strength or the upscale denoise, hit
 Generate, and only the post passes run.
 
-This needs a **locked seed** — `-1` means "give me a new image", so it always
+This needs a **locked seed**: `-1` means "give me a new image", so it always
 samples. A random-seed run still stores its base under the seed it landed on, so
 clicking ♻ (recycle) and then adding a post pass is a reuse, not a second
-generation. Anything that changes the base — a word in the prompt, the step
-count, the size, a LoRA, a sampler knob, loading a different model — samples
+generation. Anything that changes the base (a word in the prompt, the step
+count, the size, a LoRA, a sampler knob, loading a different model) samples
 fresh, as before.
 
 ### Sweep parameters (X/Y/Z)
@@ -935,7 +935,7 @@ assembled grid and every individual cell are saved to `outputs/`.
 
 The **Gallery** shows every image you've generated, grouped by date (newest
 first) like a phone gallery. Click or tap a thumbnail to
-open it in a fullscreen carousel — step through your outputs with the on-screen
+open it in a fullscreen carousel: step through your outputs with the on-screen
 arrows, the ←/→ keys, or a swipe on touch; toggle **Info** to read the image's
 metadata, and hit **Load to Generate** to pull that generation's settings into
 the Generate view, or **To img2img** / **To inpaint** to send the image itself in
@@ -954,30 +954,30 @@ point, and an optional `web/` directory of JS that gets injected into the UI.
 Extensions can add API endpoints, hook into generation and model loading, queue
 jobs on the shared worker, broadcast SSE events, store their own settings, and
 add tabs and panels to the frontend. A reference `example-watermark`
-extension ships with the app — read it alongside
+extension ships with the app; read it alongside
 [`docs/EXTENSIONS.md`](docs/EXTENSIONS.md) for the full API.
 
 ## Project structure
 
 ```
 ├── backend/            Python backend (FastAPI server + engine glue)
-│   ├── app.py          Entry point — launches the FastAPI server (uvicorn)
-│   ├── server.py       FastAPI app — REST, a job queue, and a shared SSE event stream over the engine
-│   ├── engine.py       Engine singleton — model lifecycle, generation, LoRA, detailer, upscaler
+│   ├── app.py          Entry point: launches the FastAPI server (uvicorn)
+│   ├── server.py       FastAPI app: REST, a job queue, and a shared SSE event stream over the engine
+│   ├── engine.py       Engine singleton: model lifecycle, generation, LoRA, detailer, upscaler
 │   ├── detailer.py     YOLO detection + crop/expand geometry for the detailer
 │   ├── upscale.py      Tile geometry + feather-blend helpers for the tiled upscaler
-│   ├── metadata.py     PNG metadata — write params, read/parse AUTO1111 & ComfyUI
+│   ├── metadata.py     PNG metadata: write params, read/parse AUTO1111 & ComfyUI
 │   ├── utils.py        Directory scanning helpers (checkpoints, LoRAs, outputs)
 │   ├── xyz_grid.py     X/Y/Z plot grid assembly
 │   └── calibrate_oss.py  Headless CLI to calibrate an Anima OSS schedule
-├── static/             Frontend — index.html, app.js (Alpine), style.css
+├── static/             Frontend: index.html, app.js (Alpine), style.css
 ├── extensions/         Drop-in extensions (AUTO1111/ComfyUI-style); ships example-watermark
 ├── docs/               EXTENSIONS.md and feature design notes
 ├── requirements.txt    Python dependencies
-├── setup.sh / setup.bat    One-shot setup (submodule init, venv, pip install) — Linux / Windows
-├── launch.sh / launch.bat  Activate venv and run `python backend/app.py` — Linux / Windows
-├── update.sh / update.bat  Pull latest, sync submodule, refresh deps — Linux / Windows
-├── diffucore/          Git submodule — the Diffucore inference engine
+├── setup.sh / setup.bat    One-shot setup, Linux / Windows (submodule init, venv, pip install)
+├── launch.sh / launch.bat  Activate venv and run `python backend/app.py` (Linux / Windows)
+├── update.sh / update.bat  Pull latest, sync submodule, refresh deps (Linux / Windows)
+├── diffucore/          Git submodule: the Diffucore inference engine
 ├── models/             Model weight directories (user-provided)
 └── outputs/            Generated images, organised by date
 ```
@@ -993,7 +993,7 @@ The project has two layers:
 
 The [`Engine`](backend/engine.py) class is the bridge: it holds the loaded model,
 exposes `generate_t2i`, `generate_i2i`, and `generate_inpaint` methods, and
-handles LoRA lifecycle. [`server.py`](backend/server.py) wraps it in a FastAPI app —
+handles LoRA lifecycle. [`server.py`](backend/server.py) wraps it in a FastAPI app:
 jobs (generate, sweeps, calibrations, model loads) run one at a time on a single
 background worker thread, and every connected device subscribes to one shared
 Server-Sent-Events stream that broadcasts the queue, sampling progress, live
@@ -1002,7 +1002,7 @@ HTML/CSS/JS with Alpine.js and no build step. No ML logic lives in the web layer
 
 ## Status
 
-Diffucore UI is at **v0.1.14** — its first tagged release was v0.1.0. The interface is
+Diffucore UI is at **v0.1.14** (its first tagged release was v0.1.0). The interface is
 functional end-to-end across its model families, with full metadata
 round-trip, LoRA support, and X/Y/Z sweeps, and the feature surface has been
 verified on real hardware. It's an early release, so expect the occasional

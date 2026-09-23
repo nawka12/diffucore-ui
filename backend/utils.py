@@ -70,13 +70,8 @@ def scan_upscalers() -> List[str]:
 
 def model_name_ok(name: str) -> bool:
     """Whether ``name`` is a plain filename that stays inside its model dir.
-
-    Model / LoRA / detector / upscaler names arrive in API payloads and are
-    joined onto a models directory. ``_scan`` only ever offers bare filenames
-    (it doesn't recurse), so anything carrying a separator or ``..`` is an
-    escape attempt — and the loaders on the other end include ``torch.load``,
-    where an attacker-chosen ``.pt`` is arbitrary code execution.
-    """
+    Names come from API payloads, and a loader like ``torch.load`` on an
+    attacker-chosen ``.pt`` is code execution."""
     return bool(name) and name == Path(name).name and name not in (".", "..")
 
 
@@ -103,13 +98,8 @@ def te_path(name: str) -> Path:
 
 
 def lora_path(name: str) -> Path:
-    """Resolve a LoRA filename to its on-disk path.
-
-    Accepts both the full filename (``my_lora.safetensors``, as returned by
-    ``scan_loras`` and used by the built-in autocomplete) and the bare name
-    (``my_lora``, as inserted by the tagcomplete extension). If the exact
-    name doesn't exist, tries appending each known LoRA extension.
-    """
+    """Resolve a LoRA name, with or without its extension (the tagcomplete
+    extension inserts bare names), to its path."""
     p = _model_path(LORAS_DIR, name)
     if p.exists():
         return p
@@ -117,7 +107,7 @@ def lora_path(name: str) -> Path:
         candidate = LORAS_DIR / (name + ext)
         if candidate.exists():
             return candidate
-    return p  # return the original path so the caller's "not found" error is clear
+    return p  # the original path, so the caller's "not found" error is clear
 
 
 def detector_path(name: str) -> Path:
@@ -129,9 +119,7 @@ def upscaler_path(name: str) -> Path:
 
 
 def _parse_date_dir(name: str) -> date:
-    # Date folders are ISO ``YYYY-MM-DD`` (legacy ``DD-MM-YYYY`` dirs are
-    # renamed at startup — see server._migrate_output_dirs). Anything else
-    # sorts last rather than erroring.
+    # Non-ISO folder names sort last rather than erroring.
     try:
         return date.fromisoformat(name)
     except ValueError:
@@ -139,11 +127,9 @@ def _parse_date_dir(name: str) -> date:
 
 
 def _output_sort_key(f: Path) -> tuple:
-    """Newest-first ordering within a day folder. The leading index in
-    ``{i:05d}-{seed}.png`` climbs with save time, so sort on it numerically — a
-    string sort misorders legacy 2-digit-padded names (pre-ISO ``07-…``)
-    against the 5-digit ones saved into the same folder after a migration merge.
-    Names without a parseable index fall back to mtime, ranked below indexed files.
+    """Newest-first within a day folder, by the numeric index of
+    ``{i:05d}-{seed}.png`` (a string sort misorders legacy 2-digit names).
+    Unindexed names fall back to mtime, below indexed ones.
     """
     try:
         return (1, int(f.stem.split("-")[0]), 0.0)
@@ -152,25 +138,16 @@ def _output_sort_key(f: Path) -> tuple:
 
 
 def scan_outputs() -> List[Path]:
-    """List output PNGs newest-first, cached in memory (IMPROVE.md #11).
-
-    Walking every date folder + every file on each gallery open gets costly
-    after a year of daily use (hundreds of dirs, tens of thousands of files).
-    The result is cached and rebuilt only when the outputs dir's newest date
-    folder mtime advances (catches external changes). The cache key also
-    includes ``str(OUTPUTS_DIR)``, so a repointed outputs dir (tests, a future
-    ``DIFFUCORE_DATA_DIR``) always misses instead of serving a stale list.
-
-    Server saves/deletes call ``invalidate_outputs_cache`` to cover same-second
-    changes on 1s-mtime filesystems (ext4 default) — the mtime guard alone would
-    miss those. Cold start: built lazily on the first request.
+    """List output PNGs newest-first. Cached; rebuilt when the newest date
+    folder's mtime advances or the outputs dir moves, and invalidated by the
+    server on save/delete (ext4 mtimes have 1 s resolution).
     """
     global _OUTPUTS_CACHE, _OUTPUTS_CACHE_KEY
     newest = _outputs_newest_mtime()
     key = (str(OUTPUTS_DIR), newest)
     with _OUTPUTS_CACHE_LOCK:
         if _OUTPUTS_CACHE is not None and key == _OUTPUTS_CACHE_KEY:
-            return list(_OUTPUTS_CACHE)  # defensive copy: preserve the old "fresh list" contract
+            return list(_OUTPUTS_CACHE)
         _ensure_dirs()
         cache = _scan_outputs_uncached()
         _OUTPUTS_CACHE = cache
@@ -178,24 +155,13 @@ def scan_outputs() -> List[Path]:
         return list(cache)
 
 
-# ── outputs listing cache (IMPROVE.md #11) ───────────────────────────
-# In-memory cache of scan_outputs()'s result so a gallery open doesn't re-walk
-# the whole outputs tree every time. Rebuilt on the first request after a cold
-# start, and refreshed when the newest date-folder mtime advances (external
-# change) or when the server invalidates it after a save/delete (covers
-# same-second changes on 1s-mtime filesystems). Keyed by the outputs dir path
-# too so monkeypatching OUTPUTS_DIR (tests) always misses.
 _OUTPUTS_CACHE: Optional[List[Path]] = None
 _OUTPUTS_CACHE_KEY: tuple = ()  # (str(OUTPUTS_DIR), newest date-folder mtime)
 _OUTPUTS_CACHE_LOCK = threading.Lock()
 
 
 def invalidate_outputs_cache() -> None:
-    """Clear the in-memory outputs listing cache.
-
-    Called by the server after a save or a gallery delete so a same-second
-    change on a 1s-mtime filesystem (ext4 default) is reflected — the mtime
-    guard in ``scan_outputs`` alone would miss it."""
+    """Clear the outputs listing cache (after a save or delete)."""
     global _OUTPUTS_CACHE, _OUTPUTS_CACHE_KEY
     with _OUTPUTS_CACHE_LOCK:
         _OUTPUTS_CACHE = None
@@ -203,10 +169,7 @@ def invalidate_outputs_cache() -> None:
 
 
 def _outputs_newest_mtime() -> float:
-    """Newest mtime among the date folders in OUTPUTS_DIR (0.0 if empty/missing).
-
-    A saved image bumps its date folder's mtime, so this is a cheap staleness
-    signal — one iterdir of the date folders only, not the files inside them."""
+    """Newest mtime among the date folders in OUTPUTS_DIR (0.0 if none)."""
     try:
         return max(
             (d.stat().st_mtime for d in OUTPUTS_DIR.iterdir() if d.is_dir()),
@@ -218,9 +181,7 @@ def _outputs_newest_mtime() -> float:
 
 def _scan_outputs_uncached() -> List[Path]:
     _ensure_dirs()
-    # Skip dot-dirs (notably ``.trash/`` — the gallery's soft-delete holding pen)
-    # so trashed images don't reappear in the gallery list. Real date folders are
-    # ``YYYY-MM-DD`` and never start with a dot.
+    # Skip dot-dirs, notably the gallery's .trash/.
     dirs = [d for d in OUTPUTS_DIR.iterdir() if d.is_dir() and not d.name.startswith(".")]
     dirs.sort(key=lambda d: _parse_date_dir(d.name), reverse=True)
     files: List[Path] = []
@@ -233,7 +194,6 @@ def _scan_outputs_uncached() -> List[Path]:
 
 def next_output_path(seed: int, ext: str = "png") -> Path:
     _ensure_dirs()
-    # ISO date folder: lexicographic order == chronological order in any tool.
     date_str = date.today().isoformat()
     dir_path = OUTPUTS_DIR / date_str
     dir_path.mkdir(parents=True, exist_ok=True)
@@ -246,6 +206,6 @@ def next_output_path(seed: int, ext: str = "png") -> Path:
             except (ValueError, IndexError):
                 pass
     i = max_i + 1
-    # 5-digit padding (A1111-style): string sort stays correct past 99/day.
+    # 5-digit padding (A1111-style) keeps string sort correct past 99/day.
     name = f"{i:05d}-{seed}.{ext}"
     return dir_path / name

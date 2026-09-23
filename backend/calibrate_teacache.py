@@ -1,11 +1,8 @@
 """Headless CLI to fit TeaCache rescaling coefficients for an Anima model.
 
-A thin wrapper over ``Engine.calibrate_teacache``. TeaCache coefficients are an
-architecture-level property (arXiv:2411.19108): one fit transfers across a
-family's checkpoints and across step counts / resolutions, so this writes a
-single ``models/teacache_cache/<family>.json`` that every Anima checkpoint then
-picks up automatically. Run it once; generations with the TeaCache toggle on
-will use the fitted polynomial instead of the identity fallback.
+Wraps ``Engine.calibrate_teacache``. The coefficients are per architecture
+(arXiv:2411.19108), so one run writes ``models/teacache_cache/<family>.json``
+for every Anima checkpoint.
 
     python calibrate_teacache.py \
         --dit anima-base-v1.0.safetensors \

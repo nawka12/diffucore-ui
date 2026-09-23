@@ -2,7 +2,7 @@
 
 **A web frontend for the Diffucore diffusion inference engine.**
 
-Point it at your checkpoints, pick a prompt, and generate — a darkroom-themed
+Point it at your checkpoints, pick a prompt, and generate: a darkroom-themed
 interface with a unified txt2img / img2img / inpaint workspace, an X/Y/Z
 parameter-sweep mode, and a gallery that recycles past generations' metadata
 back into the workspace.
@@ -21,7 +21,7 @@ cd diffucore-ui
 
 # 2. Drop your model files under models/ (see the guide for the layout)
 
-# 3. Launch — serves on http://127.0.0.1:7860
+# 3. Launch (serves on http://127.0.0.1:7860)
 ./launch.sh                 # Windows: launch.bat
 ```
 
@@ -30,13 +30,13 @@ frontend is plain HTML/CSS/JS with Alpine.js (no build step).
 
 ## 📖 Full guide
 
-**[GUIDE.md](GUIDE.md)** covers everything else — the full feature list, model
+**[GUIDE.md](GUIDE.md)** covers everything else: the full feature list, model
 setup, all three modes (txt2img / img2img / inpaint), the detailer, the tiled
 upscaler, X/Y/Z sweeps, the gallery, network/share flags (`--listen`, `--share`),
 architecture, and status.
 
 ## License
 
-Apache-2.0 — see [`LICENSE`](diffucore/LICENSE) and [`NOTICE`](diffucore/NOTICE).
+Apache-2.0. See [`LICENSE`](diffucore/LICENSE) and [`NOTICE`](diffucore/NOTICE).
 Diffucore is an independent implementation; model architectures and sampling
 algorithms are implemented from their original research publications.

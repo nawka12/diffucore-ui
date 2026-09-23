@@ -1,4 +1,4 @@
-"""X/Y/Z plot grid generation — compare parameter combinations side by side."""
+"""X/Y/Z plot grids: compare parameter combinations side by side."""
 
 from __future__ import annotations
 
@@ -15,10 +15,7 @@ from engine import ENGINE
 
 PARAM_TYPES = ["None", "Seed", "Sampler", "Scheduler", "Steps", "CFG Scale", "Prompt S/R", "Checkpoint"]
 
-# Hard cap on |x|·|y|·|z|. Above this a sweep is almost certainly a mistake
-# (a "50,50,50" entry is 125k generations) and would fill the disk with PNGs —
-# and reload models per cell on a Checkpoint axis. The grid fails fast with a
-# clear message before generating anything rather than running for hours.
+# Cap on |x|·|y|·|z|: "50,50,50" would be 125k generations.
 MAX_XYZ_CELLS = 1000
 
 _PARAM_MAP: dict[str, str] = {
@@ -50,8 +47,7 @@ def _get_font(size: int = 14):
             except (IOError, OSError):
                 continue
         else:
-            # Pillow >= 10.1 returns a *scalable* default when given a size;
-            # the no-arg form is a fixed ~10px bitmap that ignores `size`.
+            # Pillow >= 10.1 scales the default font; older ignores the size.
             try:
                 _FONT_CACHE[size] = ImageFont.load_default(size)
             except TypeError:
@@ -60,12 +56,8 @@ def _get_font(size: int = 14):
 
 
 def _wrap_lines(text: str, font, max_w: int) -> list[str]:
-    """Break *text* into lines no wider than *max_w* pixels.
-
-    Prefers breaking after separators common in filenames (space - _ + .) so a
-    long checkpoint name folds at natural boundaries; hard-breaks by character
-    only when a single run is itself wider than the available width.
-    """
+    """Break *text* into lines no wider than *max_w* pixels, preferring breaks
+    after " -_+." and hard-breaking only runs wider than the line."""
     text = str(text)
 
     def w(s: str) -> int:
@@ -75,8 +67,6 @@ def _wrap_lines(text: str, font, max_w: int) -> list[str]:
     if max_w <= 0 or w(text) <= max_w:
         return [text]
 
-    # Split into tokens, each keeping its trailing separator so breaks land at
-    # natural spots.
     tokens, buf = [], ""
     for ch in text:
         buf += ch
@@ -88,8 +78,7 @@ def _wrap_lines(text: str, font, max_w: int) -> list[str]:
 
     lines, cur = [], ""
     for tok in tokens:
-        # A single token wider than the line (e.g. a long unbroken name) → cut
-        # off as many leading chars as fit, repeat on the remainder.
+        # Hard-break a token wider than the line.
         while w(tok) > max_w and len(tok) > 1:
             cut = len(tok)
             while cut > 1 and w(tok[:cut]) > max_w:
@@ -112,22 +101,15 @@ def _wrap_lines(text: str, font, max_w: int) -> list[str]:
 # ── value parsing ─────────────────────────────────────────────────
 
 def resolve_values(param_type: str, values_str: str, base_value: Any) -> list:
-    """Parse a comma-separated values string into a typed list.
-
-    Falls back to ``[base_value]`` when the string is empty or param is None.
-    A malformed numeric axis raises ``ValueError`` naming the offending token —
-    surfaced on the job like the cell-cap error, instead of a bare
-    ``invalid literal for int()`` from somewhere inside the run.
-    """
+    """Parse a comma-separated values string into a typed list, or
+    ``[base_value]`` when empty. Malformed numbers raise ``ValueError`` naming
+    the token."""
     if param_type == "None" or not values_str.strip():
         return [base_value]
-    # Prompt S/R keeps empties: a trailing comma (``promptA,``) asks for a cell
-    # with the search term replaced by nothing — i.e. an image *without* it — so
-    # an empty replacement is meaningful and must survive the filter below.
+    # Prompt S/R keeps empties: "promptA," means a cell with the term removed.
     if param_type == "Prompt S/R":
         vals = [v.strip() for v in values_str.split(",")]
-        # The first value is the *search* token; empty, str.replace("") would
-        # splice the replacement between every character of the prompt.
+        # An empty search token would splice the replacement between every char.
         if not vals[0]:
             raise ValueError(
                 "Prompt S/R: the first value is the text to search for and "
@@ -166,11 +148,7 @@ def _make_grid(
     x_labels: list[str],
     y_labels: list[str],
 ) -> Image.Image:
-    """Assemble a 2-D grid from a list-of-lists of PIL Images.
-
-    Label/header sizes scale with the cell resolution so the text stays
-    readable on large grids.
-    """
+    """Assemble a 2-D grid of PIL Images with labels scaled to the cell size."""
     n_rows = len(images)
     n_cols = len(images[0]) if n_rows else 0
     if n_rows == 0 or n_cols == 0:
@@ -187,8 +165,7 @@ def _make_grid(
         box = font.getbbox(str(s))
         return box[2] - box[0]
 
-    # Wrap long labels to their available width so nothing overflows or collides
-    # (e.g. full checkpoint filenames on a Checkpoint axis).
+    # Wrap long labels (e.g. checkpoint filenames) to the available width.
     x_wrapped = [_wrap_lines(s, font, cell_w - 2 * pad) for s in x_labels]
     y_wrapped = [_wrap_lines(s, font, cell_w - 2 * pad) for s in y_labels]
 
@@ -204,22 +181,20 @@ def _make_grid(
     draw = ImageDraw.Draw(canvas)
 
     def _draw_stack(cx: int, cy: int, lines: list[str], fill) -> None:
-        """Draw a vertically-centered stack of centered lines around (cx, cy)."""
         top = cy - (len(lines) * line_h) // 2 + line_h // 2
         for i, ln in enumerate(lines):
             draw.text((cx, top + i * line_h), ln, font=font, fill=fill, anchor="mm")
 
-    # Column headers (X labels) — teal
+    # Column headers (X): teal
     for xi in range(n_cols):
         cx = label_w + CELL_BORDER + xi * (cell_w + CELL_BORDER) + cell_w // 2
         _draw_stack(cx, header_h // 2, x_wrapped[xi], (93, 214, 192))
 
-    # Row labels (Y labels) — accent orange
+    # Row labels (Y): accent orange
     for yi in range(n_rows):
         cy = header_h + CELL_BORDER + yi * (cell_h + CELL_BORDER) + cell_h // 2
         _draw_stack(label_w // 2, cy, y_wrapped[yi], (232, 162, 101))
 
-    # Cells
     for yi in range(n_rows):
         for xi in range(n_cols):
             x0 = label_w + CELL_BORDER + xi * (cell_w + CELL_BORDER)
@@ -252,37 +227,14 @@ def generate_xyz_grid(
     save_callback: Callable[[Image.Image, dict], None] | None = None,
     cell_knobs: Callable[[str, str], dict] | None = None,
 ) -> tuple[list[Image.Image], str]:
-    """Generate XYZ plot grid(s).
+    """Generate one X/Y/Z grid image per Z value; returns ``(grids, info)``.
 
-    Parameters
-    ----------
-    base_kwargs : dict
-        Base generation kwargs — must include *prompt*, *negative_prompt*,
-        *width*, *height*, *steps*, *cfg_scale*, *sampler*, *scheduler*,
-        *seed*, *shift*.
-    x_type, y_type, z_type : str
-        One of ``PARAM_TYPES``.
-    x_values_str, y_values_str, z_values_str : str
-        Comma-separated raw values for each axis.
-    progress_callback : callable or None
-        Called with ``(step, total_steps, cell, total_cells)`` — cumulative
-        sampling step across the whole grid, plus the 1-based current cell.
-    preview_callback : callable or None
-        Forwarded into each cell's generation to stream live latent previews.
-    save_callback : callable or None
-        Called as ``(image, kwargs)`` for each successfully generated cell so
-        the caller can persist individual images.
-    cell_knobs : callable or None
-        Called as ``(sampler, scheduler)`` for each cell; its dict is merged
-        into that cell's kwargs — the settings-panel knobs a plain generation
-        gets, chosen per cell since Sampler and Scheduler can be axes.
-
-    Returns
-    -------
-    (grid_images, info_text)
-        ``grid_images`` is a list of PIL Images — one per Z value.
+    ``base_kwargs`` needs prompt, negative_prompt, width, height, steps,
+    cfg_scale, sampler, scheduler, seed and shift. ``progress_callback`` gets
+    ``(step, total_steps, cell, total_cells)`` cumulative over the grid;
+    ``save_callback(image, kwargs)`` runs per successful cell; ``cell_knobs
+    (sampler, scheduler)`` returns settings-panel kwargs merged into each cell.
     """
-    # Parse axis values
     x_vals = resolve_values(
         x_type, x_values_str,
         base_kwargs.get(_PARAM_MAP.get(x_type, ""), ""),
@@ -304,10 +256,8 @@ def generate_xyz_grid(
             f"{MAX_XYZ_CELLS}-cell cap. Narrow an axis and try again.")
     done = 0
 
-    # Cumulative sampling steps across every cell — drives a single progress bar
-    # for the whole grid (e.g. 32/96 for three 32-step cells). Steps can itself be
-    # an axis, so a cell's count is the base unless a Steps axis overrides it
-    # (x→y→z, last wins — same precedence as the generation loop below).
+    # One progress bar for the whole grid. A Steps axis overrides the base
+    # count (x→y→z, last wins, like the generation loop).
     base_steps = int(base_kwargs.get("steps", 0))
 
     def _cell_steps(xv, yv, zv) -> int:
@@ -321,18 +271,15 @@ def generate_xyz_grid(
         _cell_steps(xv, yv, zv)
         for zv in z_vals for yv in y_vals for xv in x_vals
     )
-    steps_done = 0   # cumulative steps from completed cells
+    steps_done = 0
 
-    # A "Prompt S/R" axis and the prompt's own <lora:…> tags both vary the prompt
-    # per cell, so the prompt is re-derived (and its LoRAs re-fused) inside the
-    # loop. The raw prompt — tags intact — is the search/replace target; the
-    # base-parsed clean strings are only the grid's representative metadata.
+    # Prompt S/R and <lora:…> tags vary per cell, so the raw prompt (tags intact)
+    # is the S/R target and LoRAs are re-fused per cell.
     raw_prompt = base_kwargs["prompt"]
     raw_neg = base_kwargs.get("negative_prompt", "")
     clean_prompt, base_p = ENGINE.parse_lora_prompt(raw_prompt)
     clean_neg, base_n = ENGINE.parse_lora_prompt(raw_neg)
 
-    # Search tokens for any Prompt S/R axis = that axis's first value.
     x_search = str(x_vals[0]) if x_type == "Prompt S/R" else ""
     y_search = str(y_vals[0]) if y_type == "Prompt S/R" else ""
     z_search = str(z_vals[0]) if z_type == "Prompt S/R" else ""
@@ -349,9 +296,7 @@ def generate_xyz_grid(
         base_kwargs["negative_prompt"] = clean_neg
         base_kwargs.pop("progress_callback", None)
 
-        # Resolve a random base seed once so every cell shares it — a fair
-        # comparison grid. (When Seed is itself an axis, each cell's seed comes
-        # from the axis values, so the base seed is left alone.)
+        # One random base seed shared by every cell, unless Seed is an axis.
         seed_is_axis = "Seed" in (x_type, y_type, z_type)
         if not seed_is_axis and base_kwargs.get("seed", -1) == -1:
             base_kwargs["seed"] = random.randint(0, 2**32 - 1)
@@ -378,13 +323,8 @@ def generate_xyz_grid(
                             cell_prompt = cell_prompt.replace(a_search, str(a_val))
                             cell_neg = cell_neg.replace(a_search, str(a_val))
                         elif a_type == "Checkpoint":
-                            # Swap the whole model for this cell — a single-file
-                            # checkpoint, or Anima's DiT (VAE + TE held fixed).
-                            # reload_model no-ops when the name is already current,
-                            # so this only reloads on a change (cheapest with
-                            # Checkpoint on the outermost axis). On a real reload the
-                            # prompt's LoRAs vanish with the old model, so drop the
-                            # cache to re-fuse.
+                            # reload_model no-ops on the current name; a real
+                            # reload drops the fused LoRAs, so re-fuse.
                             msg = ENGINE.reload_model(str(a_val))
                             if not msg.startswith("Model already loaded"):
                                 last_loras = None
@@ -394,8 +334,7 @@ def generate_xyz_grid(
                     if cell_knobs is not None:
                         kwargs.update(cell_knobs(kwargs["sampler"], kwargs["scheduler"]))
 
-                    # Re-derive this cell's prompt LoRAs; only re-fuse when the
-                    # set actually changed (a cheap no-op for non-S/R sweeps).
+                    # Re-fuse only when the cell's LoRA set changed.
                     cp, cp_loras = ENGINE.parse_lora_prompt(cell_prompt)
                     cn, cn_loras = ENGINE.parse_lora_prompt(cell_neg)
                     kwargs["prompt"], kwargs["negative_prompt"] = cp, cn
@@ -404,8 +343,6 @@ def generate_xyz_grid(
                         ENGINE.apply_temp_loras(cell_loras)
                         last_loras = cell_loras
 
-                    # Live per-cell progress (cumulative step + 1-based cell index)
-                    # and preview, forwarded into this cell's generation.
                     cur_steps = int(kwargs.get("steps", base_steps))
                     if progress_callback is not None:
                         progress_callback(steps_done, total_steps, done + 1, total_cells)
@@ -438,7 +375,6 @@ def generate_xyz_grid(
 
                 rows.append(cols)
 
-            # Build labels
             x_labels = [str(v) for v in x_vals]
             y_labels = [
                 f"{y_type}: {v}" if y_type != "None" else ""
@@ -447,7 +383,6 @@ def generate_xyz_grid(
 
             grid = _make_grid(rows, x_labels, y_labels)
 
-            # If Z is active, prepend a Z header strip
             if z_type != "None":
                 zf_size = max(22, grid.width // 45)
                 zf = _get_font(zf_size)

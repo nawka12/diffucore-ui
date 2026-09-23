@@ -1,10 +1,5 @@
 """Output folder naming: ISO date dirs, 5-digit counters, and the startup
-migration of legacy ``DD-MM-YYYY`` folders (v0.1.7 naming change).
-
-Run from the project root::
-
-    .venv/bin/python -m pytest backend/test_outputs_naming.py -v
-"""
+migration of legacy ``DD-MM-YYYY`` folders."""
 
 from __future__ import annotations
 
@@ -26,8 +21,7 @@ def test_next_output_path_iso_folder_and_5digit_counter(tmp_path, monkeypatch):
 
 
 def test_counter_continues_after_legacy_2digit_files(tmp_path, monkeypatch):
-    # A migrated folder can hold pre-ISO ``NN-seed.png`` files; the counter
-    # must pick up after them, not collide.
+    # A migrated folder can hold pre-ISO ``NN-seed.png`` files.
     monkeypatch.setattr(utils, "OUTPUTS_DIR", tmp_path / "outputs")
     day = tmp_path / "outputs" / date.today().isoformat()
     day.mkdir(parents=True)
@@ -62,7 +56,7 @@ def test_migrate_renames_legacy_folders_and_thumbs(tmp_path, monkeypatch):
     assert (out / "2026-07-03").is_dir()    # untouched
     assert (out / "notes").is_dir()         # untouched
     assert (out / "99-99-2026").is_dir()    # untouched
-    # Thumb-cache mirror moved with it (keys are stem+mtime+size → still valid).
+    # The thumb-cache mirror moved with it.
     assert (thumbs / "2026-07-04" / "01-123_1_1.webp").is_file()
 
 

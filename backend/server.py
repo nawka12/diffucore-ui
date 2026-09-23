@@ -1,11 +1,8 @@
-"""FastAPI web layer for Diffucore.
+"""FastAPI web layer over the ``ENGINE`` singleton.
 
-Wraps the framework-agnostic ``ENGINE`` singleton. Generation is blocking torch
-code, so jobs (generate / xyz / calibrate / load) are queued and run one at a
-time on a single background worker thread. Every connected device subscribes to
-one shared Server-Sent-Events stream (``/api/events``); queue changes, sampling
-progress, live previews, and model-load status are broadcast to all of them, so
-a second device — or a refresh — stays in sync without reloading the model.
+Jobs run one at a time on a background worker thread. Every device subscribes
+to one Server-Sent-Events stream (``/api/events``) carrying queue changes,
+progress, live previews and model-load status.
 """
 
 from __future__ import annotations
@@ -66,11 +63,8 @@ MAX_BODY_BYTES = 128 * 1024 * 1024   # global cap: base64 of a 4K PNG fits, GBs 
 _ROOT = Path(__file__).resolve().parent.parent
 _STATIC = _ROOT / "static"
 
-# Cache-bust token for static assets: the newest mtime among the bundled files,
-# in hex. After an update (git pull rewrites the files) the token changes, so
-# the versioned ?v= URLs in index.html miss the browser cache and refetch the
-# new app.js/style.css. A startup snapshot is enough since updates restart the
-# server. index.html itself is served no-cache so the fresh token always wins.
+# Cache-bust token: newest static-file mtime in hex. Updates restart the server,
+# so a startup snapshot is enough; index.html itself is served no-cache.
 def _asset_version() -> str:
     mtimes = [
         (_STATIC / name).stat().st_mtime
@@ -83,27 +77,20 @@ ASSET_VERSION = _asset_version()
 _INDEX_HTML = (_STATIC / "index.html").read_text(encoding="utf-8").replace(
     "__ASSETV__", ASSET_VERSION
 )
-# Dev mode (DIFFUCORE_DEV=1): re-read index.html, app.js, style.css from disk on
-# every request so frontend edits show up on a plain refresh without restarting
-# the server. The asset version is recomputed too, so the ?v= URLs in index.html
-# change and the browser refetches the new JS/CSS. Production stays on the
-# startup snapshot — a single read, no per-request stat calls.
+# DIFFUCORE_DEV=1 re-reads index.html (and recomputes the asset version) on every
+# request, so frontend edits show up on a plain refresh.
 _DEV_MODE = os.environ.get("DIFFUCORE_DEV") in ("1", "true", "yes")
 
 
 # ── auth + CSRF guard ───────────────────────────────────────────────
-# Disabled by default (localhost is private). ``app.py`` enables it for
-# ``--share`` (auto-generated token) and ``--auth-token`` (explicit), or it can
-# be turned on by setting DIFFUCORE_AUTH_TOKEN in the environment. The middleware
-# below gates every non-public path on a valid cookie / bearer token, and blocks
-# cross-origin state-changing requests (CSRF) regardless of auth.
+# Off by default. app.py enables it for --share / --auth-token, or set
+# DIFFUCORE_AUTH_TOKEN. CSRF origin checks apply regardless.
 AUTH = AuthGate(token="", enabled=False)
 
 
 def configure_auth(*, token: str, enabled: bool, secure: bool = False) -> None:
-    """Turn the auth gate on (called from app.py once args are parsed, before
-    uvicorn.run). The middleware reads ``AUTH`` at request time, so configuring
-    here is in time for the first request."""
+    """Turn the auth gate on. The middleware reads ``AUTH`` per request, so
+    calling this before uvicorn.run covers the first request."""
     AUTH.token = token
     AUTH.enabled = enabled
     AUTH.secure_cookie = secure
@@ -118,10 +105,8 @@ if os.environ.get("DIFFUCORE_AUTH_TOKEN"):
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    """Write ``text`` to ``path`` atomically: write a temp file in the same
-    directory, then ``os.replace`` it over the target. A crash or kill mid-write
-    leaves the previous file intact instead of a truncated one — so settings,
-    last-load, and extension state don't silently fall back to defaults."""
+    """Write ``text`` to ``path`` via a temp file + ``os.replace``, so a crash
+    mid-write leaves the previous file intact."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix="." + path.name + "-", dir=str(path.parent))
@@ -138,9 +123,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 def _ext_script_tags() -> str:
-    # One <script> tag per enabled extension JS file (see extensions.py). Built
-    # at render time so a freshly-installed extension's UI shows up after the
-    # install endpoint returns, without a server restart.
+    # Built per render so a freshly installed extension shows up without a restart.
     return "".join(
         f'<script src="{s["src"]}?v={ASSET_VERSION}" defer></script>'
         for s in EXTENSIONS.web_script_urls()
@@ -154,15 +137,13 @@ def _render_index() -> str:
     return (_STATIC / "index.html").read_text(encoding="utf-8").replace(
         "__ASSETV__", version
     ).replace("__EXT_SCRIPTS__", _ext_script_tags())
-_THUMBS_DIR = _ROOT / ".cache" / "thumbs"  # lazily-built gallery-grid thumbnails
+_THUMBS_DIR = _ROOT / ".cache" / "thumbs"
 THUMB_MAX = 384  # long-edge px; the grid uses these instead of the full PNGs
 
 # ── AI NSFW ratings (WD tagger, .cache/ratings.json) ─────────────────
-# Every output that's been vision-rated carries a row here, keyed by its
-# gallery path and validated against the file's mtime+size so an overwritten
-# image re-rates instead of reusing a stale verdict. The tagger itself lives
-# in tagger.py and is optional (timm); the prompt heuristic in metadata.py is
-# the fallback for unrated images.
+# Keyed by gallery path and validated against the file's mtime+size, so an
+# overwritten image re-rates. The prompt heuristic in metadata.py is the
+# fallback for unrated images.
 _RATINGS_PATH = _ROOT / ".cache" / "ratings.json"
 
 _RATINGS: Optional[dict] = None     # path -> {"rating","nsfw","conf","v","key"}
@@ -170,7 +151,7 @@ _RATINGS_LOCK = threading.Lock()
 
 
 def _image_key(path: Path) -> str:
-    """mtime_ns+size fingerprint — same busting idea as the thumb cache."""
+    """mtime_ns+size fingerprint, same idea as the thumb cache."""
     try:
         st = path.stat()
         return f"{st.st_mtime_ns}_{st.st_size}"
@@ -189,10 +170,8 @@ def _read_ratings() -> dict:
 
 
 def _rating_current(entry: Optional[dict], path: Path) -> bool:
-    """Whether a cached entry still describes ``path``: same file (mtime+size
-    fingerprint) AND a current decision-layer version. A version mismatch —
-    e.g. after the rating logic changed — makes the verdict stale even though
-    the file is untouched, forcing a re-rate."""
+    """Whether a cached entry still describes ``path``: same mtime+size and the
+    current decision-layer version."""
     return bool(entry and entry.get("key") == _image_key(path)
                 and entry.get("v") == tagger_mod.DECISION_VERSION)
 
@@ -208,8 +187,7 @@ def _cached_rating(path: Path) -> Optional[dict]:
 
 
 def _store_ratings(entries: dict) -> None:
-    """Merge rated entries into the cache, stamp the decision version, and
-    persist atomically."""
+    """Merge rated entries into the cache and persist atomically."""
     with _RATINGS_LOCK:
         cache = _read_ratings()
         for rel, e in entries.items():
@@ -218,12 +196,10 @@ def _store_ratings(entries: dict) -> None:
         _atomic_write_text(_RATINGS_PATH, json.dumps(cache))
 
 
-# ── gallery soft-delete (#3) ──────────────────────────────────────────
-# DELETE /api/gallery moves files here instead of unlink()-ing them, so a
-# fat-fingered double-click (the two-click confirm is racy on a slow link) can
-# be recovered by hand from outputs/.trash/ until the purge runs. Files are
-# purged after TRASH_RETENTION_DAYS; the purge runs once at startup and on each
-# delete (cheap: one iterdir + mtime check).
+# ── gallery soft-delete ───────────────────────────────────────────────
+# DELETE /api/gallery moves files here so a mistaken delete can be recovered by
+# hand. Entries older than TRASH_RETENTION_DAYS are purged at startup and on
+# each delete.
 _TRASH_DIR = OUTPUTS_DIR / ".trash"
 TRASH_RETENTION_DAYS = 7
 
@@ -245,22 +221,16 @@ def _purge_trash(max_age_days: int = TRASH_RETENTION_DAYS) -> int:
 
 
 # ── output folder naming migration (v0.1.7) ──────────────────────────
-# Date folders were ``DD-MM-YYYY`` through v0.1.6; ISO ``YYYY-MM-DD`` sorts
-# chronologically in file managers / ls / rsync, so new saves use ISO
-# (utils.next_output_path) and legacy folders are renamed once at startup.
+# Date folders were DD-MM-YYYY through v0.1.6; ISO sorts chronologically.
 _LEGACY_DATE_RE = re.compile(r"^(\d{2})-(\d{2})-(\d{4})$")
 
 
 def _migrate_output_dirs() -> int:
     """Rename legacy ``DD-MM-YYYY`` date folders under outputs/ to ISO
-    ``YYYY-MM-DD``. Returns the number of folders migrated.
+    ``YYYY-MM-DD``, merging into an existing ISO twin. Returns the count.
 
-    Runs at startup, before any request touches the gallery. The mirrored
-    thumb-cache folder is renamed too — its keys are stem+mtime+size, which a
-    rename preserves, so existing thumbnails stay valid. A folder whose ISO
-    twin already exists (created by this build, then a downgrade ran, then an
-    upgrade again) is merged into it file-by-file. Date-shaped names that
-    aren't real dates are left alone — they aren't ours."""
+    The mirrored thumb-cache folder is renamed too (its keys survive a rename).
+    Date-shaped names that aren't real dates are left alone."""
     if not OUTPUTS_DIR.is_dir():
         return 0
     migrated = 0
@@ -290,7 +260,7 @@ def _migrate_output_dirs() -> int:
             try:
                 old_thumbs.rename(_THUMBS_DIR / iso)
             except OSError:
-                pass  # cache only — thumbnails regenerate on demand
+                pass
         migrated += 1
     if migrated:
         invalidate_outputs_cache()
@@ -299,10 +269,8 @@ def _migrate_output_dirs() -> int:
 class _Cancelled(BaseException):
     """Raised from the progress callback to unwind a running generation.
 
-    Inherits ``BaseException`` so it slips past the engine's broad
-    ``except Exception`` handlers (e.g. the per-pass detailer guard) and is only
-    ever caught by the worker — while ``finally`` blocks still reclaim VRAM and
-    clear temp LoRAs on the way out."""
+    A ``BaseException`` so it slips past the engine's ``except Exception``
+    guards and only the worker catches it; ``finally`` blocks still run."""
 
 
 # ── request models ─────────────────────────────────────────────────
@@ -320,10 +288,8 @@ class LoadPayload(BaseModel):
     channels_last: bool = False
     tf32: bool = False                  # SD/SDXL only (fp32 VAE path; Ampere+)
     fp16_accumulation: bool = False     # fp16-accumulate matmuls; all families
-    vae_fp16: bool = False              # fp16 VAE encode/decode (~2.8× faster decode);
-                                        # non-finite output auto-falls back to fp32
-    attention: str = "sdpa"             # "sdpa" | "fa2_turing" — DiT attention kernel
-                                        # (fa2 = sm75-only FA2 port; Anima/FLUX)
+    vae_fp16: bool = False              # non-finite output falls back to fp32
+    attention: str = "sdpa"             # "sdpa" | "fa2_turing" (sm75-only; Anima/FLUX)
 
 
 class DetailerModel(BaseModel):
@@ -345,18 +311,17 @@ class GeneratePayload(BaseModel):
     height: int = Field(1024, ge=64, le=8192)
     strength: float = Field(0.6, ge=0.0, le=1.0)
     shift: float = Field(3.0, ge=0.0, le=30.0)
-    teacache: float = Field(0.0, ge=0.0, le=1.0)           # TeaCache rel-L1 threshold (0 = off; Anima only)
-    teacache_calibrated: bool = True     # use the fitted rescale polynomial vs the raw identity path
-    teacache_forecast: str = "hermite"   # skip-step forecast basis: "hermite" (HiCache) | "taylor" (TaylorSeer)
-    teacache_rule: Literal["drift", "easy"] = "drift"   # skip decision: TeaCache input drift | EasyCache output change
-    deepcache: int = Field(1, ge=1, le=64)                # DeepCache reuse interval (1 = off; SD/SDXL UNet only)
+    teacache: float = Field(0.0, ge=0.0, le=1.0)           # rel-L1 threshold (0 = off; Anima only)
+    teacache_calibrated: bool = True     # fitted rescale polynomial vs the raw identity path
+    teacache_forecast: str = "hermite"   # "hermite" (HiCache) | "taylor" (TaylorSeer)
+    teacache_rule: Literal["drift", "easy"] = "drift"   # input drift | EasyCache output change
+    deepcache: int = Field(1, ge=1, le=64)                # reuse interval (1 = off; SD/SDXL UNet only)
     input_image: Optional[str] = None   # base64 / data-URL
     mask_image: Optional[str] = None
-    preview: bool = True                 # stream live latent previews while sampling
-    blur_check: bool = False             # the requesting page will blur this result — rate it even if the gallery blur is off
+    preview: bool = True
+    blur_check: bool = False             # the page will blur this result: rate it even if gallery blur is off
 
-    # ── detailer (ADetailer-style passes run after the main image) ──
-    # Each entry is one detection model + its own prompt; the rest is shared.
+    # ── detailer (ADetailer-style passes after the main image) ──
     detail_enabled: bool = False
     detail_models: List[DetailerModel] = []
     detail_neg: str = ""
@@ -366,7 +331,7 @@ class GeneratePayload(BaseModel):
     detail_padding: int = Field(32, ge=0, le=512)
     detail_blur: int = Field(4, ge=0, le=64)
     detail_max: int = Field(0, ge=0, le=1000)              # 0 = all detections
-    detail_teacache: bool = False        # apply the main TeaCache threshold to detailer passes (Anima)
+    detail_teacache: bool = False        # use the main TeaCache threshold on detailer passes (Anima)
 
     # ── upscaler (tiled, post-gen) ─────────────────────────────────
     upscale_enabled: bool = False
@@ -375,7 +340,7 @@ class GeneratePayload(BaseModel):
     upscale_tile: int = Field(1024, ge=128, le=4096)
     upscale_overlap: int = Field(128, ge=0, le=2048)
     upscale_prompt: str = ""
-    upscale_teacache: float = Field(0.0, ge=0.0, le=1.0)   # TeaCache for the refine pass (0 = off); independent of main gen
+    upscale_teacache: float = Field(0.0, ge=0.0, le=1.0)   # refine-pass TeaCache (0 = off)
     upscale_base: str = ""               # ESRGAN model in models/upscalers/ (blank = Lanczos)
 
     @model_validator(mode="after")
@@ -386,12 +351,7 @@ class GeneratePayload(BaseModel):
 
 
 class DetailPayload(BaseModel):
-    """Standalone detailer — input image + all params the detailer passes need.
-
-    The post-gen counterpart lives on ``GeneratePayload``; this one refines an
-    image that already exists (a finished result, or any gallery PNG) without
-    re-sampling it.
-    """
+    """Standalone detailer: refine an existing image without re-sampling it."""
     input_image: str = ""
     models: List[DetailerModel] = []
     prompt: str = ""                     # fallback for a pass with no prompt of its own
@@ -416,7 +376,7 @@ class DetailPayload(BaseModel):
 
 
 class UpscalePayload(BaseModel):
-    """Standalone upscale — input image + all params the tiled upscaler needs."""
+    """Standalone tiled upscale of an existing image."""
     input_image: str = ""
     scale: float = Field(2.0, ge=1.0, le=8.0)
     tile: int = Field(1024, ge=128, le=4096)
@@ -439,8 +399,8 @@ class UpscalePayload(BaseModel):
 
     @model_validator(mode="after")
     def _overlap_fits(self):
-        # A stride of zero (overlap == tile) divides by zero in tile_starts; a
-        # negative one yields an empty grid that blends to a black image.
+        # overlap == tile divides by zero in tile_starts; overlap > tile yields
+        # an empty grid that blends to black.
         if self.overlap >= self.tile:
             raise ValueError("overlap must be < tile")
         return self
@@ -455,13 +415,11 @@ class CalibratePayload(BaseModel):
     width: int = Field(1024, ge=64, le=8192)
     height: int = Field(1024, ge=64, le=8192)
     shift: float = Field(3.0, ge=0.0, le=30.0)
-    grid: int = Field(80, ge=1, le=500)    # dense teacher-trajectory candidate count (K)
+    grid: int = Field(80, ge=1, le=500)    # teacher-trajectory candidate count (K)
 
 
 class GenDefaults(BaseModel):
-    """A snapshot of the Generate form's reusable params, saved as the per-session
-    defaults the UI seeds on load (the model-type-specific samplers still fall back
-    if invalid for the loaded family)."""
+    """The Generate form's reusable params, seeded on load."""
     sampler: str = "dpmpp_2m"
     scheduler: str = "karras"
     steps: int = 25
@@ -469,35 +427,26 @@ class GenDefaults(BaseModel):
     width: int = 1024
     height: int = 1024
     shift: float = 3.0
-    # Prompt/negative are saved only when filled (None = leave the form's own value).
+    # None = leave the form's own value.
     prompt: Optional[str] = None
     neg: Optional[str] = None
 
 
 class Settings(BaseModel):
-    """Persisted global settings exposed through the settings panel — the knobs
-    that aren't per-image. Defaults mirror the submodule's, so an unset settings
-    file leaves generation behaviour unchanged. Applied at generation time when
-    the active sampler/scheduler uses them (see ``_run_generation``)."""
-    # Cogent gate reduction applies on every family that offers the sampler.
+    """Persisted global settings (the settings panel). Defaults mirror the
+    submodule's; applied at generation time by ``_settings_knobs``."""
     gate_reduce: Literal["all", "per_channel"] = "all"
-    # Remaining sampler/scheduler knobs are Anima-specific.
+    # Anima-only sampler/scheduler knobs.
     curvature: float = 0.25       # secant / secant_anneal x0 extrapolation strength
-    eta_max: float = 1.0          # secant_anneal / euler_ancestral_anneal / cogent ancestral noise
-    beta_alpha: float = 0.6       # beta scheduler Beta(α, β) — low-t (σ→0) density
-    beta_beta: float = 0.6        # beta scheduler — high-t (σ→1) density
-    lq_threshold: float = 0.025   # linear_quadratic threshold_noise (linear/quad knee)
-    # CFG guidance interval (Anima + SD/SDXL; FLUX has no CFG pass): apply CFG
-    # only in this fraction of the sampling run — the uncond forward is skipped
-    # outside the band, saving a full backbone pass per skipped step
-    # (Kynkäänniemi et al., 2024). (0, 1) = guide every step (off).
+    eta_max: float = 1.0          # ancestral noise of the anneal / cogent samplers
+    beta_alpha: float = 0.6       # beta scheduler: low-t (σ→0) density
+    beta_beta: float = 0.6        # beta scheduler: high-t (σ→1) density
+    lq_threshold: float = 0.025   # linear_quadratic knee
+    # CFG guidance interval (Kynkäänniemi et al., 2024): the uncond forward is
+    # skipped outside this fraction of the run. (0, 1) = off. Not FLUX.
     cfg_interval_start: float = Field(0.0, ge=0.0, lt=1.0)
     cfg_interval_end: float = Field(1.0, gt=0.0, le=1.0)
-    # Multiplies the TeaCache threshold for the *uncond* stream only (Anima).
-    # The uncond pass is not the less important one -- at CFG s an error in it
-    # enters the guided velocity with weight |1-s| against the cond branch's s
-    # -- but it is empirically smoother, so a looser threshold may buy forwards
-    # for free. 1.0 = both streams share the threshold (off).
+    # TeaCache threshold multiplier for the uncond stream only (Anima). 1.0 = off.
     teacache_uncond_scale: float = Field(1.0, ge=1.0, le=4.0)
 
     @model_validator(mode="after")
@@ -505,23 +454,13 @@ class Settings(BaseModel):
         if self.cfg_interval_start >= self.cfg_interval_end:
             raise ValueError("cfg_interval_start must be < cfg_interval_end")
         return self
-    # VAE decode: "auto" tiles only when a full decode won't fit free VRAM;
-    # "always" forces tiled decode. Applies to Anima + SD/SDXL (FLUX always tiles).
+    # "auto" tiles VAE decode only when it won't fit free VRAM (FLUX always tiles).
     vae_tiling: str = "auto"      # "auto" | "always"
-    # Metadata format written into each PNG's ``parameters`` chunk: A1111/Forge
-    # text (default, widely read) or SwarmUI JSON. Both load back into this app.
     metadata_format: str = "a1111"   # "a1111" | "swarmui"
-    # Generate-form defaults seeded on load (None = use the app's built-in defaults).
     gen_defaults: Optional[GenDefaults] = None
-    # Gallery content safety: blur thumbnails and the lightbox image of outputs
-    # whose prompt rating is R or above (ratings are derived from the prompt,
-    # see metadata.prompt_rating). Pure display preference — the file is never
-    # touched, and a click reveals the image regardless.
+    # Display-only; a click reveals the image.
     nsfw_blur: bool = True
-    # Lowest rating that gets blurred, here and by the Generate page's own
-    # toggle. The frontend compares each image's rating against it, so a change
-    # applies at once, without re-rating. No "XXX" option: the AI rater never
-    # outputs XXX (only the prompt placeholder does), so it would blur nothing.
+    # Lowest rating that gets blurred. No "XXX": the AI rater never outputs it.
     blur_min_rating: Literal["PG13", "R", "X"] = "R"
 
 
@@ -536,17 +475,17 @@ class XYZPayload(BaseModel):
     scheduler: str = "karras"
     seed: int = Field(-1, ge=-1, le=2**63 - 1)
     shift: float = Field(3.0, ge=0.0, le=30.0)
-    teacache: float = Field(0.0, ge=0.0, le=1.0)           # TeaCache rel-L1 threshold (0 = off; Anima only)
-    teacache_calibrated: bool = True     # use the fitted rescale polynomial vs the raw identity path
-    teacache_forecast: str = "hermite"   # skip-step forecast basis: "hermite" (HiCache) | "taylor" (TaylorSeer)
-    teacache_rule: Literal["drift", "easy"] = "drift"   # skip decision: TeaCache input drift | EasyCache output change
+    teacache: float = Field(0.0, ge=0.0, le=1.0)
+    teacache_calibrated: bool = True
+    teacache_forecast: str = "hermite"
+    teacache_rule: Literal["drift", "easy"] = "drift"
     x_type: str = "None"
     x_vals: str = ""
     y_type: str = "None"
     y_vals: str = ""
     z_type: str = "None"
     z_vals: str = ""
-    preview: bool = True                 # stream live latent previews per cell
+    preview: bool = True
     blur_check: bool = False             # see GeneratePayload.blur_check
 
 
@@ -561,15 +500,8 @@ class ParseTextPayload(BaseModel):
 # ── helpers ─────────────────────────────────────────────────────────
 
 def _decode_image(data: str) -> Image.Image:
-    """Decode a base64 / data-URL image to RGB.
-
-    An RGBA / LA / PA source is composited onto **white** before dropping the
-    alpha channel — ``convert("RGB")`` alone leaves the stored RGB values where
-    pixels were transparent, which renders transparent regions as black (a
-    silent "composite-black"). Compositing onto white makes the loss explicit
-    and predictable, and a warning is logged so an inpaint input that lost its
-    transparency is traceable in the log.
-    """
+    """Decode a base64 / data-URL image to RGB. Alpha is composited onto white
+    (``convert("RGB")`` alone would turn transparent regions black)."""
     if data.strip().startswith("data:") and "," in data:
         data = data.split(",", 1)[1]
     img = Image.open(io.BytesIO(base64.b64decode(data)))
@@ -577,7 +509,7 @@ def _decode_image(data: str) -> Image.Image:
         "A" in img.getbands() and img.mode not in ("RGB", "L", "P")
     ):
         log.warning("input image had an alpha channel; composited onto white "
-                    "(transparency is not preserved) — mode=%s", img.mode)
+                    "(transparency is not preserved), mode=%s", img.mode)
         bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
         bg.paste(img, mask=img.split()[-1])
         return bg.convert("RGB")
@@ -585,23 +517,12 @@ def _decode_image(data: str) -> Image.Image:
 
 
 def _decode_mask(data: str) -> Image.Image:
-    """Decode a base64 / data-URL mask to a single-channel ``L`` image.
-
-    Masks often travel as the alpha channel of an RGBA PNG (transparent = don't
-    paint, opaque = paint). ``convert("L")`` from RGBA takes the *luminance* of
-    the RGB channels and silently ignores the alpha — so an alpha-mask would be
-    misread as a blank or wrong mask. If an alpha channel is present, extract it
-    via ``split()`` (``convert("A")`` isn't a supported PIL transform) and use
-    that band as the mask; otherwise fall back to luminance. The engine's
-    ``_fit_inpaint`` re-converts to ``L`` anyway, so returning ``L`` here is
-    lossless.
-    """
+    """Decode a base64 / data-URL mask to ``L``. An alpha channel, when present,
+    is the mask (``convert("L")`` would read luminance and ignore it)."""
     if data.strip().startswith("data:") and "," in data:
         data = data.split(",", 1)[1]
     img = Image.open(io.BytesIO(base64.b64decode(data)))
     if img.mode in ("RGBA", "LA", "PA") or "A" in img.getbands():
-        # Alpha is the mask intent: opaque = paint here. split() returns the
-        # bands as single-channel "L" images; the last is alpha.
         return img.split()[-1]
     return img.convert("L")
 
@@ -615,15 +536,8 @@ def _save_output(image: Image.Image, gen_kwargs: dict,
                  upscale: Optional[dict] = None,
                  seed: Optional[int] = None,
                  blur_check: bool = False) -> Path:
-    """Save an image to outputs/ with AUTO1111 metadata; return its path.
-
-    Used for single generations and for each individual X/Y/Z cell. ``detailer``,
-    when given, is appended to the ``parameters`` line as ADetailer-compatible
-    keys so the post-gen detailer settings can be restored later. ``seed``
-    overrides ``ENGINE.last_seed`` for a standalone upscale, which has no
-    generation of its own to inherit a seed from. ``blur_check`` carries the
-    requesting page's "Blur NSFW" toggle through to the auto-rating.
-    """
+    """Save an image to outputs/ with generation metadata; return its path.
+    ``blur_check`` carries the page's "Blur NSFW" toggle to the auto-rating."""
     seed = ENGINE.last_seed if seed is None else seed
     out = next_output_path(seed)
     meta = PngInfo()
@@ -634,36 +548,23 @@ def _save_output(image: Image.Image, gen_kwargs: dict,
                        upscale=upscale, seed=seed)
     meta.add_text("parameters", params)
     image.save(out, pnginfo=meta)
-    # Splice the new image into the gallery search index so it's visible to the
-    # next search without waiting for the day-folder mtime to advance (covers
-    # same-second saves on 1s-mtime filesystems, and standalone upscale saves)
-    # — and without re-opening every other PNG. Same string the rebuild would
-    # read back off disk, so both paths index it identically.
-    # Also drop the outputs listing cache so the plain /api/gallery (no query)
-    # sees the new file on the next open without re-walking the tree.
+    # Index the new image for search now (same string a rebuild reads back), and
+    # drop the listing cache so /api/gallery sees it.
     _gallery_index_add(out, params)
     invalidate_outputs_cache()
-    # Rate the new output in the background (WD tagger) so its gallery entry
-    # carries an AI verdict on the next open — not just the prompt heuristic.
     _maybe_auto_tag(out, blur_check)
     return out
 
 
 # ── base-image cache ────────────────────────────────────────────────
-# The upscaler and the detailer run *after* sampling and don't change the base
-# image, so toggling or re-tuning them and hitting Generate again re-samples an
-# image we already have. Keep the last base (pre-upscale, pre-detailer,
-# pre-``post_generate``) in memory keyed by everything that decides it; a
-# matching payload skips straight to the post passes.
-#
-# One slot: every generation overwrites it, so the memory cost is one image.
-# Only the worker thread touches it (jobs run one at a time), so no lock.
+# The upscaler and detailer don't change the base image, so re-running with only
+# those re-tuned reuses the last base. One slot, touched only by the worker
+# thread, so no lock.
 _BASE_CACHE: "dict[str, tuple[Image.Image, str]]" = {}
 
 
 def _fingerprint_value(v):
-    """JSON-safe stand-in for one generation kwarg. Images are hashed by pixels
-    so an i2i/inpaint source is compared by content, not by object identity."""
+    """JSON-safe stand-in for one generation kwarg; images hash by pixels."""
     if isinstance(v, Image.Image):
         return ["image", v.mode, v.size, hashlib.sha256(v.tobytes()).hexdigest()]
     return v
@@ -671,17 +572,9 @@ def _fingerprint_value(v):
 
 def _base_fingerprint(gen_kwargs: dict, mode: str,
                       loras: "list[tuple[str, float]]") -> str:
-    """Identity of the base image ``gen_kwargs`` would sample.
-
-    Built from the kwargs actually handed to the engine (minus the callbacks,
-    which don't affect pixels) so it can't drift from the real call as new
-    sampler knobs are threaded through.
-
-    Two things the kwargs alone don't carry: ``ENGINE.weights_epoch`` (which
-    model is loaded) and ``loras`` — the engine is handed the *stripped* prompt,
-    so without the parsed ``<lora:…>`` tags two prompts that differ only in
-    their LoRAs would share a key.
-    """
+    """Identity of the base image ``gen_kwargs`` would sample, including the
+    loaded weights and the ``<lora:…>`` tags (the engine only sees the stripped
+    prompt)."""
     parts = {
         "mode": mode,
         "epoch": ENGINE.weights_epoch,
@@ -694,45 +587,31 @@ def _base_fingerprint(gen_kwargs: dict, mode: str,
     ).hexdigest()
 
 
-# ── generation (ported from the old _generate_with_loras) ───────────
+# ── generation ──────────────────────────────────────────────────────
 
 def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
-    """Settings-panel engine kwargs for one generation with this sampler/scheduler.
-
-    Shared by a plain generation and every X/Y/Z cell (per cell, since Sampler
-    and Scheduler can be axes), so a cell samples exactly what the Generate page
-    would with the same settings. A knob left out falls back to the engine's own
-    default, which is not the panel's.
-    """
+    """Settings-panel engine kwargs for this sampler/scheduler. Shared by plain
+    generations and every X/Y/Z cell so both sample the same thing."""
     knobs: dict = {}
-
-    # Cogent4 is the per-channel reduction of cogent's measured coherence
-    # gate. Keep the shipped global path as the default, but forward the
-    # explicit UI choice on every family where a cogent sampler is offered.
     if sampler in ("cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate"):
         knobs["gate_reduce"] = SETTINGS["gate_reduce"]
 
-    # Global sampler/scheduler knobs from the settings panel (Anima only).
-    # Inject only the ones the active sampler/scheduler actually consumes, so
-    # they round-trip into PNG metadata without polluting it with unused keys.
+    # Anima only. Inject just the knobs the sampler/scheduler consumes, so the
+    # metadata carries no unused keys.
     if ENGINE.loaded_family == "anima":
         if sampler in ("secant", "secant_anneal"):
             knobs["curvature"] = float(SETTINGS["curvature"])
         if sampler in ("secant_anneal", "euler_ancestral_anneal", "dpmpp_2m_anneal", "cogent", "cogent3", "cogent3_pump",
                        "cogent3_pump_rate"):
             knobs["eta_max"] = float(SETTINGS["eta_max"])
-        # uni_pc_anneal omitted on purpose: it uses its own low baked-in
-        # eta_max (0.2); the shared 1.0 panel default over-smooths it.
+        # uni_pc_anneal keeps its own baked-in eta_max (0.2).
         if scheduler == "beta":
             knobs["beta_alpha"] = float(SETTINGS["beta_alpha"])
             knobs["beta_beta"] = float(SETTINGS["beta_beta"])
         if scheduler == "linear_quadratic":
             knobs["lq_threshold"] = float(SETTINGS["lq_threshold"])
 
-    # CFG guidance interval (settings panel): skip the uncond forward outside
-    # the [start, end) step-fraction band. Applies wherever a real CFG pass
-    # runs (Anima + SD/SDXL); FLUX is guidance-distilled, so it's skipped.
-    # Injected only when non-default so metadata stays clean.
+    # FLUX is guidance-distilled and has no CFG pass. Non-default values only.
     if ENGINE.loaded_family not in ("flux1", "flux2"):
         ivl_start = float(SETTINGS["cfg_interval_start"])
         ivl_end = float(SETTINGS["cfg_interval_end"])
@@ -740,9 +619,6 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
             knobs["cfg_interval_start"] = ivl_start
             knobs["cfg_interval_end"] = ivl_end
 
-    # Looser threshold on the uncond cache stream (settings panel). Anima
-    # only -- TeaCache is Anima-only -- and injected only when non-default,
-    # like the interval above, so metadata stays clean.
     uncond_scale = float(SETTINGS["teacache_uncond_scale"])
     if uncond_scale != 1.0 and teacache > 0:
         knobs["teacache_uncond_scale"] = uncond_scale
@@ -755,8 +631,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
     if not ENGINE.loaded_name:
         raise RuntimeError("Load a model first")
 
-    # pre_generate: extensions can tweak the payload (prompt, seed, steps, …)
-    # before the engine runs. Mutations land on the Pydantic model in place.
+    # Extensions may mutate the payload in place.
     EXTENSIONS.run_hook("pre_generate", payload=p)
 
     clean_prompt, prompt_loras = ENGINE.parse_lora_prompt(p.prompt)
@@ -808,16 +683,12 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             gen_fn = ENGINE.generate_t2i
 
         t0 = time.perf_counter()
-        # Reuse the last base image when nothing that decides it has changed —
-        # i.e. the user only toggled or re-tuned the upscaler/detailer below.
-        # A seed of -1 asks for a *new* image, so it never reads the cache; it
-        # still writes one, under the seed it resolved to, so recycling that
-        # seed and re-running the post passes is a hit.
+        # Reuse the last base when only the post passes changed. Seed -1 asks for
+        # a new image, so it never reads the cache but still writes one under the
+        # resolved seed.
         fp = _base_fingerprint(gen_kwargs, p.mode, loras) if p.seed != -1 else None
         cached = _BASE_CACHE.get(fp) if fp else None
-        # The cache owns a private copy and hands out private copies: the post
-        # passes return new images, but a ``post_generate`` extension is free to
-        # draw on the one it's given, which would otherwise poison the entry.
+        # Copies in and out: a post_generate extension may draw on its image.
         if cached is not None:
             base, info = cached
             image, seed = base.copy(), int(p.seed)
@@ -830,9 +701,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                 _BASE_CACHE.clear()
                 _BASE_CACHE[fp] = (image.copy(), info)
 
-        # Upscaler (tiled, post-gen): run first, on the base image, so the
-        # detailer below refines at the upscaled resolution and gets the final
-        # say (its region inpaints aren't re-disturbed by the upscale pass).
+        # Upscale first so the detailer refines at the final resolution.
         upscale_info = ""
         upscaled = False
         if p.upscale_enabled and float(p.upscale_scale) > 1.0:
@@ -857,20 +726,16 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                 )
                 upscale_info = "  |  " + unote
                 upscaled = True
-            except Exception as e:  # noqa: BLE001 — keep the base image, but surface the
-                # failure loudly and skip the upscale metadata below, so a swallowed
-                # OOM can't masquerade as a successful upscale (saved base + metadata
-                # that claims it was upscaled).
-                upscale_info = f"  |  ⚠ UPSCALE FAILED — saved un-upscaled base image ({e})"
+            except Exception as e:  # noqa: BLE001
+                # Keep the base image, and leave out the upscale metadata so a
+                # swallowed OOM can't pass for a successful upscale.
+                upscale_info = f"  |  ⚠ UPSCALE FAILED, saved the un-upscaled base image ({e})"
 
-        # Detailer: run last, on the (possibly upscaled) image, so its region
-        # inpaints get the final say. Each stacked detection model runs in
-        # sequence, feeding the refined image into the next pass. Per-model
-        # prompt; the rest is shared.
+        # Stacked detection models run in sequence, each on the previous result.
         detail_info = ""
         active = [dm for dm in p.detail_models
                   if dm.model and not dm.model.startswith("(")] if p.detail_enabled else []
-        applied = []  # detection models that actually refined the image (drives metadata)
+        applied = []  # models that actually refined the image (drives metadata)
         if active and not ENGINE.can_inpaint:
             detail_info = "  |  detailer skipped (no inpaint for this model)"
         elif active:
@@ -899,18 +764,15 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                     )
                     notes.append(f"{dm.model}: {dnote.replace('Detailer: ', '')}")
                     applied.append(dm)
-                except Exception as e:  # noqa: BLE001 — keep the image, surface the failure
-                    # loudly, and exclude this model from the metadata below so a
-                    # swallowed pass can't masquerade as a successful detail.
+                except Exception as e:  # noqa: BLE001
+                    # Keep the image and leave this model out of the metadata.
                     notes.append(f"⚠ {dm.model} FAILED: {e}")
             detail_info = "  |  detailer [" + "; ".join(notes) + "]"
 
-        # inference clock spans base generation plus the detailer and upscaler
-        # passes — i.e. everything but the disk save below.
+        # Everything but the disk save.
         elapsed = time.perf_counter() - t0
 
-        # Save the *raw* prompt/neg (the <lora:…> tags survive parse_lora_prompt
-        # stripping) so the LoRA selection round-trips through metadata restore.
+        # Save the raw prompt/neg so <lora:…> tags round-trip through metadata.
         gen_kwargs["prompt"], gen_kwargs["negative_prompt"] = p.prompt, p.neg
         detailer_meta = {
             "models": [{"model": dm.model, "prompt": dm.prompt} for dm in applied],
@@ -931,9 +793,6 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             "base": p.upscale_base or "Lanczos",
             "prompt": p.upscale_prompt.strip() or "",
         } if upscaled else None
-        # post_generate: extensions can post-process the image (watermark,
-        # filter, composite) before it's written. A handler may replace
-        # ctx.image; info carries the base gen info for reference.
         gctx = EXTENSIONS.run_hook(
             "post_generate", payload=p, image=image, info=info,
         )
@@ -942,14 +801,11 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
         out = _save_output(image, gen_kwargs, detailer=detailer_meta,
                            upscale=upscale_meta, seed=seed, blur_check=p.blur_check)
         rel = out.relative_to(OUTPUTS_DIR)
-        # post_save: fire-and-forget notification that the PNG is on disk; an
-        # extension might mirror it elsewhere, log it, etc.
         EXTENSIONS.run_hook("post_save", payload=p, image=image, path=out)
         return {
             "image_url": _output_url(out),
-            # The generate page blurs NSFW results: carry the output path and
-            # the instant prompt-based verdict now; the background AI rating
-            # refines it via a later "rated" SSE event.
+            # Instant prompt verdict; the background AI rating arrives later as
+            # a "rated" SSE event.
             "path": rel.as_posix(),
             "nsfw_prompt": md.prompt_is_nsfw(clean_prompt),
             "prompt_rating": md.prompt_rating(clean_prompt),
@@ -976,10 +832,7 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
         teacache_forecast=p.teacache_forecast,
         teacache_rule=p.teacache_rule,
     )
-    # A "Checkpoint" axis swaps the in-memory model per cell, leaving the last
-    # swept checkpoint loaded. Restore the model the user actually had loaded so
-    # the app returns to its prior state (and the next plain generation isn't run
-    # on a surprise checkpoint).
+    # A Checkpoint axis leaves the last swept model loaded; reload the user's.
     swaps_model = "Checkpoint" in (p.x_type, p.y_type, p.z_type)
     try:
         grids, info = generate_xyz_grid(
@@ -991,8 +844,8 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
             cell_knobs=lambda sampler, scheduler: _settings_knobs(
                 sampler, scheduler, p.teacache),
         )
-        # base_kwargs was mutated in-place by generate_xyz_grid (prompt cleaned,
-        # base seed resolved), so it carries the right params for the grid metadata.
+        # generate_xyz_grid mutated base_kwargs in place (prompt cleaned, seed
+        # resolved), so it now carries the grid's metadata params.
         grid_kwargs = {**base_kwargs,
                        **_settings_knobs(p.sampler, p.scheduler, p.teacache)}
         urls = []
@@ -1009,7 +862,7 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
         if swaps_model and LAST_LOAD_FORM:
             try:
                 _do_load(LoadPayload(**LAST_LOAD_FORM))
-            except Exception:  # noqa: BLE001 — keep the grid result; report real state
+            except Exception:  # noqa: BLE001  keep the grid result; report real state
                 pass
             _push({"type": "status", **_state_payload()})
 
@@ -1039,9 +892,8 @@ def _run_calibrate_teacache(p: CalibratePayload, on_progress: Callable[[int, int
 
 
 # ── job queue + SSE broadcast ───────────────────────────────────────
-# A single background worker runs jobs one at a time (the GPU can only do one),
-# so the worker thread itself is the serialization — no lock needed. Every
-# device subscribes to one shared SSE stream and sees the same queue + progress.
+# One worker thread runs jobs one at a time, so the thread itself is the
+# serialization. Every device shares one SSE stream.
 
 _job_ids = itertools.count(1)
 
@@ -1050,15 +902,15 @@ class Job:
     def __init__(self, kind: str, label: str, run: Callable[["Job"], dict],
                  *, priority: int = 0):
         self.id = next(_job_ids)
-        self.kind = kind            # generate | xyz | calibrate | load | install | update
-        self.label = label          # short human description for the queue list
+        self.kind = kind            # generate | xyz | calibrate | load | install | update | tag
+        self.label = label
         self.run = run              # run(job) -> result dict; may raise _Cancelled
         self.status = "queued"      # queued | running | done | error | cancelled
         self.cancel = threading.Event()
-        self.step = 0               # live progress, for snapshots on (re)connect
+        self.step = 0               # for snapshots on (re)connect
         self.total = 0
-        self.priority = int(priority)  # higher runs sooner; load jobs jump the queue
-        self.last_preview: Optional[Image.Image] = None  # last streamed preview, for shutdown partial-save
+        self.priority = int(priority)  # higher runs sooner
+        self.last_preview: Optional[Image.Image] = None  # saved as a partial on shutdown
 
 
 QUEUE: "deque[Job]" = deque()
@@ -1066,29 +918,19 @@ QUEUE_LOCK = threading.Lock()
 QUEUE_WAKE = threading.Event()
 CURRENT: Optional[Job] = None
 
-# One asyncio.Queue per connected SSE client; the worker fans events out to all.
-# Capped so a slow client (or a runaway SSE reconnector swarm on a flaky network)
-# can't grow RSS unbounded: on overflow we drop the oldest event — the newest
-# state (progress, preview, queue) is what the UI wants anyway.
+# One capped asyncio.Queue per SSE client; on overflow the oldest event drops.
 SSE_QUEUE_MAX = 256
 SUBSCRIBERS: "set[asyncio.Queue]" = set()
 APP_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
-# Live-preview cost control. A preview is a rough latent→RGB approximation that
-# is broadcast to every connected client and json-serialized per client on the
-# event loop. Re-encoding a full-res lossless PNG on every sampling step and
-# fanning a multi-MB data-URL out N times stalls the loop, so cap the rate
-# (time-based, so it adapts to both step speed and step count) and the
-# resolution, and use lossy WebP — the preview is noisy and transient while the
-# saved result is always full quality.
-PREVIEW_MIN_INTERVAL = 0.2   # seconds between streamed previews (≤5 fps)
+# Previews are broadcast to every client, so cap their rate and size and send
+# lossy WebP; the saved result is always full quality.
+PREVIEW_MIN_INTERVAL = 0.2   # seconds between streamed previews
 PREVIEW_MAX_SIDE = 512       # downscale to this long side before encoding
 
-# The /api/events SSE streams are long-lived, so uvicorn's graceful shutdown would
-# wait on them forever — Ctrl+C appears to hang until a second, forced Ctrl+C.
-# uvicorn calls Server.handle_exit the instant a signal arrives (before it starts
-# waiting for connections to close), so wrap it to set SHUTDOWN and wake every
-# stream with a sentinel; each gen() then returns and the server exits cleanly.
+# The long-lived SSE streams would stall uvicorn's graceful shutdown (Ctrl+C
+# hangs until a second one). uvicorn calls Server.handle_exit as soon as a
+# signal arrives, so wrap it to wake every stream with a sentinel.
 SHUTDOWN = asyncio.Event()
 
 
@@ -1099,8 +941,7 @@ def _wake_for_shutdown() -> None:
 
 
 def _force_put(q: "asyncio.Queue", ev) -> None:
-    """Put on a capped queue, popping oldest until it fits. Used for the
-    shutdown sentinel (must land) and for broadcasts (drop-oldest on overflow)."""
+    """Put on a capped queue, popping the oldest until it fits."""
     while True:
         try:
             q.put_nowait(ev)
@@ -1109,7 +950,7 @@ def _force_put(q: "asyncio.Queue", ev) -> None:
             try:
                 q.get_nowait()
             except asyncio.QueueEmpty:
-                return  # can't happen under QueueFull, but guard the race
+                return
 
 
 _uvicorn_handle_exit = uvicorn.Server.handle_exit
@@ -1123,10 +964,8 @@ def _handle_exit(self, sig, frame):
 
 uvicorn.Server.handle_exit = _handle_exit
 
-# The last successful /api/load payload, so a fresh device — or a server restart
-# — can restore the exact checkpoint/DiT/VAE/offload selections (not just "a model
-# is loaded"). Persisted to disk so it survives a restart; the form is repopulated
-# but the model itself is not reloaded (status stays "no model loaded").
+# The last successful /api/load payload, persisted so a new device or a restart
+# can restore the load form. The model itself is not reloaded.
 _LAST_LOAD_PATH = _ROOT / "last_load.json"
 
 
@@ -1143,9 +982,8 @@ def _write_last_load(form: dict) -> None:
 
 LAST_LOAD_FORM: Optional[dict] = _read_last_load()
 
-# Persisted global settings (the settings panel). Round-tripped through the
-# Settings model so an old file missing newer keys gets their defaults and
-# unknown keys are dropped — forward/backward compatible across versions.
+# Round-tripped through Settings so missing keys get defaults and unknown keys
+# are dropped.
 _SETTINGS_PATH = _ROOT / "settings.json"
 
 
@@ -1164,9 +1002,7 @@ SETTINGS: dict = _read_settings()
 
 
 def _push(ev: dict) -> None:
-    """Fan one event out to every connected SSE client. Thread-safe: callable
-    from the worker thread or a request handler. On a full subscriber queue we
-    drop the oldest event (newest state wins) rather than block the worker."""
+    """Fan one event out to every SSE client. Safe to call from any thread."""
     loop = APP_LOOP
     if loop is None:
         return
@@ -1201,33 +1037,26 @@ def _broadcast_queue() -> None:
 def _make_callbacks(job: Job):
     def on_progress(step, total, cell=None, cells=None):
         if job.cancel.is_set():
-            raise _Cancelled  # unwinds the sampler; caught in the worker
+            raise _Cancelled
         job.step, job.total = int(step), int(total)
         ev = {"type": "progress", "job": job.id, "step": int(step), "total": int(total)}
-        if cells is not None:  # X/Y/Z: carry the 1-based current cell ("image N/total")
+        if cells is not None:  # X/Y/Z: 1-based current cell
             ev["cell"], ev["cells"] = int(cell), int(cells)
         _push(ev)
 
-    preview_last = [0.0]   # monotonic time of the last emitted preview (closure cell)
+    preview_last = [0.0]   # monotonic time of the last emitted preview
 
     def on_preview(image):
-        # Throttle to PREVIEW_MIN_INTERVAL so a fast sampler doesn't flood the
-        # event loop; the dropped frames are never the final result (the `done`
-        # event always carries the full-quality saved image).
         now = time.monotonic()
         if now - preview_last[0] < PREVIEW_MIN_INTERVAL:
             return
         preview_last[0] = now
-        # Cap resolution + encode lossy WebP on the worker thread so the data-URL
-        # broadcast/serialized per client stays small.
         if max(image.size) > PREVIEW_MAX_SIDE:
             thumb = image.copy()
             thumb.thumbnail((PREVIEW_MAX_SIDE, PREVIEW_MAX_SIDE))
         else:
             thumb = image
-        # Stash the last emitted preview so a shutdown mid-job can still save a
-        # partial result (the daemon worker is killed on exit; without this the
-        # running generation is lost with nothing on disk).
+        # Kept so a shutdown mid-job can still save a partial result.
         job.last_preview = thumb
         buf = io.BytesIO()
         thumb.save(buf, format="WEBP", quality=80)
@@ -1238,12 +1067,8 @@ def _make_callbacks(job: Job):
 
 
 def _enqueue(job: Job) -> None:
-    # Priority insert: a higher-priority job runs before any lower-priority
-    # queued job, while preserving FIFO order among equal priorities. Used so a
-    # model ``load`` (priority 10) submitted behind a stack of generations runs
-    # next instead of stalling the user who just switched models. It only jumps
-    # the *queue* — the currently-running job still finishes (the GPU can't be
-    # preempted mid-sampling); see IMPROVE.md #6.
+    # Insert before the first lower-priority job (FIFO within a priority), so a
+    # load (priority 10) runs next. The running job still finishes.
     with QUEUE_LOCK:
         idx = len(QUEUE)
         for i, j in enumerate(QUEUE):
@@ -1256,18 +1081,14 @@ def _enqueue(job: Job) -> None:
 
 
 # ── AI NSFW rating jobs (kind "tag") ────────────────────────────────
-# Runs the WD tagger over saved outputs on the shared worker so it never
-# races the GPU, feeds progress to the queue panel, and stores results in the
-# rating cache. Tag jobs have the lowest priority: a rating can always wait
-# behind a generation, never the other way round.
+# The WD tagger runs on the shared worker so it never races the GPU. Lowest
+# priority: a rating always waits behind a generation.
 
 def _tag_job_run(job: Job, paths: List[Path], notify: bool = False) -> dict:
-    """Rate ``paths``, cache the results, and refresh the gallery index.
+    """Rate ``paths``, cache the results, and patch the gallery index.
 
-    ``notify`` broadcasts each verdict as a ``rated`` event so the generate page
-    can swap its prompt-based blur for the AI one. Auto-tag jobs (bounded by a
-    batch or a sweep) set it; a full-gallery scan doesn't — thousands of events
-    for images nobody is looking at, when the gallery just re-reads the index.
+    ``notify`` broadcasts each verdict as a ``rated`` event. Full-gallery scans
+    leave it off; nobody is looking at those images.
     """
     tagger_mod.TAGGER.load()
     total = max(1, job.total or len(paths))
@@ -1275,8 +1096,6 @@ def _tag_job_run(job: Job, paths: List[Path], notify: bool = False) -> dict:
 
     def _flush(entries: dict) -> None:
         _store_ratings(entries)
-        # A rating changes nothing else about an entry, so patch the index
-        # rather than dropping it and re-opening every PNG in outputs/.
         _gallery_index_patch_ratings(entries)
         if notify:
             for rel, e in entries.items():
@@ -1286,8 +1105,7 @@ def _tag_job_run(job: Job, paths: List[Path], notify: bool = False) -> dict:
     entries: dict = {}
     for i, p in enumerate(paths):
         if job.cancel.is_set():
-            # Persist what's already been rated: a full-gallery scan takes
-            # minutes, and cancelling it must not throw that work away.
+            # Keep what's already rated; a full scan takes minutes.
             if entries:
                 _flush(entries)
             raise _Cancelled
@@ -1298,9 +1116,9 @@ def _tag_job_run(job: Job, paths: List[Path], notify: bool = False) -> dict:
                 "conf": round(r["confidence"], 4), "key": _image_key(p),
             }
         job.step = i + 1
-        if i % 8 == 0:  # throttle: a 5k-image scan shouldn't flood the stream
+        if i % 8 == 0:  # throttle progress events
             _push({"type": "progress", "job": job.id, "step": job.step, "total": total})
-        if len(entries) >= 64:  # checkpoint, so a crash mid-scan keeps progress
+        if len(entries) >= 64:  # checkpoint so a crash keeps progress
             _flush(entries)
             rated += len(entries)
             entries = {}
@@ -1312,11 +1130,8 @@ def _tag_job_run(job: Job, paths: List[Path], notify: bool = False) -> dict:
 
 def _enqueue_tag_job(paths: List[Path], label: str,
                      notify: bool = False) -> Optional[int]:
-    """Queue a background rating for ``paths``, or None when there's nothing to
-    do / the tagger isn't installed (the prompt heuristic still covers it).
-
-    Whether a rating is *wanted* is the caller's call — the gallery blur setting
-    isn't the only thing that asks for one (see :func:`_maybe_auto_tag`)."""
+    """Queue a background rating for ``paths``. None when there's nothing to do
+    or the tagger isn't installed."""
     if not paths or not tagger_mod.timm_available():
         return None
     job = Job("tag", label, lambda j: _tag_job_run(j, paths, notify=notify),
@@ -1326,22 +1141,15 @@ def _enqueue_tag_job(paths: List[Path], label: str,
     return job.id
 
 
-# Outputs saved since the last flush, waiting to be rated as one job. Enqueuing
-# per image would put a queue row (and a queue broadcast) behind every saved
-# file — 16 for a batch, 26 for a 5×5 sweep — burying the panel under the
-# ratings for work the user already watched finish.
+# Outputs saved since the last flush, rated as one job instead of one queue row
+# per image.
 _PENDING_TAG: List[Path] = []
 _PENDING_TAG_LOCK = threading.Lock()
 
 
 def _maybe_auto_tag(path: Path, blur_check: bool = False) -> None:
-    """Hook for _save_output: queue a freshly saved image for background rating.
-    Best-effort — a missing tagger silently keeps the prompt rating.
-
-    Two surfaces want the verdict, and either one is enough: the gallery blur
-    setting, and the requesting page's own "Blur NSFW" toggle (``blur_check``),
-    which blurs the fresh result whether or not the gallery blurs anything.
-    """
+    """Queue a freshly saved image for background rating when the gallery blur
+    or the page's own "Blur NSFW" toggle (``blur_check``) wants a verdict."""
     if not (SETTINGS.get("nsfw_blur") or blur_check) or not tagger_mod.timm_available():
         return
     with _PENDING_TAG_LOCK:
@@ -1349,13 +1157,8 @@ def _maybe_auto_tag(path: Path, blur_check: bool = False) -> None:
 
 
 def _flush_pending_tags() -> None:
-    """Enqueue one rating job for everything saved since the last flush.
-
-    Called by the worker after each job, but only once no other work is left:
-    a batch is N separate generate jobs, so flushing eagerly would still make N
-    tag jobs. Waiting for the queue to drain collapses the whole batch — or the
-    whole sweep — into a single row, and keeps ratings off the GPU's back.
-    """
+    """Enqueue one rating job for everything saved since the last flush, once no
+    other work is queued (a batch is N generate jobs; this makes one tag job)."""
     with QUEUE_LOCK:
         if any(j.kind != "tag" for j in QUEUE):
             return
@@ -1370,10 +1173,8 @@ def _flush_pending_tags() -> None:
 
 
 # ── extension platform ──────────────────────────────────────────────
-# The loader is constructed with callables back into the server's queue and SSE
-# stream so extensions can enqueue GPU-sharing jobs and broadcast events without
-# importing server.py. EXTENSIONS is referenced by _render_index (script
-# injection), the /api/ext/* routes, and the generation/load hooks below.
+# The loader gets callables into the queue and SSE stream so extensions don't
+# import server.py.
 
 def _ext_enqueue_job(ext_name: str, label: str, run: Callable, kind: str = "ext") -> int:
     job = Job(f"{kind}:{ext_name}", label, run)
@@ -1395,10 +1196,10 @@ def _worker() -> None:
             CURRENT = QUEUE.popleft() if QUEUE else None
         job = CURRENT
         if job is None:
-            QUEUE_WAKE.wait()       # sleep until something is enqueued
+            QUEUE_WAKE.wait()
             QUEUE_WAKE.clear()
             continue
-        if job.cancel.is_set():     # cancelled while still queued
+        if job.cancel.is_set():     # cancelled while queued
             job.status = "cancelled"
             with QUEUE_LOCK:
                 CURRENT = None
@@ -1407,12 +1208,9 @@ def _worker() -> None:
             continue
         job.status = "running"
         _broadcast_queue()
-        # A tag job is the only kind that uses the WD tagger. It stays resident
-        # across jobs (an X/Y/Z grid's per-cell ratings don't reload it N times)
-        # except when the loaded model streams its backbone — the VRAM-tight
-        # mode — where its ~600 MB would OOM the next generation. This reads the
-        # *active* mode, not recommended_offload(): FLUX streams on any card, so
-        # the recommendation would miss exactly the case this guards.
+        # The tagger stays resident across jobs, except when the loaded model
+        # streams its backbone: there its ~600 MB would OOM the next generation.
+        # Read the active mode, not recommended_offload(); FLUX streams on any card.
         if (job.kind != "tag" and tagger_mod.TAGGER.loaded
                 and ENGINE.active_offload == "stream"):
             tagger_mod.TAGGER.unload()
@@ -1423,12 +1221,12 @@ def _worker() -> None:
         except _Cancelled:
             job.status = "cancelled"
             _push({"type": "cancelled", "job": job.id})
-        except Exception as e:  # noqa: BLE001 — surface any engine error to the UI
+        except Exception as e:  # noqa: BLE001
             job.status = "error"
             _push({"type": "error", "job": job.id, "message": _friendly_error(e)})
         except BaseException as e:  # noqa: BLE001
-            # This is the only worker thread; letting anything escape kills it
-            # and leaves every later job queued forever with no error event.
+            # The only worker thread: anything escaping would kill it and leave
+            # every later job queued forever.
             job.status = "error"
             log.exception("worker job %s raised %s", job.id, type(e).__name__)
             _push({"type": "error", "job": job.id,
@@ -1436,52 +1234,37 @@ def _worker() -> None:
         finally:
             with QUEUE_LOCK:
                 CURRENT = None
-            # Whatever this job saved gets rated as one job, once the queue has
-            # nothing else to do. Never let it break the worker loop.
             try:
                 _flush_pending_tags()
-            except Exception as e:  # noqa: BLE001 — best-effort background work
+            except Exception as e:  # noqa: BLE001
                 log.warning("could not queue background rating: %s", e)
             _broadcast_queue()
 
 
 def _friendly_error(e: Exception) -> str:
-    """Map a raw engine exception to a user-actionable message.
-
-    CUDA OOM is the common one and surfaces verbatim from torch otherwise —
-    ``"CUDA out of memory. Tried to allocate …"`` with no guidance. Catch it
-    specifically, free the cache so the next job isn't starved, and append a hint.
-    """
+    """Map an engine exception to a user-actionable message. CUDA OOM frees the
+    cache and gets a hint appended."""
     try:
-        import torch  # local import — torch is heavy and optional for the tests
+        import torch  # heavy and optional for the tests
         if isinstance(e, torch.cuda.OutOfMemoryError):
             try: torch.cuda.empty_cache()
-            except Exception: pass  # noqa: BLE001 — best-effort cleanup
+            except Exception: pass  # noqa: BLE001
             return (f"{e}  →  out of VRAM. Try offload=stream (Settings or the "
                     f"Load panel), a smaller width/height, fewer steps, or a "
                     f"smaller detailer/upscale tile.")
-    except Exception:  # noqa: BLE001 — torch not available (e.g. CPU-only test env)
+    except Exception:  # noqa: BLE001  torch not available
         pass
     return str(e)
 
 
-# ── shutdown: save a partial result for the in-flight job (#4) ────────
-# The worker is a daemon thread, so a Ctrl+C mid-sampling kills it abruptly and
-# the running generation is lost — temp LoRAs un-applied, no file on disk. We
-# can't preempt torch cleanly, but the last streamed latent→RGB preview is a PIL
-# image in memory and safe to write from the exit path. atexit runs while daemon
-# threads are still alive, so CURRENT + job.last_preview are readable. Best
-# effort: a downscaled preview is far better than nothing for a 20-minute run
-# that got Ctrl+C'd at step 28/30.
+# ── shutdown: save a partial result for the in-flight job ─────────────
+# The worker is a daemon thread, so Ctrl+C mid-sampling loses the run. atexit
+# runs while daemon threads are alive, so the last streamed preview is still
+# readable and can be written out.
 
 def _save_partial_preview(job: Optional[Job]) -> Optional[Path]:
-    """Write ``job.last_preview`` to outputs/ tagged as a shutdown partial.
-
-    Returns the saved path (so callers/tests can assert) or ``None`` if there's
-    nothing to save. The file carries a ``parameters`` line that flags it as a
-    partial so the gallery / metadata reader can distinguish it from a real
-    generation (and so the user isn't confused by a low-res WebP-quality PNG
-    that looks like a finished image)."""
+    """Write ``job.last_preview`` to outputs/, flagged as a shutdown partial in
+    its ``parameters`` line. Returns the path, or ``None`` if there's nothing."""
     if job is None or job.last_preview is None:
         return None
     try:
@@ -1492,7 +1275,7 @@ def _save_partial_preview(job: Optional[Job]) -> Optional[Path]:
              "cfg_scale": 0.0, "seed": ENGINE.last_seed},
             ENGINE,
         )
-        meta.add_text("parameters", f"PARTIAL — interrupted by shutdown. {info}")
+        meta.add_text("parameters", f"PARTIAL: interrupted by shutdown. {info}")
         job.last_preview.save(out, pnginfo=meta)
         _invalidate_gallery_index()
         invalidate_outputs_cache()
@@ -1503,7 +1286,7 @@ def _save_partial_preview(job: Optional[Job]) -> Optional[Path]:
         log.warning("shutdown: saved partial preview for job %s to %s",
                     job.id, rel)
         return out
-    except Exception as e:  # noqa: BLE001 — never let the exit path raise
+    except Exception as e:  # noqa: BLE001  never let the exit path raise
         log.warning("shutdown: could not save partial preview: %s", e)
         return None
 
@@ -1523,18 +1306,14 @@ log.info("[startup] offload default '%s' (device: %s)",
 
 
 # ── request guard: body-size cap, CSRF/Origin check, auth gate ──────
-# Runs before route handlers for every request. Order: cheap header checks
-# first (Content-Length, Origin), then the auth gate which may read a cookie.
+# Cheap header checks first (Content-Length, Origin), then the auth gate.
 _PUBLIC_AUTH = {("GET", "/"), ("POST", "/api/auth/login"),
                 ("GET", "/api/auth/status"), ("POST", "/api/auth/logout")}
 
 
 @app.middleware("http")
 async def _request_guard(request: Request, call_next):
-    # 1. Global body-size cap (#5): /api/metadata/parse keeps its tighter
-    #    MAX_UPLOAD_BYTES check inside the handler; this is the backstop for
-    #    /api/generate, /api/upscale, etc. so a client can't stream GBs of
-    #    base64 into the queue and OOM the process.
+    # 1. Body-size backstop. /api/metadata/parse checks its tighter cap itself.
     cl = request.headers.get("content-length")
     if cl:
         try:
@@ -1544,23 +1323,19 @@ async def _request_guard(request: Request, call_next):
         except ValueError:
             pass
     elif request.method in _STATE_CHANGE_METHODS:
-        # No Content-Length on a body-carrying request means chunked transfer,
-        # which would skip the cap above entirely while uvicorn still buffers
-        # the whole body for JSON parsing. Nothing in this app streams uploads,
-        # so requiring a declared length is free.
+        # No Content-Length means chunked transfer, which would skip the cap
+        # while uvicorn still buffers the whole body. Nothing here streams
+        # uploads, so require a declared length.
         if "chunked" in (request.headers.get("transfer-encoding") or "").lower():
             return JSONResponse(
                 {"error": "chunked request bodies are not accepted; "
                           "send a Content-Length"},
                 status_code=411)
-    # 2. CSRF / Origin allowlist (#2): block cross-origin state-changing
-    #    requests. Same-origin fetches carry a matching Origin; curl sends none.
+    # 2. Block cross-origin state-changing requests (CSRF). curl sends no Origin.
     if not origin_ok(request):
         return JSONResponse({"error": "cross-origin request blocked"},
                             status_code=403)
-    # 3. Auth gate (#1): when enabled, every non-public path needs a valid
-    #    cookie / bearer token / ?token=. Public paths are served so the user
-    #    can reach the login page and submit the token.
+    # 3. Auth gate. Public paths stay open so the login page is reachable.
     if AUTH.enabled and (request.method, request.url.path) not in _PUBLIC_AUTH:
         denied = AUTH.gate_response(request)
         if denied is not None:
@@ -1570,26 +1345,20 @@ async def _request_guard(request: Request, call_next):
 
 @app.on_event("startup")
 async def _startup():
-    # Capture the event loop so the worker thread can broadcast SSE events, then
-    # start the single job worker.
     global APP_LOOP
     APP_LOOP = asyncio.get_running_loop()
     threading.Thread(target=_worker, daemon=True).start()
-    # A rating-decision upgrade invalidates every cached verdict — re-rate the
-    # gallery in the background so the new logic applies without a manual scan.
+    # A rating-decision upgrade invalidates every cached verdict; re-rate now.
     try:
         _maybe_auto_rescan()
-    except Exception as e:  # noqa: BLE001 — startup must never fail on this
+    except Exception as e:  # noqa: BLE001
         log.warning("[startup] gallery re-rate not enqueued: %s", e)
-    # Load every enabled extension and mount its routes/statics into the app.
-    # Done at startup (not import) so a manifest edit between imports and the
-    # server actually starting is picked up, and so the app object exists.
+    # At startup rather than import, so the app object exists.
     EXTENSIONS.load_all()
     EXTENSIONS.mount_into(app)
     n = sum(1 for e in EXTENSIONS.extensions.values() if e.module is not None)
     log.info("[startup] extensions: %d loaded, %d total", n,
              len(EXTENSIONS.extensions))
-    # One-time rename of legacy DD-MM-YYYY output folders to ISO YYYY-MM-DD.
     try:
         n_migrated = _migrate_output_dirs()
         if n_migrated:
@@ -1597,7 +1366,6 @@ async def _startup():
                      n_migrated)
     except Exception as e:  # noqa: BLE001
         log.warning("[startup] output folder migration failed: %s", e)
-    # Purge aged gallery trash on boot (cheap; runs again on each delete).
     try:
         purged = _purge_trash()
         if purged:
@@ -1605,25 +1373,20 @@ async def _startup():
                      purged, TRASH_RETENTION_DAYS)
     except Exception as e:  # noqa: BLE001
         log.warning("[startup] trash purge failed: %s", e)
-    # Hash any checkpoint/diffusion model/LoRA missing a hash *before* we serve, so
-    # the metadata carries real model hashes and the (disk-heavy) hashing never
-    # contends with generation I/O. Offloaded to a thread so the event loop stays
-    # responsive, but awaited so startup doesn't complete until it finishes. On a
-    # big first batch the per-file progress lands in this console log.
+    # Hash models before serving so metadata carries real hashes and the disk-
+    # heavy hashing never contends with generation I/O.
     try:
         await asyncio.to_thread(md.model_hash.scan_all, background=False)
-    except Exception as e:  # noqa: BLE001 — hashing is best-effort, never fatal
+    except Exception as e:  # noqa: BLE001
         log.warning("[startup] model-hash scan failed: %s", e)
-    # Stamp the runtime environment into the log once so a "it broke" report
-    # carries the engine/torch/CUDA context without the user having to dig.
     _log_runtime_env()
 
 
 def _log_runtime_env() -> None:
-    """Log torch / CUDA / GPU + engine version info for triage (IMPROVE.md #9)."""
+    """Log torch / CUDA / GPU and engine versions for triage."""
     parts = [f"ui={md.UI_ID}", f"diff={md.DIFF_ID}"]
     try:
-        import torch  # noqa: local import — heavy and optional in test envs
+        import torch  # noqa: heavy and optional in test envs
         parts.append(f"torch={torch.__version__}")
         if torch.cuda.is_available():
             try:
@@ -1634,17 +1397,15 @@ def _log_runtime_env() -> None:
                 parts.append(f"cuda=available (props failed: {e})")
         else:
             parts.append("cuda=unavailable (CPU)")
-    except Exception as e:  # noqa: BLE001 — torch missing
+    except Exception as e:  # noqa: BLE001
         parts.append(f"torch=missing ({e})")
     log.info("[startup] runtime: %s", "  ".join(parts))
 
 
 @app.get("/")
 def index(request: Request):
-    # Auth on + a ``?token=…`` query → validate, set the cookie, redirect to bare
-    # "/" (so the token isn't left in browser history). Auth on + no cookie →
-    # serve the login page (the app JS isn't exposed until the token is supplied).
-    # Auth on + valid cookie → fall through to the app index. Auth off → index.
+    # With auth on: ?token= sets the cookie and redirects to bare "/" (keeps the
+    # token out of history); no cookie gets the login page.
     if AUTH.enabled:
         qp_token = request.query_params.get("token")
         if qp_token is not None:
@@ -1657,7 +1418,7 @@ def index(request: Request):
     return HTMLResponse(_render_index(), headers={"Cache-Control": "no-cache"})
 
 
-# ── auth endpoints (only meaningful when the gate is enabled) ───────
+# ── auth endpoints ──────────────────────────────────────────────────
 
 @app.get("/api/auth/status")
 def api_auth_status():
@@ -1702,8 +1463,7 @@ def api_models():
         "load_form": LAST_LOAD_FORM,
         "last_seed": ENGINE.last_seed,
         "recommended_offload": ENGINE.recommended_offload(),
-        # Whether the optional FA2-Turing attention kernel can run here (package
-        # built+installed and the GPU is sm75) — gates the UI's "fa2 attn" chip.
+        # Gates the UI's "fa2 attn" chip (package installed and an sm75 GPU).
         "fa2_available": ENGINE.fa2_attention_available(),
         "ui_id": md.UI_ID,
         "diff_id": md.DIFF_ID,
@@ -1716,34 +1476,25 @@ def api_status():
 
 
 def _do_load(p: LoadPayload) -> str:
-    # pre_load: extensions can observe/adjust the load request before it runs.
     EXTENSIONS.run_hook("pre_load", payload=p)
     status = _do_load_impl(p)
-    # post_load: notify extensions of the outcome (status starts with "Loaded"
-    # on success, or "Model already loaded"; anything else is an error message).
+    # status starts with "Loaded" or "Model already loaded" on success.
     EXTENSIONS.run_hook("post_load", payload=p, status=status)
     return status
 
 
 def _validate_load(p: LoadPayload) -> Optional[str]:
-    """Fail-fast: return an error string if a named file isn't on disk, else None.
-
-    A misspelled checkpoint would otherwise wait its turn in the queue (behind
-    any running generation) before failing inside ``ENGINE.load_*``. Checking at
-    submit time lets ``/api/load`` return a 400 immediately. Mirrors the
-    "Select …" guards in ``_do_load_impl`` so the error message stays consistent.
-    """
+    """Return an error string if a named file isn't on disk, else None, so
+    /api/load can 400 at submit time instead of failing after the queue."""
     def _missing(label: str, name: str, d: Path) -> Optional[str]:
-        # Plain filenames only — a name with a separator or ".." would resolve
-        # outside the models dir and still pass an is_file() check.
+        # Plain filenames only; ".." or a separator would escape the models dir.
         if not model_name_ok(name) or not (d / name).is_file():
             return f"{label} not found: {name}"
         return None
 
-    # fa2 attention + compile can't coexist (the custom op graph-breaks in every
-    # block); reject at submit like TeaCache+CUDA-Graphs instead of mid-load.
+    # The custom op graph-breaks in every block under compile.
     if p.attention == "fa2_turing" and p.compile:
-        return "fa2 attention is incompatible with torch.compile — disable one"
+        return "fa2 attention is incompatible with torch.compile; disable one"
 
     if p.model_type == "Anima":
         for label, name, d in (("DiT", p.dit, DIFFUSION_DIR),
@@ -1778,11 +1529,8 @@ def _validate_load(p: LoadPayload) -> Optional[str]:
 
 
 def _do_load_impl(p: LoadPayload) -> str:
-    # Offload: explicit UI choice, else the per-family default. FLUX's ~23 GB
-    # transformer OOMs under whole-module staging (full), so it always defaults to
-    # "stream" block-streaming. Every family (SD/SDXL, FLUX, Anima) streams on a
-    # very-low-VRAM card (the backend recommends "stream" ≤6 GB — fits the backbone
-    # on ~4 GB); otherwise full. full/encoders/none/stream all work for all.
+    # Default offload: stream for FLUX (its ~23 GB transformer OOMs under full)
+    # and on low-VRAM cards, full otherwise.
     _to_bundle = {"none": False, "full": True,
                   "encoders": "encoders", "stream": "stream"}
     if p.offload is None:
@@ -1791,9 +1539,8 @@ def _do_load_impl(p: LoadPayload) -> str:
     else:
         offload = _to_bundle.get(p.offload, True)
 
-    # VAE tiling preference (settings panel): "always" forces tiled decode; "auto"
-    # lets the pipeline decide per decode from free VRAM. FLUX ignores this — it's
-    # force-tiled below regardless.
+    # "always" forces tiled VAE decode; "auto" decides per decode from free VRAM.
+    # FLUX always tiles.
     vae_tile_pref = SETTINGS.get("vae_tiling") == "always"
 
     if p.model_type == "Anima":
@@ -1802,8 +1549,6 @@ def _do_load_impl(p: LoadPayload) -> str:
                 return "Select all three Anima files"
         return ENGINE.load_anima(
             p.dit, p.vae, p.te,
-            # vae_tile from the settings panel: "auto" lets the pipeline auto-decide
-            # per decode via can_decode_untiled; "always" forces tiled (even at 1024²).
             offload=offload, vae_tile=vae_tile_pref,
             compile=p.compile, cuda_graphs=p.cuda_graphs,
             fp16_accumulation=p.fp16_accumulation,
@@ -1811,7 +1556,7 @@ def _do_load_impl(p: LoadPayload) -> str:
             vae_fp16=p.vae_fp16,
         )
     if p.model_type == "FLUX":
-        # All-in-one checkpoint takes precedence; otherwise load split files.
+        # An all-in-one checkpoint takes precedence over split files.
         if p.checkpoint and not p.checkpoint.startswith("("):
             return ENGINE.load_model(
                 p.checkpoint, offload=offload, vae_tile=True,
@@ -1835,8 +1580,6 @@ def _do_load_impl(p: LoadPayload) -> str:
         return "Select a model"
     return ENGINE.load_model(
         p.checkpoint,
-        # vae_tile from the settings panel; "auto" → SD/SDXL auto-decide per decode
-        # via can_decode_untiled, "always" → force tiled.
         offload=offload, vae_tile=vae_tile_pref,
         compile=p.compile, cuda_graphs=p.cuda_graphs,
         channels_last=p.channels_last, tf32=p.tf32,
@@ -1847,12 +1590,8 @@ def _do_load_impl(p: LoadPayload) -> str:
 
 @app.post("/api/load")
 async def api_load(p: LoadPayload):
-    """Queue a model load. Loading swaps the single in-memory model, so it runs
-    on the same worker as generation — it simply waits its turn instead of being
-    refused. On success the new load state is broadcast to every device.
-
-    File existence is validated up front so a misspelled checkpoint returns a 400
-    immediately instead of failing after waiting its turn in the queue."""
+    """Queue a model load on the generation worker (it waits its turn) after
+    checking the named files exist. Success is broadcast to every device."""
     err = _validate_load(p)
     if err:
         raise HTTPException(status_code=400, detail=err)
@@ -1871,14 +1610,12 @@ async def api_load(p: LoadPayload):
 
 
 def _teacache_cuda_graphs_conflict(*thresholds: float) -> Optional[str]:
-    """Submit-time guard: TeaCache can't run on a CUDA-Graphs-compiled Anima
-    backbone (see ``engine._TEACACHE_CUDA_GRAPHS_ERROR``). Returns the error
-    string when any requested threshold is active on such a load, else None.
+    """Submit-time guard: TeaCache can't run on a CUDA-Graphs Anima backbone.
     The engine re-checks at run time (the model can change while queued)."""
     if (ENGINE.cuda_graphs_enabled and ENGINE.loaded_family == "anima"
             and any(t > 0 for t in thresholds)):
-        return ("TeaCache is incompatible with CUDA Graphs — disable TeaCache "
-                "or reload the model without the CUDA Graphs flag")
+        return ("TeaCache is incompatible with CUDA Graphs. Disable TeaCache "
+                "or reload the model without the CUDA Graphs flag.")
     return None
 
 
@@ -1936,9 +1673,7 @@ async def api_upscale(p: UpscalePayload):
             sampler=p.sampler, scheduler=p.scheduler,
             gate_reduce=SETTINGS["gate_reduce"],
         )
-        # A standalone upscale isn't a generation: ENGINE.last_seed still holds
-        # whatever ran before it, so name and tag the output with the seed the
-        # tile passes actually used.
+        # ENGINE.last_seed still holds whatever ran before; use the tile passes' seed.
         seed = ENGINE.last_upscale_seed
         out = _save_output(image, gen_kwargs, upscale=upscale_meta, seed=seed,
                            blur_check=p.blur_check)
@@ -1972,15 +1707,12 @@ async def api_detail(p: DetailPayload):
             raise RuntimeError("Detailer needs inpaint, unavailable for this model")
         on_progress, on_preview = _make_callbacks(job)
         image = _decode_image(p.input_image)
-        # Resolve once, up front: the detailer doesn't record the seed it picked
-        # (unlike upscale's ``last_upscale_seed``), and the output name and
-        # metadata below need it. Sharing it across stacked passes also makes a
-        # random-seed run reproducible from its own metadata.
+        # The detailer doesn't record the seed it picked, so resolve it here and
+        # share it across stacked passes (reproducible from the metadata).
         seed = int(p.seed) if p.seed >= 0 else random.randrange(2 ** 32 - 1)
         notes, applied = [], []
         for dm in active:
-            # Same per-pass guard as the post-gen path: one failing detector
-            # must not lose the refinements the earlier passes already made.
+            # One failing detector must not lose the earlier passes' work.
             try:
                 image, dnote = ENGINE.detail(
                     image,
@@ -2004,7 +1736,7 @@ async def api_detail(p: DetailPayload):
                 )
                 notes.append(f"{dm.model}: {dnote.replace('Detailer: ', '')}")
                 applied.append(dm)
-            except Exception as e:  # noqa: BLE001 — surface it, keep the image
+            except Exception as e:  # noqa: BLE001
                 notes.append(f"⚠ {dm.model} FAILED: {e}")
         if not applied:
             raise RuntimeError("; ".join(notes))
@@ -2085,12 +1817,9 @@ def api_save_settings(s: Settings):
     global SETTINGS
     _write_settings(s)
     SETTINGS = s.model_dump()
-    # Apply the VAE-tiling choice to the already-loaded model so it takes effect
-    # without a reload (future loads pick it up via _do_load).
+    # Apply VAE tiling to the loaded model now; later loads read it in _do_load.
     ENGINE.apply_vae_tiling(SETTINGS["vae_tiling"] == "always")
-    # Turning the gallery blur off means nothing needs a rating right now — drop
-    # the tagger's VRAM so the next generation gets the whole card. A generate
-    # with its own "Blur NSFW" on (blur_check) loads it again on demand.
+    # Blur off: free the tagger's VRAM. A blur_check generation reloads it.
     if not SETTINGS["nsfw_blur"]:
         tagger_mod.TAGGER.unload()
     return SETTINGS
@@ -2100,12 +1829,8 @@ def api_save_settings(s: Settings):
 
 @app.get("/api/tagger_status")
 def api_tagger_status():
-    """Whether the WD tagger is usable and how many outputs are already rated.
-
-    ``rated`` counts current verdicts for outputs that still exist — not raw
-    cache rows, which would keep counting deleted images and stale (superseded
-    decision-layer) entries and report "everything rated" with a rescan pending.
-    It is exactly ``total`` minus what a scan would re-do."""
+    """Whether the WD tagger is usable, and how many existing outputs carry a
+    current verdict (stale and deleted entries don't count)."""
     files = scan_outputs()
     rated = sum(1 for f in files if _cached_rating(f) is not None)
     return {"available": tagger_mod.timm_available(),
@@ -2115,14 +1840,11 @@ def api_tagger_status():
 
 @app.post("/api/gallery_scan")
 def api_gallery_scan():
-    """Rate every output that lacks a current rating, as one low-priority job.
-
-    Uses the cached outputs list, so it skips already-rated images whose file
-    hasn't changed. Progress streams to the queue panel like any job."""
+    """Rate every output lacking a current rating, as one low-priority job."""
     if not SETTINGS.get("nsfw_blur"):
         raise HTTPException(400, "Enable 'Blur R-rated and up' in Settings first")
     if not tagger_mod.timm_available():
-        raise HTTPException(400, "The WD tagger needs the optional 'timm' package — pip install timm")
+        raise HTTPException(400, "The WD tagger needs the optional 'timm' package (pip install timm)")
     paths = []
     for f in scan_outputs():
         rel = f.relative_to(OUTPUTS_DIR).as_posix()
@@ -2138,10 +1860,8 @@ def api_gallery_scan():
 
 
 def _maybe_auto_rescan() -> None:
-    """After a decision-layer upgrade (DECISION_VERSION bump) every cached
-    verdict is stale; re-rate the gallery once, at the lowest priority, so the
-    fix applies without the user having to find the button. No-op when the
-    feature is off, timm is missing, or nothing is stale."""
+    """Re-rate the gallery once, at the lowest priority, after a DECISION_VERSION
+    bump made cached verdicts stale."""
     if not SETTINGS.get("nsfw_blur") or not tagger_mod.timm_available():
         return
     ratings = _read_ratings()
@@ -2169,24 +1889,16 @@ def api_extensions():
 
 @app.get("/api/extensions/web")
 def api_extensions_web():
-    """Script URLs to inject into the index page (one per enabled ext JS file).
-    The frontend reads this on connect to know which extension scripts already
-    loaded inline; the page itself is built server-side with the tags in place."""
+    """Script URLs of the enabled extensions' JS files."""
     return {"scripts": EXTENSIONS.web_script_urls()}
 
 
 @app.post("/api/extensions/install")
 def api_extensions_install(p: InstallPayload):
-    """Install an extension from a git URL or a .zip archive URL.
-
-    Runs on the shared job worker (not the request threadpool) so a slow clone /
-    pip doesn't tie up a request worker, the install is visible + cancellable in
-    the queue panel, and it serializes with generation / loads (it imports
-    Python modules and may pip install — racing the GPU worker is bad). Returns
-    a job id; the terminal ``done`` event carries the new extension's record so
-    the frontend can refresh the panel. See IMPROVE.md #8."""
-    # Fast-fail scheme/SSRF validation up front so a malformed URL returns 400
-    # immediately instead of enqueueing a job that errors a moment later.
+    """Install an extension from a git URL or a .zip archive URL, as a job on
+    the shared worker (it imports modules and may pip install). The ``done``
+    event carries the new extension's record."""
+    # Validate the URL now so a bad one 400s instead of failing as a job.
     from extensions import _validate_install_url
     try:
         _validate_install_url(p.url)
@@ -2194,7 +1906,7 @@ def api_extensions_install(p: InstallPayload):
         raise HTTPException(status_code=400, detail=str(e))
     def run(job: Job) -> dict:
         ext = EXTENSIONS.install(p.url, install_pip_deps=p.install_pip_deps)
-        EXTENSIONS.mount_into(app)  # attach the new extension's routes/statics
+        EXTENSIONS.mount_into(app)
         return {"extension": ext.to_dict()}
     job = Job("install", f"install {p.url}", run)
     _enqueue(job)
@@ -2203,28 +1915,23 @@ def api_extensions_install(p: InstallPayload):
 
 @app.post("/api/extensions/toggle")
 def api_extensions_toggle(p: TogglePayload):
-    """Enable or disable an extension. Disabling unloads its hooks/routes so they
-    stop firing until re-enabled (no server restart needed for the backend; the
-    frontend script tags refresh on the next page load)."""
+    """Enable or disable an extension. Backend hooks/routes apply at once; the
+    frontend script tags refresh on the next page load."""
     ext = EXTENSIONS.set_enabled(p.name, p.enabled)
     if p.enabled:
-        EXTENSIONS.mount_into(app)  # a just-enabled extension's routes need attaching
+        EXTENSIONS.mount_into(app)
     return {"extension": ext.to_dict()}
 
 
 @app.post("/api/extensions/update")
 def api_extensions_update(p: UpdatePayload):
-    """Pull the latest version of a git-installed extension and reload it.
-
-    Runs on the shared job worker (like install): a git fetch + optional pip can
-    be slow, must serialize with generation, and should be visible/cancellable in
-    the queue panel. Returns a job id; the terminal event carries the updated
-    record so the frontend can refresh the panel."""
+    """Pull the latest version of a git-installed extension and reload it, as a
+    job on the shared worker."""
     if p.name not in EXTENSIONS.extensions:
         raise HTTPException(status_code=404, detail="extension not found")
     def run(job: Job) -> dict:
         ext = EXTENSIONS.update(p.name, install_pip_deps=p.install_pip_deps)
-        EXTENSIONS.mount_into(app)  # attach any routes/statics a new version added
+        EXTENSIONS.mount_into(app)
         return {"extension": ext.to_dict()}
     job = Job("update", f"update {p.name}", run)
     _enqueue(job)
@@ -2233,10 +1940,9 @@ def api_extensions_update(p: UpdatePayload):
 
 @app.post("/api/extensions/reload")
 def api_extensions_reload(name: str):
-    """Re-import an extension's entry module — handy while developing one. Drops
-    its old hooks/routes/statics first so nothing doubles up."""
+    """Re-import an extension's entry module, dropping its old hooks/routes first."""
     EXTENSIONS.reload_one(name)
-    EXTENSIONS.mount_into(app)  # attach any routes/statics the reload re-added
+    EXTENSIONS.mount_into(app)
     ext = EXTENSIONS.extensions.get(name)
     if ext is None:
         raise HTTPException(status_code=404, detail="extension not found")
@@ -2245,8 +1951,7 @@ def api_extensions_reload(name: str):
 
 @app.post("/api/extensions/uninstall")
 def api_extensions_uninstall(p: UninstallPayload):
-    """Remove an extension's folder and drop its hooks/routes. Its persisted
-    enabled/state entries are cleared too."""
+    """Remove an extension's folder, hooks, routes and persisted state."""
     try:
         EXTENSIONS.uninstall(p.name)
     except ValueError as e:
@@ -2256,9 +1961,8 @@ def api_extensions_uninstall(p: UninstallPayload):
 
 @app.post("/api/cancel")
 def api_cancel(p: CancelPayload):
-    """Cancel a job by id. A running job aborts at its next sampling step; a
-    still-queued job is dropped from the queue. ``job=None`` targets whatever is
-    currently running."""
+    """Cancel a job by id (``None`` = the running one). A running job aborts at
+    its next step; a queued one is dropped."""
     with QUEUE_LOCK:
         target = CURRENT if p.job is None else None
         if p.job is not None:
@@ -2272,7 +1976,7 @@ def api_cancel(p: CancelPayload):
     if target is None:
         return {"cancelling": False}
     target.cancel.set()
-    if queued:  # never ran — report its cancellation now
+    if queued:  # never ran, so report it now
         target.status = "cancelled"
         _push({"type": "cancelled", "job": target.id})
         _broadcast_queue()
@@ -2281,8 +1985,7 @@ def api_cancel(p: CancelPayload):
 
 @app.get("/api/events")
 async def api_events(request: Request):
-    """Shared SSE stream: queue changes, progress, previews, and model status
-    are broadcast here to every connected device."""
+    """Shared SSE stream of queue changes, progress, previews and model status."""
     q: asyncio.Queue = asyncio.Queue(maxsize=SSE_QUEUE_MAX)
     SUBSCRIBERS.add(q)
     snapshot = {"type": "snapshot", **_state_payload(),
@@ -2299,7 +2002,7 @@ async def api_events(request: Request):
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"   # keep-alive; also surfaces disconnects
                     continue
-                if ev is None:           # shutdown sentinel — let the server exit
+                if ev is None:           # shutdown sentinel
                     break
                 yield "data: " + json.dumps(ev) + "\n\n"
         finally:
@@ -2315,18 +2018,9 @@ def api_oss_status(steps: int, width: int, height: int, shift: float):
 
 @app.get("/api/gallery")
 def api_gallery(q: str = ""):
-    """List gallery images, optionally filtered by a metadata substring.
-
-    ``q`` matches case-insensitively across the parsed prompt, negative prompt,
-    model name, sampler and scheduler fields. When empty, every output is
-    returned (the existing behaviour). Every entry carries an ``nsfw`` flag (and
-    the underlying ``rating``) derived from the image's prompt metadata, so the
-    frontend can blur R-rated-and-up content without extra requests.
-
-    Both paths read through the cached index so the flag doesn't add a PNG-open
-    per request; the index rebuilds when the outputs directory's newest folder
-    mtime advances — so a newly saved image shows up on the next search without
-    a manual refresh."""
+    """List gallery images, optionally filtered by a case-insensitive substring
+    of the prompt, negative, model, sampler or scheduler. Each entry carries its
+    ``rating`` and ``nsfw`` flag, read from the cached index."""
     def dto(entry):
         return {
             "url": f"/outputs/{entry['path']}",
@@ -2343,20 +2037,16 @@ def api_gallery(q: str = ""):
 
 
 # ── gallery search index ────────────────────────────────────────────
-# One pass opens every output PNG to parse its AUTO1111 metadata — too costly to
-# repeat per keystroke, so the result is cached and only rebuilt when the outputs
-# dir's newest folder mtime advances (a saved image bumps its date folder's
-# mtime, invalidating the cache). The rebuild is guarded by a lock so two
-# concurrent searches don't each re-open every PNG and race to assign the index
-# (last writer wins, wasted work). Saves and deletes invalidate explicitly so a
-# same-second save on a 1s-mtime filesystem (ext4 default) still shows up.
+# Parsing every PNG is too costly per keystroke, so the index is cached and
+# rebuilt when the newest output folder's mtime advances. Saves and deletes
+# also update it explicitly, since ext4 mtimes have 1 s resolution.
 _GALLERY_INDEX: Optional[list] = None
 _GALLERY_INDEX_KEY: float = 0.0
 _GALLERY_INDEX_LOCK = threading.Lock()
 
 
 def _outputs_dir_mtime() -> float:
-    """Newest date-folder mtime under outputs/ — the index's freshness key."""
+    """Newest date-folder mtime under outputs/, the index's freshness key."""
     try:
         return max(
             (d.stat().st_mtime for d in OUTPUTS_DIR.iterdir() if d.is_dir()),
@@ -2368,8 +2058,7 @@ def _outputs_dir_mtime() -> float:
 
 def _index_entry(f: Path, fields: dict) -> dict:
     """One index row from a file and its parsed AUTO1111 fields."""
-    # Vision rating (WD tagger) wins when this file has been rated and hasn't
-    # changed since; otherwise fall back to the prompt heuristic.
+    # A current vision rating wins over the prompt heuristic.
     rating = md.prompt_rating(str(fields.get("prompt", "")))
     vis = _cached_rating(f)
     if vis:
@@ -2396,32 +2085,21 @@ def _invalidate_gallery_index() -> None:
 
 
 def _gallery_index_add(path: Path, params: str) -> None:
-    """Splice a just-saved output into the cached index instead of dropping it.
-
-    A rebuild re-opens every PNG under outputs/ (1.4 s at ~2.3k images, and it
-    grows), and _save_output runs on every generation — so invalidating here
-    made the plain gallery open right after generating always pay for a full
-    rebuild. ``params`` is the metadata string we just wrote, so this costs one
-    parse and no file I/O. Newest-first, matching ``scan_outputs()``.
-
-    No-op while the index is cold: the next read builds it from disk anyway.
+    """Splice a just-saved output into the cached index (newest first) instead
+    of forcing a rebuild that re-opens every PNG. No-op while the index is cold.
     """
     global _GALLERY_INDEX_KEY
     with _GALLERY_INDEX_LOCK:
         if _GALLERY_INDEX is None:
             return
         _GALLERY_INDEX.insert(0, _index_entry(path, md.parse_metadata(params)))
-        # Our own save bumped the date folder's mtime; adopt it, or the very
-        # next read would see a newer key and rebuild after all.
+        # Adopt our own save's folder mtime, or the next read would rebuild.
         _GALLERY_INDEX_KEY = _outputs_dir_mtime()
 
 
 def _gallery_index_patch_ratings(ratings: dict) -> None:
     """Update the rating fields of already-indexed rows, keyed by relative path.
-
-    A tag job changes nothing else about an entry, so a background rating has no
-    reason to force a full rebuild. Rows the index doesn't know about are
-    skipped — it will pick them up when it is next built.
+    Unknown rows are skipped; the next build picks them up.
     """
     with _GALLERY_INDEX_LOCK:
         if _GALLERY_INDEX is None:
@@ -2463,16 +2141,8 @@ def _gallery_search(query: str) -> list:
 
 
 def _thumb_cache_path(target: Path) -> Path:
-    """Cache path for ``target``'s thumbnail, keyed by source mtime+size
-    (IMPROVE.md #12).
-
-    The key encodes ``{stem}_{mtime_ns}_{size}`` so an overwritten source image
-    (re-saved externally, or via any future in-place save) busts the stale webp:
-    a new write changes the mtime (ext4 stores ns resolution) and usually the
-    size, so the cache filename changes and a fresh thumbnail is generated
-    instead of serving one that no longer matches the image. The date-folder
-    structure is preserved under ``_THUMBS_DIR`` for cleanliness.
-    """
+    """Thumbnail cache path for ``target``, keyed by its mtime+size so an
+    overwritten source gets a fresh thumbnail."""
     rel = target.relative_to(OUTPUTS_DIR.resolve())
     try:
         st = target.stat()
@@ -2483,12 +2153,8 @@ def _thumb_cache_path(target: Path) -> Path:
 
 
 def _purge_thumb_cache(target: Path, keep: Optional[Path] = None) -> None:
-    """Remove cached thumbnails for ``target`` (all mtime/size versions).
-
-    Used by the gallery delete (drop every version — the source is gone) and by
-    ``api_thumb`` after generating a fresh thumbnail (drop older versions of the
-    same source so at most one cache file lingers per image). Best-effort: a
-    missing thumbs dir or a vanished file is silently skipped."""
+    """Remove cached thumbnails for ``target`` (all mtime/size versions, except
+    ``keep``). Best-effort."""
     try:
         rel = target.relative_to(OUTPUTS_DIR.resolve())
     except ValueError:
@@ -2504,15 +2170,8 @@ def _purge_thumb_cache(target: Path, keep: Optional[Path] = None) -> None:
 
 @app.get("/api/thumb")
 def api_thumb(path: str):
-    """Serve a small cached thumbnail for a gallery image (path under outputs/).
-
-    The grid loads hundreds of these instead of the full ~1 MB PNGs. Resized on
-    the first request and cached under .cache/thumbs/ (outside outputs/, so
-    ``scan_outputs`` never lists them); every later request is served from disk.
-    The cache file is keyed by the source's mtime+size, so an overwritten source
-    (re-saved externally or via an in-place save) busts the stale webp instead of
-    serving a thumbnail that no longer matches the image — older versions for the
-    same source are purged when a fresh one is generated."""
+    """Serve a cached thumbnail for a gallery image (path under outputs/),
+    building it on first request under .cache/thumbs/."""
     target = (OUTPUTS_DIR / path).resolve()
     outputs_root = OUTPUTS_DIR.resolve()
     if outputs_root not in target.parents or not target.is_file():
@@ -2524,54 +2183,39 @@ def api_thumb(path: str):
             im = im.convert("RGB")
             im.thumbnail((THUMB_MAX, THUMB_MAX))
             im.save(cache, "WEBP", quality=80)
-        _purge_thumb_cache(target, keep=cache)  # drop older mtime/size versions of this source
+        _purge_thumb_cache(target, keep=cache)
     return FileResponse(cache, media_type="image/webp")
 
 
 @app.delete("/api/gallery")
 def api_gallery_delete(path: str):
-    """Soft-delete a gallery image: move it to ``outputs/.trash/`` (recoverable
-    by hand) and drop its cached thumbnail.
-
-    A hard ``unlink()`` is racy with the two-click confirm on a slow connection —
-    a double-click costs the user real work. The trash is purged of entries
-    older than ``TRASH_RETENTION_DAYS`` on each call (cheap). Path is scoped
-    under ``outputs/`` with the same traversal guard as ``/api/thumb``; the
-    trashed name is prefixed with a timestamp so repeated deletes of same-named
-    files don't clobber each other. On success the cached search index is
-    invalidated so the next search reflects the deletion."""
+    """Soft-delete a gallery image: move it to ``outputs/.trash/`` under a
+    timestamped name, drop its thumbnails and invalidate the gallery caches."""
     target = (OUTPUTS_DIR / path).resolve()
     outputs_root = OUTPUTS_DIR.resolve()
     if outputs_root not in target.parents or not target.is_file():
         raise HTTPException(status_code=404, detail="Image not found")
     _TRASH_DIR.mkdir(parents=True, exist_ok=True)
-    # Nanosecond stamp: a 1-second one lets two deletes of same-named files in
-    # the same second silently overwrite each other in the trash.
+    # Nanosecond stamp: same-named files deleted in the same second must not
+    # overwrite each other.
     trashed = _TRASH_DIR / f"{time.time_ns()}_{target.name}"
     try:
         shutil.move(str(target), str(trashed))
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Could not delete: {e}")
-    # Drop any cached thumbnails for this source (every mtime/size version; may
-    # not exist if the image was never viewed in the grid).
     _purge_thumb_cache(target)
-    # Invalidate the search index so the next /api/gallery?q= reflects the
-    # deletion. Rebuilding is cheap (50 ms for ~1k images) and only happens
-    # when search is actually used next. Also drop the outputs listing cache
-    # so the plain /api/gallery (no query) doesn't list the trashed file.
     _invalidate_gallery_index()
     invalidate_outputs_cache()
-    # Purge aged trash entries on the way out — one iterdir + mtime check.
     try:
         _purge_trash()
-    except Exception as e:  # noqa: BLE001 — never let cleanup fail the delete
+    except Exception as e:  # noqa: BLE001  never let cleanup fail the delete
         log.warning("trash purge failed: %s", e)
     return {"deleted": path, "trashed": trashed.name}
 
 
 @app.get("/api/metadata")
 def api_metadata(path: str):
-    """Raw + workspace-normalised metadata for a gallery image (path under outputs/)."""
+    """Raw and workspace-normalised metadata for a gallery image."""
     target = (OUTPUTS_DIR / path).resolve()
     if OUTPUTS_DIR.resolve() not in target.parents or not target.is_file():
         return {"raw": "", "fields": {}}
@@ -2582,7 +2226,7 @@ def api_metadata(path: str):
 
 @app.post("/api/metadata/parse")
 async def api_metadata_parse(file: UploadFile = File(...)):
-    """Dump every PNG chunk + parsed AUTO1111/ComfyUI views for an uploaded image."""
+    """Dump every PNG chunk plus the parsed A1111/ComfyUI views of an upload."""
     data = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Image too large (max 64 MB)")
@@ -2622,13 +2266,12 @@ async def api_metadata_parse(file: UploadFile = File(...)):
 
 @app.post("/api/metadata/parse_text")
 def api_metadata_parse_text(p: ParseTextPayload):
-    """Parse a pasted AUTO1111-style ``parameters`` string into workspace
-    fields — the same path as a gallery image, but for text dropped straight
-    into the prompt box (SD WebUI's read-generation-parameters)."""
+    """Parse a pasted ``parameters`` string into workspace fields (SD WebUI's
+    read-generation-parameters)."""
     return {"fields": md.workspace_fields(md.parse_metadata(p.text))}
 
 
 # Static mounts (declared last so /api routes win).
-OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)  # StaticFiles errors if missing (fresh install)
+OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)  # StaticFiles errors if missing
 app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")

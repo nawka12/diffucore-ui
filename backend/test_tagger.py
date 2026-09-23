@@ -1,9 +1,4 @@
-"""Tests for the WD tagger rating logic (pure functions, no GPU, no model).
-
-Run from the project root::
-
-    .venv/bin/python -m pytest backend/test_tagger.py -v
-"""
+"""Tests for the WD tagger rating logic (pure functions, no GPU, no model)."""
 
 from __future__ import annotations
 
@@ -13,11 +8,9 @@ import tagger
 
 
 def _decide(ratings, hard_probs=(), strong_probs=(), soft_probs=(), n_tags=32):
-    """Run the decision layer over synthetic sigmoid outputs.
-
-    ``ratings`` = [general, sensitive, questionable, explicit]; hard/strong/
-    soft tag probabilities are placed at reserved indices (hard=0..,
-    strong=8.., soft=16..).
+    """Run the decision layer over synthetic sigmoids. ``ratings`` is
+    [general, sensitive, questionable, explicit]; hard/strong/soft tag
+    probabilities sit at indices 0.., 8.., 16..
     """
     tag_scores = np.zeros(n_tags)
     for i, p in enumerate(hard_probs):
@@ -32,8 +25,8 @@ def _decide(ratings, hard_probs=(), strong_probs=(), soft_probs=(), n_tags=32):
 
 
 def test_nerissa_case_hard_tag_overrides_rating_head():
-    # The real failure: sensitive=0.981 beats explicit=0.922 at argmax, yet the
-    # model detected nipples (0.80). The hard-tag rule must force X.
+    # Real case: sensitive=0.981 beats explicit=0.922 at argmax, but nipples
+    # scored 0.80.
     tier, conf, reason = _decide([0.002, 0.981, 0.120, 0.922], hard_probs=[0.80])
     assert tier == "X"
     assert "hard_tag" in reason
@@ -41,18 +34,15 @@ def test_nerissa_case_hard_tag_overrides_rating_head():
 
 
 def test_moona_case_explicit_head_without_corroboration_deescalates():
-    # The real failure: a SFW VTuber portrait scored explicit=0.993 with only
-    # weak cues (cleavage on a busty idol costume) and no anatomy/strong
-    # suggestive tags. Must not blur.
+    # Real case: a SFW VTuber portrait at explicit=0.993 with only weak cues.
     tier, _, reason = _decide([0.153, 0.002, 0.0009, 0.993], soft_probs=[0.8])
     assert tier in ("PG", "PG13")
     assert "de_escalated" in reason
 
 
 def test_explicit_head_backed_by_questionable_deescalates_to_r_not_pg():
-    # Real misses from a full-gallery scan: explicit-headed, no strong tags,
-    # nipples just under HARD_TAG_THRESH — the old rule dropped them to PG/PG13
-    # (unblurred). A questionable head >= 0.5 must hold them at R.
+    # Real misses: explicit-headed, no strong tags, nipples just under
+    # HARD_TAG_THRESH. A questionable head >= 0.5 holds them at R.
     for ratings, hard in (([0.0167, 0.0032, 0.5269, 0.8179], [0.298]),
                           ([0.0443, 0.0121, 0.6226, 0.5762], [0.063]),
                           ([0.0244, 0.0044, 0.6729, 0.6401], [0.345])):
@@ -62,31 +52,26 @@ def test_explicit_head_backed_by_questionable_deescalates_to_r_not_pg():
 
 
 def test_explicit_head_with_weak_questionable_still_deescalates_to_pg():
-    # Real false alarm from the same scan: a failed, unrecognisable generation
-    # with explicit 0.49 / questionable 0.38 — stays unblurred.
+    # Real false alarm: explicit 0.49 / questionable 0.38 stays unblurred.
     tier, _, reason = _decide([0.1682, 0.0371, 0.3784, 0.4875], hard_probs=[0.07])
     assert tier == "PG"
     assert "de_escalated" in reason
 
 
 def test_explicit_with_strong_corroboration_stays_explicit():
-    # Explicit head + lingerie → blurred (genuinely NSFW).
     tier, _, reason = _decide([0.05, 0.10, 0.10, 0.90], strong_probs=[0.9])
     assert tier == "X"
     assert reason == "explicit"
 
 
 def test_weak_suggestive_alone_never_forces_explicit():
-    # Even a high-confidence explicit head with cleavage/bikini only (the
-    # busty-idol false positive) must not blur — weak cues corroborate R at
-    # most.
+    # A high explicit head with only cleavage/bikini must not blur.
     tier, _, _ = _decide([0.10, 0.10, 0.20, 0.85], soft_probs=[0.95])
     assert tier in ("PG", "PG13")
 
 
 def test_near_tie_without_tags_deescalates():
-    # The sigmoid near-tie that argmax loses: explicit 0.55 vs sensitive 0.52,
-    # no corroborating tags → downgraded, not a coin-flip X.
+    # Near-tie (explicit 0.55 vs sensitive 0.52), no tags: downgraded.
     tier, _, reason = _decide([0.10, 0.52, 0.30, 0.55])
     assert tier == "PG13"
     assert "de_escalated" in reason
@@ -105,7 +90,6 @@ def test_sensitive_head_rates_pg13():
 
 
 def test_low_confidence_everywhere_rates_pg():
-    # The old bare-threshold gate, folded into the cascade: uncertainty → safe.
     tier, _, reason = _decide([0.30, 0.28, 0.26, 0.24])
     assert tier == "PG"
     assert reason == "general"
@@ -128,9 +112,8 @@ def test_preprocess_normalises_to_unit_range():
 
 
 def test_rate_keeps_results_aligned_when_a_file_fails_to_open():
-    # A file that can't be decoded must leave *its own* slot None. Appending the
-    # None as it happens would shift every later verdict of the batch onto the
-    # wrong image — i.e. blur the wrong output, or unblur an explicit one.
+    # A file that can't be decoded must leave its own slot None, not shift
+    # later verdicts onto the wrong images.
     import tempfile
     import torch
     from pathlib import Path
@@ -142,7 +125,6 @@ def test_rate_keeps_results_aligned_when_a_file_fails_to_open():
     t._rating_idx = [0, 1, 2, 3]
     t._rating_spec = lambda: t._rating_idx
     t._hard_idx = t._strong_idx = t._soft_idx = []
-    # explicit head high → "de_escalated" for every decodable image.
     t._model = lambda x: torch.tensor([[-5.0, -5.0, -5.0, 5.0] + [-5.0] * 4]
                                       ).repeat(x.shape[0], 1)
 
@@ -165,8 +147,7 @@ def test_rating_tier_mapping_has_all_wd_ratings():
 
 
 def test_corroborating_tag_sets_only_contain_known_tags():
-    # A tag that doesn't exist in the model's vocabulary must not silently
-    # weaken the decision layer — build from a fake CSV and check filtering.
+    # Tags missing from the vocabulary are filtered out.
     import tempfile
     from pathlib import Path
     import tagger as tagger_mod
@@ -189,8 +170,8 @@ def test_corroborating_tag_sets_only_contain_known_tags():
         finally:
             huggingface_hub.hf_hub_download = orig
         assert t._rating_idx == [0, 1, 2, 3]
-        # nipples (4) → hard; lingerie (6) → strong; cleavage (7) → weak; the
-        # typo "lingerine" (5) is in none of them.
+        # nipples (4) hard, lingerie (6) strong, cleavage (7) weak; the typo
+        # "lingerine" (5) is in none.
         assert 4 in t._hard_idx
         assert 6 in t._strong_idx
         assert 7 in t._soft_idx
