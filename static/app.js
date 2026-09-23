@@ -334,9 +334,25 @@ document.addEventListener('alpine:init', () => {
       await this.refreshModels();
       await this.loadSettings();
       this.applyGenDefaults();
+      this._initGenToggles();
       this._initTitle();
       this.connectEvents();
       this.refreshExtensions();
+    },
+
+    // Per-device, so they live in localStorage rather than the shared
+    // settings.json. Storage can throw (private mode, blocked site data).
+    _initGenToggles() {
+      for (const k of ['preview', 'genBlur']) {
+        const key = 'diffucore.' + k;
+        try {
+          const v = localStorage.getItem(key);
+          if (v !== null) this[k] = v === '1';
+        } catch (e) { /* keep default */ }
+        this.$watch(k, (v) => {
+          try { localStorage.setItem(key, v ? '1' : '0'); } catch (e) { /* not persisted */ }
+        });
+      }
     },
 
     // ── browser-tab title reflects this device's job state ──────
