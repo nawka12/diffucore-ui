@@ -121,12 +121,12 @@ def test_rate_keeps_results_aligned_when_a_file_fails_to_open():
 
     t = tagger.Tagger()
     t._device = "cpu"
-    t.load = lambda: None
     t._rating_idx = [0, 1, 2, 3]
     t._rating_spec = lambda: t._rating_idx
     t._hard_idx = t._strong_idx = t._soft_idx = []
     t._model = lambda x: torch.tensor([[-5.0, -5.0, -5.0, 5.0] + [-5.0] * 4]
                                       ).repeat(x.shape[0], 1)
+    t.load = lambda: t._model
 
     d = Path(tempfile.mkdtemp())
     good1, bad, good2 = d / "a.png", d / "b.png", d / "c.png"
@@ -137,6 +137,36 @@ def test_rate_keeps_results_aligned_when_a_file_fails_to_open():
     res = t.rate([good1, bad, good2])
     assert len(res) == 3
     assert res[0] is not None and res[1] is None and res[2] is not None
+
+
+def test_rate_survives_unload_mid_scan(monkeypatch):
+    # Turning the blur off calls unload() from a request thread while a scan
+    # runs; the batch in flight must finish on the model it started with.
+    import tempfile
+    import torch
+    from pathlib import Path
+    from PIL import Image
+
+    t = tagger.Tagger()
+    t._device = "cpu"
+    t._rating_idx = [0, 1, 2, 3]
+    t._rating_spec = lambda: t._rating_idx
+    t._hard_idx = t._strong_idx = t._soft_idx = []
+
+    def model(x):
+        t.unload()
+        return torch.tensor([[-5.0, -5.0, -5.0, 5.0] + [-5.0] * 4]).repeat(x.shape[0], 1)
+
+    t._model = model
+    monkeypatch.setattr(tagger, "BATCH_SIZE", 1)
+    d = Path(tempfile.mkdtemp())
+    paths = [d / "a.png", d / "b.png"]
+    for p in paths:
+        Image.new("RGB", (8, 8)).save(p)
+
+    res = t.rate(paths)
+    assert all(r is not None for r in res)
+    assert not t.loaded
 
 
 def test_rating_tier_mapping_has_all_wd_ratings():

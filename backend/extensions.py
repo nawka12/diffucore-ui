@@ -338,11 +338,22 @@ class ExtensionLoader:
             return []
         return sorted(f.name for f in web.iterdir() if f.is_file() and f.suffix == ".js")
 
+    def _ext_path(self, name: str) -> Path:
+        """Folder of a registered extension (it may differ from the manifest
+        name the registry is keyed by), else ``extensions/<name>``."""
+        ext = self.extensions.get(name)
+        if ext is not None:
+            return ext.path
+        if (not _EXT_NAME_RE.fullmatch(name or "") or name in (".", "..")
+                or name != Path(name).name):
+            raise ValueError(f"invalid extension name {name!r}")
+        return EXTENSIONS_DIR / name
+
     def reload_one(self, name: str) -> None:
         """Re-scan the manifest and re-import one extension, dropping its old
         hooks/routes/statics first."""
+        path = self._ext_path(name)
         self._unload_one(name)
-        path = EXTENSIONS_DIR / name
         if not path.is_dir():
             self.extensions.pop(name, None)
             return
@@ -455,7 +466,7 @@ class ExtensionLoader:
         ext = self.extensions.get(name)
         if ext is None:
             raise ValueError(f"extension {name!r} not found")
-        path = EXTENSIONS_DIR / name
+        path = ext.path
         if not (path / ".git").is_dir():
             raise ValueError(
                 f"extension {name!r} is not a git checkout; update is git-only "
@@ -592,11 +603,11 @@ class ExtensionLoader:
         if (not _EXT_NAME_RE.fullmatch(name or "") or name in (".", "..")
                 or name != Path(name).name):
             raise ValueError(f"invalid extension name {name!r}")
+        target = self._ext_path(name)
         self._unload_one(name)
         self._state.get("enabled", {}).pop(name, None)
         self._state.get("ext_settings", {}).pop(name, None)
         self._write_state()
-        target = EXTENSIONS_DIR / name
         # Only a real direct child of extensions/, never a symlink out of it.
         try:
             resolved = target.resolve()
@@ -608,6 +619,7 @@ class ExtensionLoader:
             pass
 
     def set_enabled(self, name: str, enabled: bool) -> Extension:
+        self._ext_path(name)  # rejects a bad name before it reaches state.json
         self._set_enabled(name, enabled)
         # Loads it if just enabled; drops its hooks/routes if just disabled.
         self.reload_one(name)

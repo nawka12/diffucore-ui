@@ -147,3 +147,24 @@ def test_xyz_cells_match_plain_generation(monkeypatch):
     for cell in cells:
         assert (cell["cfg_interval_start"], cell["cfg_interval_end"]) == (0.1, 0.75)
         assert cell["teacache_uncond_scale"] == 1.5
+
+
+def test_bad_checkpoint_draws_an_error_cell(monkeypatch):
+    """A Checkpoint value that fails to load must not abort the whole sweep."""
+    fake = _FakeEngine()
+
+    def reload_model(name):
+        if name == "bad.safetensors":
+            raise FileNotFoundError("Model not found: bad.safetensors")
+        return f"Loaded {name}"
+
+    fake.reload_model = reload_model
+    monkeypatch.setattr(xyz_grid, "ENGINE", fake)
+    grids, _ = xyz_grid.generate_xyz_grid(
+        dict(prompt="a cat", negative_prompt="", width=64, height=64, steps=1,
+             cfg_scale=4.0, sampler="euler", scheduler="flow", seed=1, shift=3.0),
+        "Checkpoint", "good.safetensors, bad.safetensors",
+        "None", "", "None", "",
+    )
+    assert len(grids) == 1
+    assert len(fake.calls) == 1  # only the good cell sampled

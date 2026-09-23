@@ -60,8 +60,8 @@ network/share flags, architecture, and status.
   hosts add `-std=c++20` and `-Xcompiler -fpermissive` to `nvcc_flags` in its
   `setup.py`). Newer GPUs (sm80+) don't need it: they already use PyTorch's
   built-in flash attention, and this flag never engages there.
-- **11 samplers, multiple schedulers**: Euler, Heun, DPM++ family, ER-SDE,
-  SECANT; Karras, exponential, sgm_uniform, flow, and more.
+- **40+ samplers, multiple schedulers**: Euler, Heun, DPM++ family, ER-SDE,
+  SECANT, UniPC, cogent; Karras, exponential, sgm_uniform, flow, and more.
 - **Gallery with metadata round-trip**: every generated image saves its full
   generation parameters as PNG metadata. Browse past outputs grouped by date
   (phone-gallery style) in a swipeable fullscreen carousel and load any
@@ -344,8 +344,7 @@ bugs, just how the model responds):
   `eta_max` knob (`eta_max=0` makes it fully deterministic), and unlike the rest
   of the `*_anneal` family it is **not flow-only**: it is offered for SD/SDXL and
   FLUX too. Benchmarked offline against a known ground truth; not yet A/B'd on
-  real images. See `docs/cogent.md`, and `scripts/ab_cogent.py` to re-run the
-  numbers.
+  real images. See `docs/cogent.md`.
 
   **Scheduler: use `flow` (or the near-identical `simple` / `sgm_uniform`), or
   `linear_quadratic` at 24–32 steps.** This is the one place cogent does *not*
@@ -377,8 +376,8 @@ bugs, just how the model responds):
   and the first 3rd-order-capable step bootstraps `psi_2` from `psi_1`. Same
   family knobs as cogent (`eta_max`, shared panel knob; `eta_max=0` is
   deterministic), one model evaluation per step, all families, prefer 24+
-  steps. Offline benchmarked against a known ground truth
-  (`scripts/ab_cogent3.py`). See `docs/cogent3.md`.
+  steps. Offline benchmarked against a known ground truth. See
+  `docs/cogent3.md`.
 
   **Cogent4 is the optional per-channel form of these measured gates.** In
   **Settings → Sampler & scheduler defaults → Cogent gate**, `global`
@@ -927,9 +926,12 @@ fresh, as before.
 ### Sweep parameters (X/Y/Z)
 
 In txt2img mode, enable **X/Y/Z sweep** to compare a grid of settings. Each axis
-picks a parameter (Sampler, Scheduler, Steps, CFG, Seed); Sampler and Scheduler
-axes get a multi-select dropdown, numeric axes take a comma-separated list. The
-assembled grid and every individual cell are saved to `outputs/`.
+picks a parameter (Sampler, Scheduler, Steps, CFG, Seed, Prompt S/R,
+Checkpoint); Sampler, Scheduler and Checkpoint axes get a multi-select dropdown,
+the others take a comma-separated list. Prompt S/R replaces the list's first
+entry, wherever it appears in the prompt, with each entry in turn. A Checkpoint
+axis reloads the model you had loaded when the sweep ends. The assembled grid and
+every individual cell are saved to `outputs/`.
 
 ### Browse past outputs
 
@@ -964,12 +966,19 @@ extension ships with the app; read it alongside
 │   ├── app.py          Entry point: launches the FastAPI server (uvicorn)
 │   ├── server.py       FastAPI app: REST, a job queue, and a shared SSE event stream over the engine
 │   ├── engine.py       Engine singleton: model lifecycle, generation, LoRA, detailer, upscaler
+│   ├── auth.py         Token gate and CSRF/Origin checks for --share / --listen
+│   ├── share.py        Cloudflare quick tunnel for --share
+│   ├── extensions.py   Extension loader, hooks and management API
 │   ├── detailer.py     YOLO detection + crop/expand geometry for the detailer
 │   ├── upscale.py      Tile geometry + feather-blend helpers for the tiled upscaler
 │   ├── metadata.py     PNG metadata: write params, read/parse AUTO1111 & ComfyUI
+│   ├── model_hash.py   Model/LoRA file hashes (AutoV2) for Civitai-compatible metadata
+│   ├── tagger.py       WD tagger NSFW rating for the gallery blur
 │   ├── utils.py        Directory scanning helpers (checkpoints, LoRAs, outputs)
 │   ├── xyz_grid.py     X/Y/Z plot grid assembly
-│   └── calibrate_oss.py  Headless CLI to calibrate an Anima OSS schedule
+│   ├── log_setup.py    Logging format and the optional --log-file
+│   ├── calibrate_oss.py      Headless CLI to calibrate an Anima OSS schedule
+│   └── calibrate_teacache.py Headless CLI to fit Anima TeaCache coefficients
 ├── static/             Frontend: index.html, app.js (Alpine), style.css
 ├── extensions/         Drop-in extensions (AUTO1111/ComfyUI-style); ships example-watermark
 ├── docs/               EXTENSIONS.md and feature design notes

@@ -943,13 +943,18 @@ def test_log_runtime_env_does_not_crash(caplog):
 
 # ── X/Y/Z Checkpoint LRU cache ────────────────────────────────────────
 
-class _FakeModel:
-    def __init__(self, name):
-        self.name = name
+class _FakePart:
+    def __init__(self):
         self.placements = []
     def to(self, target):
         self.placements.append(str(target))
         return self
+
+
+class _FakeModel:
+    def __init__(self, name):
+        self.name = name
+        self.backbone = _FakePart()
 
 
 def _fake_loaded(name, family="sdxl"):
@@ -961,19 +966,68 @@ def _fake_loaded(name, family="sdxl"):
 def _cache_engine():
     from engine import Engine
     eng = Engine(device="cpu")
-    eng._offload = "none"  # cacheable
+    eng._offload = False  # the UI's "none"; cacheable
     return eng
 
 
 def test_ckpt_cache_stash_and_restore():
     eng = _cache_engine()
     eng._loaded = _fake_loaded("A")
+    part = eng._loaded.model.backbone
     assert eng._stash_loaded() is True
     assert eng._loaded is None
     assert "A" in eng._ckpt_cache
-    restored = eng._try_cache_restore("A", "none", True, False, False, False, False, False)
+    assert part.placements == ["cpu"]
+    restored = eng._try_cache_restore("A", False, True, False, False, False, False, False)
     assert restored is not None and restored.name == "A"
     assert "A" not in eng._ckpt_cache  # popped on restore
+    assert part.placements == ["cpu", str(eng.device)]
+
+
+def test_ckpt_cache_engages_through_load_model(monkeypatch):
+    """The server hands the UI's "none" to the engine as offload=False."""
+    import engine as engine_mod
+    eng = _cache_engine()
+    eng._loaded = _fake_loaded("A")
+    eng._offload = True
+    assert eng._cacheable_for_stash() is False
+    eng._offload = False
+    monkeypatch.setattr(engine_mod, "checkpoint_path",
+                        lambda n: Path("/nonexistent") / n)
+    with pytest.raises(FileNotFoundError):
+        eng.load_model("B", offload=False)
+    assert "A" in eng._ckpt_cache
+    msg = eng.load_model("A", offload=False)
+    assert "(from cache)" in msg and eng.loaded_name == "A"
+
+
+def test_ckpt_cache_restore_stashes_current_first():
+    """Restoring A while B is loaded must not evict A to make room for B, and
+    B leaves the device before A moves back."""
+    eng = _cache_engine()
+    for nm in ("A", "C"):
+        eng._loaded = _fake_loaded(nm)
+        eng._stash_loaded()
+    eng._loaded = _fake_loaded("B")
+    b_part = eng._loaded.model.backbone
+    restored = eng._try_cache_restore("A", False, True, False, False, False, False, False)
+    assert restored is not None and restored.name == "A"
+    assert list(eng._ckpt_cache) == ["C", "B"]
+    assert b_part.placements == ["cpu"]
+
+
+def test_ckpt_cache_stash_drops_fused_loras(monkeypatch):
+    """LoRA snapshots alias the old storage, so a stash unfuses first."""
+    import engine as engine_mod
+    cleared = []
+    monkeypatch.setattr(engine_mod, "clear_bundle_loras", cleared.append)
+    eng = _cache_engine()
+    eng._loaded = _fake_loaded("A")
+    eng._loaded.applied_loras.append("style")
+    model = eng._loaded.model
+    assert eng._stash_loaded() is True
+    assert cleared == [model]
+    assert eng._ckpt_cache["A"].applied_loras == []
 
 
 def test_ckpt_cache_evicts_lru_on_overflow():
@@ -1092,6 +1146,21 @@ def test_oss_scheduler_degrades_outside_t2i():
     assert eng._degrade_oss("beta") == "beta"
 
 
+def test_anima_snap_is_never_a_downscale_above_1536():
+    """A 2048 px img2img used to be generated at 1536 and upscaled back."""
+    eng = _cache_engine()
+    eng._loaded = _fake_loaded("A", family="anima")
+    assert eng._anima_gen_size(2048, 2000) == (2048, 2048, True)
+    assert eng._anima_gen_size(1600, 1600) == (1600, 1600, False)
+    assert eng._anima_gen_size(300, 1024) == (512, 1024, True)
+
+
+def test_png_perf_flags_record_fp16_vae():
+    eng = _cache_engine()
+    eng._vae_fp16 = True
+    assert "fp16_vae" in eng.perf_flags_str
+
+
 # ── shared HTTP fixture (last so module-level client use above works) ──
 
 @pytest.fixture
@@ -1099,3 +1168,4 @@ def client():
     from fastapi.testclient import TestClient
     with TestClient(server.app) as c:
         yield c
+

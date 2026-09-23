@@ -241,6 +241,14 @@ _PREVIEW_RGB = {
 }
 
 
+def _bundle_to(bundle, device) -> None:
+    """Move a resident bundle's modules. ModelBundle itself has no ``.to()``."""
+    for attr in ("text_encoder", "text_encoder_2", "backbone", "vae"):
+        module = getattr(bundle, attr, None)
+        if module is not None:
+            module.to(device)
+
+
 @dataclass
 class LoadedModel:
     name: str
@@ -260,8 +268,8 @@ class LoadedModel:
 
 class Engine:
     # X/Y/Z Checkpoint-axis LRU cache of swept models, kept off-GPU. Only fully
-    # resident (offload="none") non-FLUX models qualify; any torch error falls
-    # back to a disk reload.
+    # resident (offload=False, the UI's "none") non-FLUX models qualify; any
+    # torch error falls back to a disk reload.
     CKPT_CACHE_MAX = 2
 
     def __init__(self, device: str = "cuda", dtype_str: str = "float16"):
@@ -482,12 +490,11 @@ class Engine:
                                          fp16_accumulation, attention, vae_fp16)):
             return f"Model already loaded: {model_name}"
 
-        # Restore from the Checkpoint LRU cache first, then stash the previous
-        # model, so an alternating A/B axis keeps both.
+        # Swap in from the Checkpoint LRU cache; the previous model is stashed
+        # or unloaded either way.
         restored = self._try_cache_restore(model_name, offload, vae_tile,
                                            compile, cuda_graphs, channels_last, tf32,
                                            fp16_accumulation, attention, vae_fp16)
-        stashed = self._stash_loaded()
         if restored is not None:
             self._offload = offload
             self._vae_tile = vae_tile
@@ -503,8 +510,6 @@ class Engine:
             self._reclaim_memory()
             log.info("[load] %s (%s) restored from ckpt cache", model_name, restored.family)
             return f"Loaded {model_name} ({restored.family}) (from cache)"
-        if not stashed:
-            self._unload()
         self._offload = offload
         self._vae_tile = vae_tile
         self._compile = compile
@@ -603,7 +608,6 @@ class Engine:
         restored = self._try_cache_restore(label, offload, vae_tile,
                                            compile, cuda_graphs, False, False,
                                            fp16_accumulation, attention, vae_fp16)
-        stashed = self._stash_loaded()
         if restored is not None:
             self._offload = offload
             self._vae_tile = vae_tile
@@ -619,8 +623,6 @@ class Engine:
             self._reclaim_memory()
             log.info("[load] %s restored from ckpt cache", label)
             return f"Loaded Anima (from cache)  (DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})"
-        if not stashed:
-            self._unload()
         self._offload = offload
         self._vae_tile = vae_tile
         self._compile = compile
@@ -786,6 +788,8 @@ class Engine:
             parts.append("tf32")
         if self._fp16_accumulation:
             parts.append("fp16_acc")
+        if self._vae_fp16:
+            parts.append("fp16_vae")
         if self._attention != "sdpa":
             parts.append("fa2_attn")
         return ", ".join(parts) if parts else "default"
@@ -816,9 +820,9 @@ class Engine:
     # ── X/Y/Z Checkpoint LRU cache ─────────────────────────────────
     def _cacheable_for_stash(self) -> bool:
         """Only fully resident, non-FLUX models can be parked: offloaded models
-        sit behind a staging proxy that ``.to()`` would break, and FLUX is too
-        large for a second copy."""
-        if self._loaded is None or self._offload != "none":
+        sit behind a staging proxy that ``.to()`` would break, CUDA graphs keep
+        the old weight addresses, and FLUX is too large for a second copy."""
+        if self._loaded is None or self._offload is not False or self._cuda_graphs:
             return False
         if self._loaded.family in _FLUX_FAMILIES:
             return False
@@ -838,7 +842,11 @@ class Engine:
             return False
         lm = self._loaded
         try:
-            lm.model.to("cpu")
+            # LoRA snapshots alias the on-device storage, so unfuse before it
+            # moves. A restore then matches a fresh load from disk.
+            clear_bundle_loras(lm.model)
+            lm.applied_loras.clear()
+            _bundle_to(lm.model, "cpu")
         except Exception as e:  # noqa: BLE001  proxy/wrapper can't be moved wholesale
             log.debug("ckpt cache: can't move %s to CPU (%s); dropping", lm.name, e)
             return False
@@ -860,22 +868,26 @@ class Engine:
                            offload, vae_tile, compile, cuda_graphs,
                            channels_last, tf32, fp16_accumulation,
                            attention="sdpa", vae_fp16=False) -> Optional[LoadedModel]:
-        """Pop the cached model for ``key`` and move it back to the device, if
-        the settings it was staged under match the request. Otherwise (or on a
-        restore error) drop it and return ``None``."""
-        lm = self._ckpt_cache.get(key)
+        """Stash (or unload) the current model, then move the cached model for
+        ``key`` back to the device if the settings it was staged under match the
+        request. Otherwise (or on a restore error) drop it and return ``None``.
+
+        Popping before stashing keeps an alternating A/B axis from evicting the
+        entry it is about to restore, and stashing before the move keeps two
+        models out of VRAM at once."""
+        lm = self._ckpt_cache.pop(key, None)
+        if not self._stash_loaded():
+            self._unload()
         if lm is None:
             return None
         if lm.stage_settings != (offload, vae_tile, compile, cuda_graphs,
                                  channels_last, tf32, fp16_accumulation,
                                  attention, vae_fp16):
-            self._ckpt_cache.pop(key, None)
             try: del lm.model
             except Exception: pass  # noqa: BLE001
             return None
-        self._ckpt_cache.pop(key, None)
         try:
-            lm.model.to(self.device)
+            _bundle_to(lm.model, self.device)
         except Exception as e:  # noqa: BLE001
             log.debug("ckpt cache: can't restore %s (%s); reloading", key, e)
             try: del lm.model
@@ -1090,7 +1102,7 @@ class Engine:
         mapping back is a downscale."""
         if (self._loaded and self._loaded.family == MODEL_FAMILY_ANIMA
                 and width is not None and height is not None):
-            snap = lambda n: max(512, min(1536, ((n + 63) // 64) * 64))
+            snap = lambda n: max(512, ((n + 63) // 64) * 64)
             gen_w, gen_h = snap(width), snap(height)
             return gen_w, gen_h, (gen_w, gen_h) != (width, height)
         return width, height, False
@@ -1359,9 +1371,16 @@ class Engine:
         strength: float = 0.4,
         steps: int = 25,
         cfg_scale: float = 6.0,
+        cfg_interval_start: float = 0.0,
+        cfg_interval_end: float = 1.0,
         sampler: str = "dpmpp_2m",
         scheduler: str = "karras",
+        curvature: float = 0.25,
+        eta_max: float = 1.0,
         gate_reduce: str = "all",
+        beta_alpha: float = 0.6,
+        beta_beta: float = 0.6,
+        lq_threshold: float = 0.025,
         dilation: int = 4,
         padding: int = 32,
         blur: int = 4,
@@ -1427,9 +1446,13 @@ class Engine:
                 out, _ = gen(
                     prompt=prompt, init_image=crop, mask_image=crop_mask,
                     negative_prompt=negative_prompt, strength=strength,
-                    steps=steps, cfg_scale=cfg_scale, sampler=sampler,
+                    steps=steps, cfg_scale=cfg_scale,
+                    cfg_interval_start=cfg_interval_start,
+                    cfg_interval_end=cfg_interval_end, sampler=sampler,
                     scheduler=scheduler, seed=base_seed + i,
-                    gate_reduce=gate_reduce,
+                    curvature=curvature, eta_max=eta_max, gate_reduce=gate_reduce,
+                    beta_alpha=beta_alpha, beta_beta=beta_beta,
+                    lq_threshold=lq_threshold,
                     teacache_thresh=teacache_thresh, teacache_coefficients=tc_coeffs,
                     teacache_forecast=teacache_forecast,
                     teacache_rule=teacache_rule,
@@ -1460,9 +1483,16 @@ class Engine:
         negative_prompt: str = "",
         steps: int = 25,
         cfg_scale: float = 6.0,
+        cfg_interval_start: float = 0.0,
+        cfg_interval_end: float = 1.0,
         sampler: str = "dpmpp_2m",
         scheduler: str = "karras",
+        curvature: float = 0.25,
+        eta_max: float = 1.0,
         gate_reduce: str = "all",
+        beta_alpha: float = 0.6,
+        beta_beta: float = 0.6,
+        lq_threshold: float = 0.025,
         seed: int = -1,
         teacache_thresh: float = 0.0,
         teacache_use_coeffs: bool = True,
@@ -1533,9 +1563,13 @@ class Engine:
                 out, _ = gen(
                     prompt=prompt, init_image=crop,
                     negative_prompt=negative_prompt, strength=denoise,
-                    steps=steps, cfg_scale=cfg_scale, sampler=sampler,
+                    steps=steps, cfg_scale=cfg_scale,
+                    cfg_interval_start=cfg_interval_start,
+                    cfg_interval_end=cfg_interval_end, sampler=sampler,
                     scheduler=scheduler, seed=base_seed + i,
-                    gate_reduce=gate_reduce,
+                    curvature=curvature, eta_max=eta_max, gate_reduce=gate_reduce,
+                    beta_alpha=beta_alpha, beta_beta=beta_beta,
+                    lq_threshold=lq_threshold,
                     width=gen_w, height=gen_h,
                     teacache_thresh=teacache_thresh, teacache_coefficients=tc_coeffs,
                     teacache_forecast=teacache_forecast,

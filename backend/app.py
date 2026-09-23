@@ -81,9 +81,9 @@ if args.share or args.auth_token:
     if args.auth_token:
         print(f"[auth] token gate enabled (token: {token})", flush=True)
     else:
-        print(f"[auth] --share: token gate enabled. Token: {token}", flush=True)
-        print(f"[auth] saved to .auth_token (chmod 600). The share URL below "
-              f"includes ?token=… for one-click access.", flush=True)
+        print("[auth] --share: token gate enabled. The token is saved to "
+              ".auth_token (chmod 600), and the share-URL file announced "
+              "below includes ?token=… for one-click access.", flush=True)
 elif args.listen:
     print("[auth] --listen without --auth-token: the UI is open to anyone on "
           "this network. Pass --auth-token <token> to gate it.", flush=True)

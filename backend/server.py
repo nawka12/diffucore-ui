@@ -715,14 +715,14 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                     negative_prompt=clean_neg,
                     steps=int(p.steps), cfg_scale=float(p.cfg),
                     sampler=p.sampler, scheduler=p.scheduler,
-                    gate_reduce=SETTINGS["gate_reduce"],
-                    seed=int(p.seed),
+                    seed=seed,
                     teacache_thresh=float(p.upscale_teacache),
                     teacache_use_coeffs=bool(p.teacache_calibrated),
                     teacache_forecast=p.teacache_forecast,
                     teacache_rule=p.teacache_rule,
                     progress_callback=on_progress,
                     preview_callback=on_preview if p.preview else None,
+                    **_settings_knobs(p.sampler, p.scheduler, p.upscale_teacache),
                 )
                 upscale_info = "  |  " + unote
                 upscaled = True
@@ -740,6 +740,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             detail_info = "  |  detailer skipped (no inpaint for this model)"
         elif active:
             notes = []
+            detail_tc = float(p.teacache) if p.detail_teacache else 0.0
             for dm in active:
                 try:
                     image, dnote = ENGINE.detail(
@@ -751,16 +752,16 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                         strength=float(p.detail_strength),
                         steps=int(p.steps), cfg_scale=float(p.cfg),
                         sampler=p.sampler, scheduler=p.scheduler,
-                        gate_reduce=SETTINGS["gate_reduce"],
                         dilation=int(p.detail_dilation), padding=int(p.detail_padding),
                         blur=int(p.detail_blur), max_det=int(p.detail_max),
-                        seed=int(p.seed),
-                        teacache_thresh=float(p.teacache) if p.detail_teacache else 0.0,
+                        seed=seed,
+                        teacache_thresh=detail_tc,
                         teacache_use_coeffs=bool(p.teacache_calibrated),
                         teacache_forecast=p.teacache_forecast,
                         teacache_rule=p.teacache_rule,
                         progress_callback=on_progress,
                         preview_callback=on_preview if p.preview else None,
+                        **_settings_knobs(p.sampler, p.scheduler, detail_tc),
                     )
                     notes.append(f"{dm.model}: {dnote.replace('Detailer: ', '')}")
                     applied.append(dm)
@@ -1643,6 +1644,7 @@ async def api_upscale(p: UpscalePayload):
             raise RuntimeError("Load a model first")
         on_progress, on_preview = _make_callbacks(job)
         input_image = _decode_image(p.input_image)
+        knobs = _settings_knobs(p.sampler, p.scheduler, p.teacache)
         image, unote = ENGINE.upscale(
             input_image,
             scale=float(p.scale), tile=int(p.tile),
@@ -1651,7 +1653,6 @@ async def api_upscale(p: UpscalePayload):
             prompt=p.prompt, negative_prompt=p.neg,
             steps=int(p.steps), cfg_scale=float(p.cfg),
             sampler=p.sampler, scheduler=p.scheduler,
-            gate_reduce=SETTINGS["gate_reduce"],
             seed=int(p.seed),
             teacache_thresh=float(p.teacache),
             teacache_use_coeffs=bool(p.teacache_calibrated),
@@ -1659,6 +1660,7 @@ async def api_upscale(p: UpscalePayload):
             teacache_rule=p.teacache_rule,
             progress_callback=on_progress,
             preview_callback=on_preview if p.preview else None,
+            **knobs,
         )
         upscale_meta = {
             "scale": float(p.scale), "tile": int(p.tile),
@@ -1670,8 +1672,7 @@ async def api_upscale(p: UpscalePayload):
         gen_kwargs = dict(
             prompt=p.prompt, negative_prompt=p.neg,
             steps=int(p.steps), cfg_scale=float(p.cfg),
-            sampler=p.sampler, scheduler=p.scheduler,
-            gate_reduce=SETTINGS["gate_reduce"],
+            sampler=p.sampler, scheduler=p.scheduler, **knobs,
         )
         # ENGINE.last_seed still holds whatever ran before; use the tile passes' seed.
         seed = ENGINE.last_upscale_seed
@@ -1710,6 +1711,7 @@ async def api_detail(p: DetailPayload):
         # The detailer doesn't record the seed it picked, so resolve it here and
         # share it across stacked passes (reproducible from the metadata).
         seed = int(p.seed) if p.seed >= 0 else random.randrange(2 ** 32 - 1)
+        knobs = _settings_knobs(p.sampler, p.scheduler, p.teacache)
         notes, applied = [], []
         for dm in active:
             # One failing detector must not lose the earlier passes' work.
@@ -1723,7 +1725,6 @@ async def api_detail(p: DetailPayload):
                     strength=float(p.strength),
                     steps=int(p.steps), cfg_scale=float(p.cfg),
                     sampler=p.sampler, scheduler=p.scheduler,
-                    gate_reduce=SETTINGS["gate_reduce"],
                     dilation=int(p.dilation), padding=int(p.padding),
                     blur=int(p.blur), max_det=int(p.max_det),
                     seed=seed,
@@ -1733,6 +1734,7 @@ async def api_detail(p: DetailPayload):
                     teacache_rule=p.teacache_rule,
                     progress_callback=on_progress,
                     preview_callback=on_preview if p.preview else None,
+                    **knobs,
                 )
                 notes.append(f"{dm.model}: {dnote.replace('Detailer: ', '')}")
                 applied.append(dm)
@@ -1753,7 +1755,7 @@ async def api_detail(p: DetailPayload):
         gen_kwargs = dict(
             prompt=p.prompt, negative_prompt=p.neg,
             steps=int(p.steps), cfg_scale=float(p.cfg),
-            sampler=p.sampler, scheduler=p.scheduler,
+            sampler=p.sampler, scheduler=p.scheduler, **knobs,
         )
         out = _save_output(image, gen_kwargs, detailer=detailer_meta, seed=seed,
                            blur_check=p.blur_check)
@@ -1842,7 +1844,7 @@ def api_tagger_status():
 def api_gallery_scan():
     """Rate every output lacking a current rating, as one low-priority job."""
     if not SETTINGS.get("nsfw_blur"):
-        raise HTTPException(400, "Enable 'Blur R-rated and up' in Settings first")
+        raise HTTPException(400, "Enable 'Blur NSFW' in Settings first")
     if not tagger_mod.timm_available():
         raise HTTPException(400, "The WD tagger needs the optional 'timm' package (pip install timm)")
     paths = []
@@ -1917,7 +1919,10 @@ def api_extensions_install(p: InstallPayload):
 def api_extensions_toggle(p: TogglePayload):
     """Enable or disable an extension. Backend hooks/routes apply at once; the
     frontend script tags refresh on the next page load."""
-    ext = EXTENSIONS.set_enabled(p.name, p.enabled)
+    try:
+        ext = EXTENSIONS.set_enabled(p.name, p.enabled)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if p.enabled:
         EXTENSIONS.mount_into(app)
     return {"extension": ext.to_dict()}
@@ -1941,7 +1946,10 @@ def api_extensions_update(p: UpdatePayload):
 @app.post("/api/extensions/reload")
 def api_extensions_reload(name: str):
     """Re-import an extension's entry module, dropping its old hooks/routes first."""
-    EXTENSIONS.reload_one(name)
+    try:
+        EXTENSIONS.reload_one(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     EXTENSIONS.mount_into(app)
     ext = EXTENSIONS.extensions.get(name)
     if ext is None:

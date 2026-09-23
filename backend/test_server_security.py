@@ -575,3 +575,37 @@ def test_login_with_non_string_token_is_401(client):
     r = client.post("/api/auth/login", json={"token": [1]},
                     headers={"Origin": "http://testserver"})
     assert r.status_code == 401
+
+
+# ── extension folder named differently from its manifest ────────────
+
+def test_extension_folder_may_differ_from_manifest_name(tmp_path: Path, monkeypatch):
+    import extensions as extmod
+    monkeypatch.setattr(extmod, "EXTENSIONS_DIR", tmp_path)
+    monkeypatch.setattr(extmod, "STATE_PATH", tmp_path / "state.json")
+    folder = tmp_path / "foo-main"
+    folder.mkdir()
+    (folder / "extension.json").write_text(json.dumps({"name": "foo"}))
+    (folder / "extension.py").write_text("def setup(api):\n    pass\n")
+
+    loader = extmod.ExtensionLoader(None, enqueue_job=lambda *a: 0,
+                                    broadcast=lambda e: None)
+    loader.load_all()
+    assert loader.extensions["foo"].path == folder
+
+    loader.set_enabled("foo", False)
+    assert "foo" in loader.extensions and not loader.extensions["foo"].enabled
+    loader.set_enabled("foo", True)
+    assert loader.extensions["foo"].module is not None
+    loader.reload_one("foo")
+    assert loader.extensions["foo"].path == folder
+
+    loader.uninstall("foo")
+    assert not folder.exists()
+
+
+@pytest.mark.parametrize("name", ["..", "../x", "a/b", ""])
+def test_extension_reload_rejects_non_folder_names(name):
+    with TestClient(server.app) as c:
+        r = c.post("/api/extensions/reload", params={"name": name})
+    assert r.status_code in (400, 422)

@@ -199,7 +199,8 @@ class Tagger:
         """
         if not paths:
             return []
-        self.load()
+        # Hold a reference: unload() may clear self._model mid-batch.
+        model = self.load()
         self._rating_spec()
         idx = self._rating_idx
         # Filled by position, so a bad file can't shift later verdicts.
@@ -221,7 +222,7 @@ class Tagger:
                 x = torch.stack(tensors)
                 if self._device == "cuda":
                     x = x.half().to(self._device)
-                logits = self._model(x)
+                logits = model(x)
                 probs = torch.sigmoid(logits).float().cpu().numpy()
                 for slot, row in zip(slots, probs):
                     rating, conf, reason = decide_rating(

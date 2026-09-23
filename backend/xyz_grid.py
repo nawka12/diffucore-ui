@@ -312,6 +312,7 @@ def generate_xyz_grid(
                 for xi, x_val in enumerate(x_vals):
                     kwargs = dict(base_kwargs)
                     cell_prompt, cell_neg = raw_prompt, raw_neg
+                    load_error: Exception | None = None
                     for a_type, a_val, a_search in (
                         (x_type, x_val, x_search),
                         (y_type, y_val, y_search),
@@ -324,8 +325,12 @@ def generate_xyz_grid(
                             cell_neg = cell_neg.replace(a_search, str(a_val))
                         elif a_type == "Checkpoint":
                             # reload_model no-ops on the current name; a real
-                            # reload drops the fused LoRAs, so re-fuse.
-                            msg = ENGINE.reload_model(str(a_val))
+                            # reload drops the fused LoRAs, so re-fuse. A failed
+                            # load becomes this cell's error, not the grid's.
+                            try:
+                                msg = ENGINE.reload_model(str(a_val))
+                            except Exception as e:
+                                load_error, msg = e, ""
                             if not msg.startswith("Model already loaded"):
                                 last_loras = None
                         else:
@@ -355,6 +360,8 @@ def generate_xyz_grid(
                         kwargs["preview_callback"] = preview_callback
 
                     try:
+                        if load_error is not None:
+                            raise load_error
                         img, _ = ENGINE.generate_t2i(**kwargs)
                         if save_callback is not None:
                             save_callback(img, kwargs)

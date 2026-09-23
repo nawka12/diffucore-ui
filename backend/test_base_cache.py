@@ -55,10 +55,12 @@ class _StubEngine:
 
     def upscale(self, image, **kwargs):
         self.upscale_calls += 1
+        self.upscale_kwargs = kwargs
         return image.resize((128, 128)), "upscaled"
 
     def detail(self, image, **kwargs):
         self.detail_calls += 1
+        self.detail_kwargs = kwargs
         return image.copy(), "Detailer: 1 region"
 
 
@@ -193,6 +195,30 @@ def test_settings_panel_knob_invalidates(stub, monkeypatch):
 
 
 # ── fingerprint ─────────────────────────────────────────────────────
+
+_POST_PASSES = dict(upscale_enabled=True, upscale_scale=2.0, detail_enabled=True,
+                    detail_models=[{"model": "face.pt", "prompt": ""}])
+
+
+def test_post_passes_get_the_settings_panel_knobs(stub, monkeypatch):
+    """The refine passes sample with the same panel knobs as the base."""
+    monkeypatch.setitem(server.SETTINGS, "eta_max", 0.4)
+    monkeypatch.setitem(server.SETTINGS, "cfg_interval_start", 0.1)
+    monkeypatch.setitem(server.SETTINGS, "cfg_interval_end", 0.75)
+    monkeypatch.setitem(server.SETTINGS, "gate_reduce", "per_channel")
+    _run(prompt="a cat", seed=7, sampler="cogent3_pump", **_POST_PASSES)
+    for kw in (stub.upscale_kwargs, stub.detail_kwargs):
+        assert kw["eta_max"] == 0.4
+        assert (kw["cfg_interval_start"], kw["cfg_interval_end"]) == (0.1, 0.75)
+        assert kw["gate_reduce"] == "per_channel"
+
+
+def test_post_passes_use_the_resolved_seed(stub):
+    """With seed -1 the passes must use the seed the PNG records."""
+    _run(prompt="a cat", seed=-1, **_POST_PASSES)
+    assert stub.upscale_kwargs["seed"] == 4242
+    assert stub.detail_kwargs["seed"] == 4242
+
 
 def test_fingerprint_ignores_the_callbacks(stub):
     a = server._base_fingerprint(
