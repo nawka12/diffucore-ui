@@ -207,6 +207,8 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
         # Always written, so a missing key marks an older image (taylor / drift).
         fields.append(f"TeaCache forecast: {gen_kwargs.get('teacache_forecast', 'hermite')}")
         fields.append(f"TeaCache rule: {gen_kwargs.get('teacache_rule', 'drift')}")
+        if gen_kwargs.get("teacache_sigma_floor", 0.0) > 0:
+            fields.append(f"TeaCache sigma floor: {gen_kwargs['teacache_sigma_floor']}")
         # Settings-level: recorded, never restored on load.
         if gen_kwargs.get("teacache_uncond_scale", 1.0) != 1.0:
             fields.append(f"TeaCache uncond scale: {gen_kwargs['teacache_uncond_scale']}")
@@ -303,6 +305,8 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
         extra["teacache"] = f"{gen_kwargs['teacache_thresh']}{raw}"
         extra["teacache_forecast"] = gen_kwargs.get("teacache_forecast", "hermite")
         extra["teacache_rule"] = gen_kwargs.get("teacache_rule", "drift")
+        if gen_kwargs.get("teacache_sigma_floor", 0.0) > 0:
+            extra["teacache_sigma_floor"] = gen_kwargs["teacache_sigma_floor"]
         if gen_kwargs.get("teacache_uncond_scale", 1.0) != 1.0:
             extra["teacache_uncond_scale"] = gen_kwargs["teacache_uncond_scale"]
     if gen_kwargs.get("deepcache_interval", 1) > 1:
@@ -561,6 +565,11 @@ def workspace_fields(meta: dict) -> dict:
             # Absent on pre-EasyCache images, which all used the drift rule.
             rl = str(meta.get("teacache_rule", "drift")).strip()
             out["teacacheRule"] = rl if rl in ("drift", "easy") else "drift"
+            # Absent when off, and on every image from before the floor existed.
+            try:
+                out["teacacheFloor"] = min(max(float(meta.get("teacache_sigma_floor", 0.0)), 0.0), 1.0)
+            except (TypeError, ValueError):
+                out["teacacheFloor"] = 0.0
     dc = meta.get("deepcache")
     if dc is not None:
         try:

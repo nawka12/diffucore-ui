@@ -61,6 +61,17 @@ def test_teacache_rule_is_an_enum():
             model(teacache_rule="bogus")
 
 
+def test_teacache_sigma_floor_is_bounded():
+    """Per request on every TeaCache payload, bounded at [0, 1], default off."""
+    for model in (server.GeneratePayload, server.DetailPayload,
+                  server.UpscalePayload, server.XYZPayload):
+        assert model().teacache_sigma_floor == 0.0
+        assert model(teacache_sigma_floor=0.45).teacache_sigma_floor == 0.45
+        for bad in (-0.1, 1.5):
+            with pytest.raises(ValidationError):
+                model(teacache_sigma_floor=bad)
+
+
 def test_xyz_and_upscale_payloads_bounded():
     with pytest.raises(ValidationError):
         server.XYZPayload(steps=201)

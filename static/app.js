@@ -84,7 +84,7 @@ document.addEventListener('alpine:init', () => {
       width: 1024, height: 1024,
       strength: 0.6, shift: 3.0,
       teacacheOn: false, teacache: 0.15, teacacheCalibrated: true, teacacheForecast: 'hermite',
-      teacacheRule: 'drift',
+      teacacheRule: 'drift', teacacheFloor: 0,
       deepcacheOn: false, deepcache: 2,
     },
     // >1 submits N jobs: seed+i with a pinned seed, a fresh random with -1.
@@ -1044,6 +1044,7 @@ document.addEventListener('alpine:init', () => {
           teacache_calibrated: this.form.teacacheCalibrated,
           teacache_forecast: this.form.teacacheForecast,
           teacache_rule: this.form.teacacheRule,
+          teacache_sigma_floor: this.form.teacacheFloor,
           deepcache: this.form.deepcacheOn ? this.form.deepcache : 1,
           input_image: this.mode !== 't2i' ? this.inputImage : null,
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
@@ -1200,6 +1201,7 @@ document.addEventListener('alpine:init', () => {
         teacache_calibrated: this.form.teacacheCalibrated,
         teacache_forecast: this.form.teacacheForecast,
         teacache_rule: this.form.teacacheRule,
+        teacache_sigma_floor: this.form.teacacheFloor,
         x_type: this.axes.x.type, x_vals: this.axisValues(this.axes.x),
         y_type: this.axes.y.type, y_vals: this.axisValues(this.axes.y),
         z_type: this.axes.z.type, z_vals: this.axisValues(this.axes.z),
@@ -1547,6 +1549,7 @@ document.addEventListener('alpine:init', () => {
           teacache_calibrated: this.form.teacacheCalibrated,
           teacache_forecast: this.form.teacacheForecast,
           teacache_rule: this.form.teacacheRule,
+          teacache_sigma_floor: this.form.teacacheFloor,
           preview: this.preview,
           blur_check: this.blurOn,
         };
@@ -1660,6 +1663,7 @@ document.addEventListener('alpine:init', () => {
           teacache_calibrated: this.form.teacacheCalibrated,
           teacache_forecast: this.form.teacacheForecast,
           teacache_rule: this.form.teacacheRule,
+          teacache_sigma_floor: this.form.teacacheFloor,
           preview: this.preview,
           blur_check: this.blurOn,
         };
@@ -1952,7 +1956,7 @@ document.addEventListener('alpine:init', () => {
       const keys = ['prompt', 'neg', 'steps', 'cfg', 'sampler', 'scheduler',
                     'seed', 'shift', 'strength', 'width', 'height',
                     'teacacheOn', 'teacache', 'teacacheCalibrated', 'teacacheForecast',
-                    'teacacheRule',
+                    'teacacheRule', 'teacacheFloor',
                     'deepcacheOn', 'deepcache'];
       for (const k of keys) if (f[k] !== undefined) this.form[k] = f[k];
       // Metadata from another family's image may name a sampler the active

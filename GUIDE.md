@@ -33,7 +33,8 @@ network/share flags, architecture, and status.
   approximation (no VAE decode) streams a rough preview each step; toggle it off
   in the Generate view. SD/SDXL and Anima.
 - **TeaCache**: opt-in sampling speedup for Anima that reuses the DiT's output on
-  low-change steps, with a fidelity/speed threshold and optional calibration.
+  low-change steps, with a fidelity/speed threshold, a σ floor and optional
+  calibration.
 - **CFG guidance interval**: opt-in speedup for Anima and SD/SDXL that applies
   CFG only in a middle fraction of the sampling run and skips the negative-prompt
   model pass outside it (Settings → Sampler defaults).
@@ -657,6 +658,32 @@ speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
   spot; it depends on your sampler and step count. High step counts with
   single-step or secant-family samplers stay near-lossless up to ~0.3–0.5. Start
   low and raise it until quality dips.
+
+- **Never skip below σ (default 0 = off).** Steps below this noise level always
+  run the full DiT. Late steps drift least, so the accumulator treats them as the
+  safest skips, yet they are the steps that clear the last injected noise:
+  skipping them leaves grain and mottling in flat areas. Noise-injecting samplers
+  cannot avoid that without a floor. Measured on `cogent3_pump_rate` +
+  `pump_taper` at 50 steps (AnimaFranken v1.3, 1024×1536, CFG 4.5, three
+  prompts): the pump and ancestral noise hold the raw per-step drift at
+  0.34–0.45 through the whole band, so any raw threshold above ~0.34 also skips
+  one of the last two calls, and anything lower skips nothing. Calibrated
+  coefficients map that drift to 1.4–6 and skip only the final two calls: no
+  speedup, only grain. With the floor at 0.45 (the scheduler's detail tail) and
+  calibration off:
+
+  | threshold (raw) | floor | speedup | result |
+  |---|---|---|---|
+  | 0.5 | off | 1.83× | mild grain |
+  | 0.8 | off | 2.15× | heavy grain |
+  | 0.5 | 0.45 | 1.65× | clean |
+  | **0.8** | **0.45** | **1.88×** | **clean** |
+  | 1.0 | 0.45 | 2.21× | loses prompt details (hair color, streaks) |
+
+  Past ~0.8 so much of the pumped band is skipped that the pump stops
+  re-deciding the image. Any setting that skips in the band also changes the
+  fine sample for a seed, so a cached render is a different, equally clean
+  image rather than a faster copy of the uncached one.
 
 - **Multistep solvers (`dpmpp_2m`, `res_multistep`, `ipndm`) have essentially no
   usable TeaCache window; get their speed from fewer steps instead.** These

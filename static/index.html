@@ -334,6 +334,13 @@
                   default, 0.02 conservative, 0.10 aggressive. It is meant to hold across samplers
                   and step counts without retuning.</p>
               </details>
+              <div class="slider-head"><span>Never skip below σ</span>
+                <input type="number" x-model.number="form.teacacheFloor" min="0" max="1" step="0.05"></div>
+              <input type="range" x-model.number="form.teacacheFloor" min="0" max="1" step="0.05">
+              <p class="sub">Steps below this noise level always run (0 = off). Late steps drift
+                least, so an unguarded cache skips the very steps that clear the last noise and
+                leaves grain. Needed for noise-injecting samplers: cogent3_pump_rate + pump_taper
+                at 50 steps is clean at raw 0.8 with 0.45 (its detail tail).</p>
               <div class="slider-head"><span>Decision rule</span>
                 <select x-model="form.teacacheRule">
                   <option value="drift">Input drift (TeaCache, calibratable)</option>

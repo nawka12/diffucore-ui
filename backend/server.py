@@ -315,6 +315,7 @@ class GeneratePayload(BaseModel):
     teacache_calibrated: bool = True     # fitted rescale polynomial vs the raw identity path
     teacache_forecast: str = "hermite"   # "hermite" (HiCache) | "taylor" (TaylorSeer)
     teacache_rule: Literal["drift", "easy"] = "drift"   # input drift | EasyCache output change
+    teacache_sigma_floor: float = Field(0.0, ge=0.0, le=1.0)   # never skip below this σ (0 = off)
     deepcache: int = Field(1, ge=1, le=64)                # reuse interval (1 = off; SD/SDXL UNet only)
     input_image: Optional[str] = None   # base64 / data-URL
     mask_image: Optional[str] = None
@@ -371,6 +372,7 @@ class DetailPayload(BaseModel):
     teacache_calibrated: bool = True
     teacache_forecast: str = "hermite"
     teacache_rule: Literal["drift", "easy"] = "drift"
+    teacache_sigma_floor: float = Field(0.0, ge=0.0, le=1.0)
     preview: bool = True
     blur_check: bool = False             # see GeneratePayload.blur_check
 
@@ -394,6 +396,7 @@ class UpscalePayload(BaseModel):
     teacache_calibrated: bool = True
     teacache_forecast: str = "hermite"
     teacache_rule: Literal["drift", "easy"] = "drift"
+    teacache_sigma_floor: float = Field(0.0, ge=0.0, le=1.0)
     preview: bool = True
     blur_check: bool = False             # see GeneratePayload.blur_check
 
@@ -479,6 +482,7 @@ class XYZPayload(BaseModel):
     teacache_calibrated: bool = True
     teacache_forecast: str = "hermite"
     teacache_rule: Literal["drift", "easy"] = "drift"
+    teacache_sigma_floor: float = Field(0.0, ge=0.0, le=1.0)
     x_type: str = "None"
     x_vals: str = ""
     y_type: str = "None"
@@ -649,6 +653,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             teacache_use_coeffs=bool(p.teacache_calibrated),
             teacache_forecast=p.teacache_forecast,
             teacache_rule=p.teacache_rule,
+            teacache_sigma_floor=float(p.teacache_sigma_floor),
             deepcache_interval=int(p.deepcache),
             progress_callback=on_progress,
             preview_callback=on_preview if p.preview else None,
@@ -719,6 +724,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                     teacache_use_coeffs=bool(p.teacache_calibrated),
                     teacache_forecast=p.teacache_forecast,
                     teacache_rule=p.teacache_rule,
+                    teacache_sigma_floor=float(p.teacache_sigma_floor),
                     progress_callback=on_progress,
                     preview_callback=on_preview if p.preview else None,
                     **_settings_knobs(p.sampler, p.scheduler, p.upscale_teacache),
@@ -758,6 +764,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                         teacache_use_coeffs=bool(p.teacache_calibrated),
                         teacache_forecast=p.teacache_forecast,
                         teacache_rule=p.teacache_rule,
+                        teacache_sigma_floor=float(p.teacache_sigma_floor),
                         progress_callback=on_progress,
                         preview_callback=on_preview if p.preview else None,
                         **_settings_knobs(p.sampler, p.scheduler, detail_tc),
@@ -831,6 +838,7 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
         teacache_use_coeffs=bool(p.teacache_calibrated),
         teacache_forecast=p.teacache_forecast,
         teacache_rule=p.teacache_rule,
+        teacache_sigma_floor=float(p.teacache_sigma_floor),
     )
     # A Checkpoint axis leaves the last swept model loaded; reload the user's.
     swaps_model = "Checkpoint" in (p.x_type, p.y_type, p.z_type)
@@ -1657,6 +1665,7 @@ async def api_upscale(p: UpscalePayload):
             teacache_use_coeffs=bool(p.teacache_calibrated),
             teacache_forecast=p.teacache_forecast,
             teacache_rule=p.teacache_rule,
+            teacache_sigma_floor=float(p.teacache_sigma_floor),
             progress_callback=on_progress,
             preview_callback=on_preview if p.preview else None,
             **knobs,
@@ -1731,6 +1740,7 @@ async def api_detail(p: DetailPayload):
                     teacache_use_coeffs=bool(p.teacache_calibrated),
                     teacache_forecast=p.teacache_forecast,
                     teacache_rule=p.teacache_rule,
+                    teacache_sigma_floor=float(p.teacache_sigma_floor),
                     progress_callback=on_progress,
                     preview_callback=on_preview if p.preview else None,
                     **knobs,

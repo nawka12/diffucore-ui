@@ -115,6 +115,19 @@ def test_teacache_rule_absent_restores_drift():
     assert "teacacheRule" not in _roundtrip(_BASE_GEN)
 
 
+def test_teacache_sigma_floor_roundtrips():
+    """Written only when set; restored through both formats, and to 0 when
+    absent (off, or an image from before the floor existed)."""
+    gen = {**_BASE_GEN, "teacache_thresh": 0.8}
+    assert "TeaCache sigma floor" not in md.format_metadata(gen, _StubEngine())
+    assert _roundtrip(gen)["teacacheFloor"] == 0.0
+    gen2 = {**gen, "teacache_sigma_floor": 0.45}
+    assert "TeaCache sigma floor: 0.45" in md.format_metadata(gen2, _StubEngine())
+    assert _roundtrip(gen2)["teacacheFloor"] == 0.45
+    assert _roundtrip_swarm(gen2)["teacacheFloor"] == 0.45
+    assert "teacacheFloor" not in _roundtrip(_BASE_GEN)
+
+
 def test_teacache_uncond_scale_written_only_when_set():
     """Written when raised, absent at 1.0, never restored onto the form."""
     gen = {**_BASE_GEN, "teacache_thresh": 0.15}
