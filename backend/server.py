@@ -32,7 +32,7 @@ import uvicorn
 from fastapi import FastAPI, UploadFile, File, Request, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
@@ -423,6 +423,9 @@ class CalibratePayload(BaseModel):
 
 class GenDefaults(BaseModel):
     """The Generate form's reusable params, seeded on load."""
+    # The rest of the Generate tab (TeaCache, detailer, upscaler, sweep, ...)
+    # is stored as sent; the frontend owns its shape.
+    model_config = ConfigDict(extra="allow")
     sampler: str = "dpmpp_2m"
     scheduler: str = "karras"
     steps: int = 25

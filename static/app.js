@@ -1370,27 +1370,40 @@ document.addEventListener('alpine:init', () => {
       return t > 0 ? Math.min(100, Math.round((this.taggerStatus.rated / t) * 100)) : 0;
     },
 
-    // Seed the Generate form from saved defaults, then re-validate the sampler
-    // and scheduler against the current model type.
+    // Seed the Generate tab from saved defaults, then re-validate choices
+    // against the current model type and model files.
     applyGenDefaults() {
       const d = this.settings.gen_defaults;
       if (!d) return;
-      for (const k of ['sampler', 'scheduler', 'steps', 'cfg', 'width', 'height', 'shift', 'prompt', 'neg']) {
-        if (d[k] !== undefined && d[k] !== null) this.form[k] = d[k];
+      // Unpinned prompt/negative come back as null.
+      this.applyFields(Object.fromEntries(Object.entries(d).filter(([, v]) => v !== null)));
+      if (d.batchCount != null) this.batchCount = d.batchCount;
+      if (d.xyzSweep != null) this.xyzSweep = d.xyzSweep;
+      for (const a of ['x', 'y', 'z']) {
+        const s = d.axes && d.axes[a];
+        if (!s || !this.paramTypes.includes(s.type)) continue;
+        const axis = this.axes[a];
+        axis.type = s.type;
+        axis.text = s.text || '';
+        axis.list = (s.list || []).filter((v) => this.axisOptions(axis).includes(v));
       }
-      this.syncSampler();
-      this.syncScheduler();
+      for (const dm of this.detail.models) {
+        if (!this.detailerChoices.includes(dm.model)) dm.model = this.detailerChoices[0];
+      }
+      if (this.upscale.base && !this.upscalers.includes(this.upscale.base)) this.upscale.base = '';
     },
 
+    // Everything on the Generate tab except the input image/mask and the
+    // per-device Live preview / Blur NSFW toggles.
     async saveGenDefaults() {
       const f = this.form;
-      const d = {
-        sampler: f.sampler, scheduler: f.scheduler, steps: f.steps,
-        cfg: f.cfg, width: f.width, height: f.height, shift: f.shift,
-      };
+      const d = JSON.parse(JSON.stringify({
+        ...f, batchCount: this.batchCount, detailer: this.detail, upscale: this.upscale,
+        xyzSweep: this.xyzSweep, axes: this.axes,
+      }));
       // Pin prompt/negative only when filled.
-      if (f.prompt && f.prompt.trim()) d.prompt = f.prompt;
-      if (f.neg && f.neg.trim()) d.neg = f.neg;
+      if (!(f.prompt && f.prompt.trim())) delete d.prompt;
+      if (!(f.neg && f.neg.trim())) delete d.neg;
       this.settings.gen_defaults = d;
       await this.saveSettings();
     },
@@ -1982,7 +1995,7 @@ document.addEventListener('alpine:init', () => {
         this.detail.models = d.models.map(m => ({ model: m.model || '', prompt: m.prompt || '' }));
       }
       if (d.neg !== undefined) this.detail.neg = d.neg;
-      for (const k of ['confidence', 'strength', 'dilation', 'padding', 'blur', 'maxDet']) {
+      for (const k of ['confidence', 'strength', 'dilation', 'padding', 'blur', 'maxDet', 'teacache']) {
         if (d[k] !== undefined) this.detail[k] = d[k];
       }
     },

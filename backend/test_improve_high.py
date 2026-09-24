@@ -37,6 +37,16 @@ def test_blur_min_rating_defaults_to_r_and_rejects_unknown_tiers():
         with pytest.raises(ValueError):
             server.Settings(blur_min_rating=bad)
 
+
+def test_gen_defaults_keep_the_whole_generate_tab_through_a_reload():
+    d = {"sampler": "euler", "teacacheOn": True, "teacacheFloor": 0.45, "batchCount": 4,
+         "detailer": {"enabled": True, "models": [{"model": "face.pt", "prompt": ""}]},
+         "upscale": {"enabled": True, "base": ""}, "xyzSweep": True,
+         "axes": {"x": {"type": "Steps", "text": "20,30", "list": []}}}
+    saved = json.dumps(server.Settings(gen_defaults=d).model_dump())
+    reloaded = server.Settings(**json.loads(saved)).model_dump()["gen_defaults"]
+    assert {k: reloaded[k] for k in d} == d
+
 # ── opt-in pip + install routed through the job queue ─────────────────
 
 def test_install_payload_pip_deps_defaults_off():
