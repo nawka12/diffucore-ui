@@ -751,12 +751,53 @@
       <div class="page-bar">
         <input type="text" class="gallery-search" x-model="galleryQuery"
                @input.debounce.300ms="searchGallery()"
-               placeholder="Search prompts, models, samplers…"
+               placeholder='Search prompts, models, samplers… ("phrase", -exclude, neg:)'
                aria-label="Search gallery">
+        <button class="btn" :class="{on: galleryFiltersOpen || galleryFilterCount}"
+                @click="toggleGalleryFilters()" :aria-expanded="galleryFiltersOpen"
+                x-text="galleryFilterCount ? 'Filters · ' + galleryFilterCount : 'Filters'"></button>
         <!-- Refresh re-runs the current query; openGallery() would wipe it. -->
         <button class="btn" @click="searchGallery()" :disabled="gallerySearching"
                 x-text="gallerySearching ? 'Indexing…' : 'Refresh'"></button>
       </div>
+      <div class="gallery-filters" x-show="galleryFiltersOpen" x-cloak>
+        <div class="gallery-filter-grid">
+          <template x-for="f in galleryFacetFields" :key="f.key">
+            <label class="field"><span x-text="f.label"></span>
+              <select x-model="galleryFilters[f.key]" @change="searchGallery()"
+                      x-effect="galleryFacets[f.facet]; $nextTick(() => $el.value = galleryFilters[f.key])">
+                <option value="">Any</option>
+                <template x-for="o in galleryFacets[f.facet]" :key="o[0]">
+                  <option :value="o[0]" x-text="o[0] + '  (' + o[1] + ')'"></option>
+                </template>
+              </select></label>
+          </template>
+          <label class="field"><span>Seed</span>
+            <input type="text" inputmode="numeric" x-model="galleryFilters.seed"
+                   @input.debounce.300ms="searchGallery()" placeholder="Any"></label>
+          <label class="field"><span>From</span>
+            <input type="date" x-model="galleryFilters.date_from" @change="searchGallery()"></label>
+          <label class="field"><span>To</span>
+            <input type="date" x-model="galleryFilters.date_to" @change="searchGallery()"></label>
+        </div>
+        <div class="gallery-filter-foot">
+          <span class="gallery-filter-label">Rating</span>
+          <template x-for="r in ['PG', 'PG13', 'R', 'X', 'XXX']" :key="r">
+            <button type="button" class="chip" :class="{on: galleryFilters.ratings.includes(r)}"
+                    :aria-pressed="galleryFilters.ratings.includes(r)"
+                    @click="toggleGalleryRating(r)" x-text="r === 'PG13' ? 'PG-13' : r"></button>
+          </template>
+          <button class="btn small" @click="clearGalleryFilters()"
+                  :disabled="!galleryFilterCount && !galleryQuery.trim()">Clear all</button>
+        </div>
+        <p class="hint">Search box: words must all match; <code>"exact phrase"</code> matches whole words;
+          <code>-word</code> excludes; the negative prompt is only searched with <code>neg:</code>.
+          Scope a term with <code>prompt:</code> <code>neg:</code> <code>model:</code> <code>sampler:</code>
+          <code>scheduler:</code> <code>lora:</code>, or match exactly with <code>seed:</code>
+          <code>steps:</code> <code>cfg:</code> <code>size:</code>.</p>
+      </div>
+      <p class="gallery-count" x-show="(galleryQuery.trim() || galleryFilterCount) && !gallerySearching"
+         x-text="gallery.length + (gallery.length === 1 ? ' image' : ' images')"></p>
       <template x-for="g in galleryGroups" :key="g.date">
         <section class="gallery-day">
           <h2 class="gallery-date" x-text="g.label"></h2>

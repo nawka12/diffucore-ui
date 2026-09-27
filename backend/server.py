@@ -46,6 +46,7 @@ from utils import (
 )
 from xyz_grid import generate_xyz_grid, PARAM_TYPES as XYZ_PARAM_TYPES
 import metadata as md
+import gallery_search
 import tagger as tagger_mod
 from auth import (
     AuthGate, COOKIE_NAME, load_or_create_token, origin_ok, read_login_token,
@@ -2037,10 +2038,13 @@ def api_oss_status(steps: int, width: int, height: int, shift: float):
 
 
 @app.get("/api/gallery")
-def api_gallery(q: str = ""):
-    """List gallery images, optionally filtered by a case-insensitive substring
-    of the prompt, negative, model, sampler or scheduler. Each entry carries its
-    ``rating`` and ``nsfw`` flag, read from the cached index."""
+def api_gallery(q: str = "", model: str = "", sampler: str = "", scheduler: str = "",
+                lora: str = "", size: str = "", seed: str = "", rating: str = "",
+                date_from: str = "", date_to: str = ""):
+    """List gallery images matching the search query (see ``gallery_search``)
+    and the Filters panel's exact-match filters. ``rating`` is a comma list.
+    Each entry carries its ``rating`` and ``nsfw`` flag, read from the cached
+    index."""
     def dto(entry):
         return {
             "url": f"/outputs/{entry['path']}",
@@ -2050,10 +2054,21 @@ def api_gallery(q: str = ""):
             "nsfw": entry["nsfw"],
             "rating": entry["rating"],
         }
-    query = (q or "").strip().lower()
-    if not query:
-        return {"images": [dto(e) for e in _gallery_index()]}
-    return {"images": [dto(e) for e in _gallery_search(query)]}
+    filters = {
+        "model": model, "sampler": sampler, "scheduler": scheduler, "lora": lora,
+        "size": size.strip(), "seed": seed.strip(),
+        "ratings": {r for r in rating.split(",") if r},
+        "date_from": date_from, "date_to": date_to,
+    }
+    hits = gallery_search.search(_gallery_index(), q, filters)
+    return {"images": [dto(e) for e in hits]}
+
+
+@app.get("/api/gallery_facets")
+def api_gallery_facets():
+    """Distinct models, samplers, schedulers, LoRAs and sizes in the gallery,
+    for the Filters panel's dropdowns."""
+    return gallery_search.facets(_gallery_index())
 
 
 # ── gallery search index ────────────────────────────────────────────
@@ -2092,6 +2107,11 @@ def _index_entry(f: Path, fields: dict) -> dict:
         "model": str(fields.get("model", "")),
         "sampler": str(fields.get("sampler", "")),
         "scheduler": str(fields.get("scheduler", "")),
+        "seed": str(fields.get("seed", "")),
+        "steps": str(fields.get("steps", "")),
+        "cfg": str(fields.get("cfg_scale", "")),
+        "size": str(fields.get("size", "")),
+        "loras": sorted({n for n, _w in md._split_loras(str(fields.get("prompt", "")))[1]}),
         "rating": rating,
         "nsfw": rating in ("R", "X", "XXX"),
     }
@@ -2145,19 +2165,6 @@ def _gallery_index() -> list:
         _GALLERY_INDEX = index
         _GALLERY_INDEX_KEY = newest
         return index
-
-
-def _gallery_search(query: str) -> list:
-    """Filter the cached index by a lowercased substring across metadata fields."""
-    out = []
-    for entry in _gallery_index():
-        haystack = " ".join(
-            (entry["prompt"], entry["neg"], entry["model"],
-             entry["sampler"], entry["scheduler"])
-        ).lower()
-        if query in haystack:
-            out.append(entry)
-    return out
 
 
 def _thumb_cache_path(target: Path) -> Path:

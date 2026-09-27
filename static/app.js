@@ -44,6 +44,12 @@ async function fetchJSON(url, opts) {
   return r.json();
 }
 
+// The gallery Filters panel's exact-match filters, sent next to the query.
+function emptyGalleryFilters() {
+  return { model: '', sampler: '', scheduler: '', lora: '', size: '', seed: '',
+           date_from: '', date_to: '', ratings: [] };
+}
+
 document.addEventListener('alpine:init', () => {
   Alpine.data('app', () => ({
     // ── model rack ──────────────────────────────────────────────
@@ -197,8 +203,18 @@ document.addEventListener('alpine:init', () => {
     gallery: [],
     galleryGroups: [],
     galleryLimit: 60,   // chunked rendering: thumbs live in the DOM
-    galleryQuery: '',   // substring filter applied via /api/gallery?q=
+    galleryQuery: '',   // search-box query, parsed by the backend (gallery_search.py)
     gallerySearching: false,
+    galleryFiltersOpen: false,
+    galleryFilters: emptyGalleryFilters(),
+    galleryFacets: { models: [], samplers: [], schedulers: [], loras: [], sizes: [] },
+    galleryFacetFields: [
+      { key: 'model', facet: 'models', label: 'Model' },
+      { key: 'sampler', facet: 'samplers', label: 'Sampler' },
+      { key: 'scheduler', facet: 'schedulers', label: 'Scheduler' },
+      { key: 'lora', facet: 'loras', label: 'LoRA' },
+      { key: 'size', facet: 'sizes', label: 'Size' },
+    ],
     _galleryToken: 0,   // bumped per listing fetch; stale responses dropped
     selected: null,
     selectedMeta: '',
@@ -1719,7 +1735,9 @@ document.addEventListener('alpine:init', () => {
       this.selectedMeta = '';
       this.galleryLimit = 60;
       this.galleryQuery = '';
+      this.galleryFilters = emptyGalleryFilters();
       this.gallerySearching = false;
+      if (this.galleryFiltersOpen) this.loadGalleryFacets();
       const token = ++this._galleryToken;
       try {
         const images = (await fetchJSON('/api/gallery')).images;
@@ -1733,12 +1751,18 @@ document.addEventListener('alpine:init', () => {
 
     // Debounced search against the backend's cached metadata index.
     async searchGallery() {
+      const params = new URLSearchParams();
       const q = (this.galleryQuery || '').trim();
+      if (q) params.set('q', q);
+      for (const [k, v] of Object.entries(this.galleryFilters)) {
+        const val = Array.isArray(v) ? v.join(',') : String(v).trim();
+        if (val) params.set(k === 'ratings' ? 'rating' : k, val);
+      }
       this.gallerySearching = true;
       const token = ++this._galleryToken;
       try {
-        const url = q ? `/api/gallery?q=${encodeURIComponent(q)}` : '/api/gallery';
-        const images = (await fetchJSON(url)).images;
+        const qs = params.toString();
+        const images = (await fetchJSON(qs ? `/api/gallery?${qs}` : '/api/gallery')).images;
         if (token !== this._galleryToken) return;
         this.gallery = images;
         this.selected = null;
@@ -1750,6 +1774,32 @@ document.addEventListener('alpine:init', () => {
       } finally {
         if (token === this._galleryToken) this.gallerySearching = false;
       }
+    },
+
+    get galleryFilterCount() {
+      return Object.values(this.galleryFilters)
+        .filter((v) => (Array.isArray(v) ? v.length : String(v).trim())).length;
+    },
+    toggleGalleryFilters() {
+      this.galleryFiltersOpen = !this.galleryFiltersOpen;
+      if (this.galleryFiltersOpen) this.loadGalleryFacets();
+    },
+    async loadGalleryFacets() {
+      try {
+        this.galleryFacets = await fetchJSON('/api/gallery_facets');
+      } catch (e) {
+        /* the dropdowns keep their previous options */
+      }
+    },
+    toggleGalleryRating(r) {
+      const cur = this.galleryFilters.ratings;
+      this.galleryFilters.ratings = cur.includes(r) ? cur.filter((x) => x !== r) : [...cur, r];
+      this.searchGallery();
+    },
+    clearGalleryFilters() {
+      this.galleryQuery = '';
+      this.galleryFilters = emptyGalleryFilters();
+      this.searchGallery();
     },
 
     // Group the first `galleryLimit` images into day sections, keeping each

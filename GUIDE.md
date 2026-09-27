@@ -898,6 +898,15 @@ the Generate view, or **To img2img** / **To inpaint** to send the image itself i
 as the input. The **Metadata** view reads parameters out of any PNG you drop in
 (AUTO1111 / Forge or ComfyUI) and can send them to txt2img.
 
+The gallery search box matches every word you type (`1girl sword` needs both).
+A `"quoted phrase"` matches whole words only, `-word` excludes, and
+`field:value` scopes a term: `prompt:`, `neg:`, `model:`, `sampler:`,
+`scheduler:` and `lora:` match text, while `seed:`, `steps:`, `cfg:` and
+`size:` match exactly. The negative prompt is searched only through `neg:`.
+**Filters** opens exact-match dropdowns (model, sampler, scheduler, LoRA, size,
+each with its image count), a seed box, a date range and rating chips; they
+combine with the search box.
+
 ### Extend the UI
 
 **Settings → Extensions** lists every extension under `extensions/`, lets you

@@ -286,7 +286,7 @@ fieldset > .hint { margin: 0 0 8px; }
   font-size: 12px;
 }
 
-textarea, input[type="text"], input[type="number"], select {
+textarea, input[type="text"], input[type="number"], input[type="date"], select {
   width: 100%;
   background: var(--surface-2);
   border: 1px solid var(--line);
@@ -718,6 +718,31 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 }
 .gallery-search::placeholder { color: var(--txt-3); }
 .gallery-search:focus { outline: none; border-color: var(--accent-dim); }
+.page-bar .btn.on { color: var(--txt); border-color: var(--accent-dim); }
+.gallery-filters {
+  margin: -6px 0 16px;
+  padding: 14px 14px 2px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+.gallery-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0 12px;
+}
+.gallery-filters input[type="date"] { color-scheme: dark; }
+.gallery-filter-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.gallery-filter-foot .btn { margin-left: auto; }
+.gallery-filter-foot .chip { font-family: var(--sans); padding: 6px 12px; }
+.gallery-filter-label { font-size: 12px; font-weight: 500; color: var(--txt-2); margin-right: 4px; }
+.gallery-count { font-size: 12px; color: var(--txt-3); margin: -8px 0 12px; }
 .gallery-day { margin-bottom: 24px; }
 .gallery-date {
   font-size: 13px;
