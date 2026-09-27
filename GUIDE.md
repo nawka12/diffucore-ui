@@ -43,8 +43,8 @@ network/share flags, architecture, and status.
   on Anima on an RTX 2060, slight precision trade-off). All families.
 - **fp16 vae**: opt-in per-load perf flag that runs the VAE in fp16 instead of
   fp32 (measured ~2.8× faster decode on Anima's Qwen-Image VAE on an RTX 2060,
-  max pixel difference under 3/255). Also halves decode VRAM, so large decodes
-  that used to fall back to (slower) tiling fit untiled. Safe by construction:
+  max pixel difference under 3/255). Also trims decode VRAM by 18-29%, so some
+  decodes that would fall back to (slower) tiling fit untiled. Safe by construction:
   if a checkpoint's VAE overflows fp16 (rare, the A1111 `--no-half-vae` cases)
   the non-finite output is detected and that model's VAE permanently drops
   back to fp32: one retried decode, never a black image. All families.
