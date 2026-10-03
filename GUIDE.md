@@ -73,6 +73,15 @@ network/share flags, architecture, and status.
   SDPA). Needs nvcc and ninja; the first load builds the kernel (~1 min, then
   cached). Incompatible with torch.compile. GTX 16-series cards are sm75 but
   have no tensor cores; untested there.
+- **fused glue (Anima)**: opt-in per-load perf flag. Each DiT block's chain of
+  small steps (LayerNorm, scale/shift modulation, casts, gated residual add, and
+  the q/k RMSNorm + RoPE) runs as a few Triton kernels instead of ~40 separate
+  passes over the activations. Measured on an RTX 2060 with int8 attn and fp16
+  accumulation: ~1.38× per step at 1024×1536 (1104 to 801 ms), ~1.43× at
+  832×1216. Within one fp16 rounding step of the unfused math (a whole step moves
+  about as much as nudging 0.01% of the latent by one ulp), so not bit-exact.
+  Works on any CUDA GPU with Triton (bundled with PyTorch on Linux); resolution
+  changes never recompile. No effect under torch.compile, which fuses on its own.
 - **35+ samplers, multiple schedulers**: Euler, Heun, DPM++ family, ER-SDE,
   SECANT, UniPC, cogent; Karras, exponential, sgm_uniform, flow, and more.
 - **Gallery with metadata round-trip**: every generated image saves its full

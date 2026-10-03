@@ -146,6 +146,11 @@
                title="INT8 attention for Turing GPUs: ~1.5× faster than fa2 on self-attention, not exact (cross-attention stays exact). The first load builds the kernel (~1 min).">
           <input type="checkbox" x-model="perf.int8Attn" :disabled="perf.compile" @change="if(perf.int8Attn) perf.fa2Attn=false"> int8 attn
         </label>
+        <label class="chip" :class="{on: perf.fusedGlue}"
+               x-show="fusedGlueAvailable && modelType==='Anima'"
+               title="Fuse each Anima block's norm/modulation/residual steps into single Triton kernels (~1.38× per step at 1024×1536 on an RTX 2060). Within 1 fp16 rounding step of the unfused math, not bit-exact. No effect under torch.compile.">
+          <input type="checkbox" x-model="perf.fusedGlue"> fused glue
+        </label>
       </div>
 
       <div class="status" :class="{live: modelLoaded}" x-text="status"></div>

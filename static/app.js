@@ -56,9 +56,10 @@ document.addEventListener('alpine:init', () => {
     modelType: 'SD/SDXL',
     checkpoints: [], dits: [], vaes: [], tes: [], loras: [], detailers: [], upscalers: [],
     checkpoint: '', dit: '', vae: '', te: '', clip: '', fluxCheckpoint: '',
-    perf: { compile: false, cudaGraphs: false, channelsLast: true, tf32: false, fp16Acc: false, vaeFp16: false, fa2Attn: false, int8Attn: false, offload: 'full' },
+    perf: { compile: false, cudaGraphs: false, channelsLast: true, tf32: false, fp16Acc: false, vaeFp16: false, fa2Attn: false, int8Attn: false, fusedGlue: false, offload: 'full' },
     fa2Available: false,
     int8Available: false,
+    fusedGlueAvailable: false,
     recommendedOffload: 'full',   // VRAM-based default from the backend
     status: 'No model loaded',
     modelLoaded: false,
@@ -568,6 +569,7 @@ document.addEventListener('alpine:init', () => {
       this.perf.vaeFp16 = !!f.vae_fp16;
       this.perf.fa2Attn = f.attention === 'fa2_turing';
       this.perf.int8Attn = f.attention === 'int8_turing';
+      this.perf.fusedGlue = !!f.fused_glue;
       this.syncSampler();
       this.syncScheduler();
     },
@@ -588,6 +590,7 @@ document.addEventListener('alpine:init', () => {
       this.recommendedOffload = m.recommended_offload || 'full';
       this.fa2Available = !!m.fa2_available;
       this.int8Available = !!m.int8_available;
+      this.fusedGlueAvailable = !!m.fused_glue_available;
       this.uiId = m.ui_id; this.diffId = m.diff_id;
       // The first fetch seeds every selector; a later Refresh only replaces
       // selections whose file vanished.
@@ -672,6 +675,7 @@ document.addEventListener('alpine:init', () => {
           // fa2/int8 only apply to the DiT families.
           attention: this.modelType === 'SD/SDXL' ? 'sdpa'
             : this.perf.int8Attn ? 'int8_turing' : this.perf.fa2Attn ? 'fa2_turing' : 'sdpa',
+          fused_glue: this.perf.fusedGlue && this.modelType === 'Anima',
         };
         // Queued like any job; the server broadcasts the new state everywhere.
         const ev = await this.submitJob('/api/load', body);

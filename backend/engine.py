@@ -60,6 +60,7 @@ from diffucore import (
     apply_lora,
     clear_loras as clear_bundle_loras,
     fa2_turing_available,
+    fused_glue_available,
     int8_turing_available,
     load_anima_checkpoint,
     load_checkpoint,
@@ -282,6 +283,7 @@ class Engine:
         self._tf32 = False
         self._fp16_accumulation = False
         self._vae_fp16 = False
+        self._fused_glue = False
         self._attention = "sdpa"
         self._last_seed: int = -1
         self._last_upscale_seed: int = -1
@@ -351,6 +353,11 @@ class Engine:
         """Whether the in-tree INT8 attention kernel can be built and run here
         (sm75 GPU plus nvcc and ninja; the build happens at model load)."""
         return int8_turing_available()
+
+    @staticmethod
+    def fused_glue_available() -> bool:
+        """Whether the Triton fused Anima glue can run (Triton + CUDA)."""
+        return fused_glue_available()
 
     def recommended_offload(self) -> str:
         """Default offload mode from the GPU's VRAM: ``none`` > ``encoders`` >
@@ -439,7 +446,7 @@ class Engine:
         self, offload: bool | str, vae_tile: bool, compile: bool,
         cuda_graphs: bool, channels_last: bool, tf32: bool,
         fp16_accumulation: bool, attention: str = "sdpa",
-        vae_fp16: bool = False,
+        vae_fp16: bool = False, fused_glue: bool = False,
     ) -> bool:
         """Whether the requested staging settings equal the loaded model's.
         They're baked in at load, so a same-name reload must re-stage otherwise."""
@@ -453,6 +460,7 @@ class Engine:
             and self._fp16_accumulation == fp16_accumulation
             and self._attention == attention
             and self._vae_fp16 == vae_fp16
+            and self._fused_glue == fused_glue
         )
 
     def _components_match(
@@ -509,6 +517,7 @@ class Engine:
             self._fp16_accumulation = fp16_accumulation
             self._attention = attention
             self._vae_fp16 = vae_fp16
+            self._fused_glue = False
             self._loaded = restored
             self._attach_cond_cache()
             self._reclaim_memory()
@@ -523,6 +532,7 @@ class Engine:
         self._fp16_accumulation = fp16_accumulation
         self._attention = attention
         self._vae_fp16 = vae_fp16
+        self._fused_glue = False
 
         path = checkpoint_path(model_name)
         if not path.exists():
@@ -568,6 +578,7 @@ class Engine:
                 fp16_accumulation=self._fp16_accumulation,
                 attention=self._attention,
                 vae_fp16=self._vae_fp16,
+                fused_glue=self._fused_glue,
             )
         return self.load_model(
             name,
@@ -584,7 +595,7 @@ class Engine:
         offload: bool | str = True, vae_tile: bool = True,
         compile: bool = False, cuda_graphs: bool = False,
         fp16_accumulation: bool = False, attention: str = "sdpa",
-        vae_fp16: bool = False,
+        vae_fp16: bool = False, fused_glue: bool = False,
     ) -> str:
         label = f"Anima({dit_name})"
         if compile and offload is True:
@@ -600,7 +611,7 @@ class Engine:
                 and self._components_match(vae_name, te_name)
                 and self._settings_match(offload, vae_tile, compile,
                                          cuda_graphs, False, False,
-                                         fp16_accumulation, attention, vae_fp16)):
+                                         fp16_accumulation, attention, vae_fp16, fused_glue)):
             return f"Model already loaded: {label}"
 
         # A cached entry for this DiT with a different VAE/TE is stale.
@@ -611,7 +622,7 @@ class Engine:
             except Exception: pass  # noqa: BLE001
         restored = self._try_cache_restore(label, offload, vae_tile,
                                            compile, cuda_graphs, False, False,
-                                           fp16_accumulation, attention, vae_fp16)
+                                           fp16_accumulation, attention, vae_fp16, fused_glue)
         if restored is not None:
             self._offload = offload
             self._vae_tile = vae_tile
@@ -622,6 +633,7 @@ class Engine:
             self._fp16_accumulation = fp16_accumulation
             self._attention = attention
             self._vae_fp16 = vae_fp16
+            self._fused_glue = fused_glue
             self._loaded = restored
             self._attach_cond_cache()
             self._reclaim_memory()
@@ -636,6 +648,7 @@ class Engine:
         self._fp16_accumulation = fp16_accumulation
         self._attention = attention
         self._vae_fp16 = vae_fp16
+        self._fused_glue = fused_glue
 
         dit_path = diffusion_model_path(dit_name)
         vae_file = vae_path(vae_name)
@@ -650,6 +663,7 @@ class Engine:
             offload=offload, vae_tile=vae_tile,
             compile=compile, cuda_graphs=cuda_graphs,
             fp16_accumulation=fp16_accumulation, attention=attention,
+            fused_glue=fused_glue,
             # Overlap block-streaming copies with compute.
             stream_prefetch=(offload == "stream"),
         )
@@ -710,6 +724,7 @@ class Engine:
         self._fp16_accumulation = fp16_accumulation
         self._attention = attention
         self._vae_fp16 = vae_fp16
+        self._fused_glue = False
 
         dit_path = diffusion_model_path(dit_name)
         vae_file = vae_path(vae_name)
@@ -771,6 +786,8 @@ class Engine:
             flags.append("fa2_attn")
         elif self._attention == "int8_turing":
             flags.append("int8_attn")
+        if self._fused_glue:
+            flags.append("fused_glue")
         if self._offload is True:
             flags.append("offload=full")
         elif self._offload == "encoders":
@@ -800,6 +817,8 @@ class Engine:
             parts.append("fa2_attn")
         elif self._attention == "int8_turing":
             parts.append("int8_attn")
+        if self._fused_glue:
+            parts.append("fused_glue")
         return ", ".join(parts) if parts else "default"
 
     def _unload(self) -> None:
@@ -840,7 +859,7 @@ class Engine:
         """The staging settings the currently-loaded model was loaded under."""
         return (self._offload, self._vae_tile, self._compile, self._cuda_graphs,
                 self._channels_last, self._tf32, self._fp16_accumulation,
-                self._attention, self._vae_fp16)
+                self._attention, self._vae_fp16, self._fused_glue)
 
     def _stash_loaded(self) -> bool:
         """Park ``self._loaded`` on CPU in the LRU cache, evicting the oldest on
@@ -875,7 +894,8 @@ class Engine:
     def _try_cache_restore(self, key: str,
                            offload, vae_tile, compile, cuda_graphs,
                            channels_last, tf32, fp16_accumulation,
-                           attention="sdpa", vae_fp16=False) -> Optional[LoadedModel]:
+                           attention="sdpa", vae_fp16=False,
+                           fused_glue=False) -> Optional[LoadedModel]:
         """Stash (or unload) the current model, then move the cached model for
         ``key`` back to the device if the settings it was staged under match the
         request. Otherwise (or on a restore error) drop it and return ``None``.
@@ -890,7 +910,7 @@ class Engine:
             return None
         if lm.stage_settings != (offload, vae_tile, compile, cuda_graphs,
                                  channels_last, tf32, fp16_accumulation,
-                                 attention, vae_fp16):
+                                 attention, vae_fp16, fused_glue):
             try: del lm.model
             except Exception: pass  # noqa: BLE001
             return None
