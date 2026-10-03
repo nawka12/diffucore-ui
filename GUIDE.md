@@ -48,12 +48,14 @@ network/share flags, architecture, and status.
   if a checkpoint's VAE overflows fp16 (rare, the A1111 `--no-half-vae` cases)
   the non-finite output is detected and that model's VAE permanently drops
   back to fp32: one retried decode, never a black image. All families.
-- **fa2 attention (Turing GPUs)**: opt-in per-load perf flag for DiT families
-  (Anima, FLUX) on Turing cards (RTX 20-series / GTX 16-series, sm75), where
-  PyTorch has no flash-attention kernel. Swaps the DiT's attention for a
-  community FlashAttention-2 port, measured ~1.5× on the attention kernel and
-  ~1.10× end-to-end at 1024² on an RTX 2060 with fp16 accumulation on (stacks
-  with it; grows with resolution). Not bit-exact; incompatible with
+- **fa2 attention (Turing GPUs)**: opt-in per-load perf flag for Anima, FLUX
+  and SD/SDXL on Turing cards (RTX 20-series / GTX 16-series, sm75), where
+  PyTorch has no flash-attention kernel. Swaps the attention for a community
+  FlashAttention-2 port, measured ~1.5× on the attention kernel and ~1.10×
+  end-to-end at 1024² for Anima on an RTX 2060 with fp16 accumulation on
+  (stacks with it; grows with resolution). SDXL gains less (~1.03× per step):
+  most of its attention is short cross-attention or 1024-token self-attention.
+  SD1.5's head sizes (40/80/160) aren't supported and stay on SDPA. Not bit-exact; incompatible with
   torch.compile. The chip only appears when the kernel is installed; it's a
   local-build optional extra, never required:
   `pip install` the [flash-attention-turing](https://github.com/ssiu/flash-attention-turing)

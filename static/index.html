@@ -137,8 +137,8 @@
           <input type="checkbox" x-model="perf.vaeFp16"> fp16 vae
         </label>
         <label class="chip" :class="{on: perf.fa2Attn, disabled: perf.compile}"
-               x-show="fa2Available && modelType!=='SD/SDXL'"
-               title="FlashAttention-2 port for Turing GPUs (DiT attention; not bit-exact)">
+               x-show="fa2Available"
+               title="FlashAttention-2 port for Turing GPUs (Anima/FLUX/SDXL attention; not bit-exact)">
           <input type="checkbox" x-model="perf.fa2Attn" :disabled="perf.compile" @change="if(perf.fa2Attn) perf.int8Attn=false"> fa2 attn
         </label>
         <label class="chip" :class="{on: perf.int8Attn, disabled: perf.compile}"

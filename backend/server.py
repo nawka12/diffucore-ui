@@ -290,7 +290,7 @@ class LoadPayload(BaseModel):
     tf32: bool = False                  # SD/SDXL only (fp32 VAE path; Ampere+)
     fp16_accumulation: bool = False     # fp16-accumulate matmuls; all families
     vae_fp16: bool = False              # non-finite output falls back to fp32
-    attention: str = "sdpa"             # "sdpa" | "fa2_turing" | "int8_turing" (sm75-only; Anima/FLUX)
+    attention: str = "sdpa"             # "sdpa" | "fa2_turing" (sm75; all families) | "int8_turing" (sm75; Anima/FLUX)
     fused_glue: bool = False            # Anima only; Triton-fused block glue
 
 
@@ -1603,6 +1603,8 @@ def _do_load_impl(p: LoadPayload) -> str:
         compile=p.compile, cuda_graphs=p.cuda_graphs,
         channels_last=p.channels_last, tf32=p.tf32,
         fp16_accumulation=p.fp16_accumulation,
+        # int8 needs head_dim 128; SD/SDXL heads are 64 (or 40/80/160 on SD1.5).
+        attention="fa2_turing" if p.attention == "fa2_turing" else "sdpa",
         vae_fp16=p.vae_fp16,
     )
 

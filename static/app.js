@@ -672,9 +672,9 @@ document.addEventListener('alpine:init', () => {
           tf32: this.perf.tf32,
           fp16_accumulation: this.perf.fp16Acc,
           vae_fp16: this.perf.vaeFp16,
-          // fa2/int8 only apply to the DiT families.
-          attention: this.modelType === 'SD/SDXL' ? 'sdpa'
-            : this.perf.int8Attn ? 'int8_turing' : this.perf.fa2Attn ? 'fa2_turing' : 'sdpa',
+          // int8 only applies to the DiT families (head_dim 128).
+          attention: this.modelType !== 'SD/SDXL' && this.perf.int8Attn ? 'int8_turing'
+            : this.perf.fa2Attn ? 'fa2_turing' : 'sdpa',
           fused_glue: this.perf.fusedGlue && this.modelType === 'Anima',
         };
         // Queued like any job; the server broadcasts the new state everywhere.
