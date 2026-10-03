@@ -118,7 +118,7 @@
           </select>
         </label>
         <label class="chip" :class="{on: perf.compile}">
-          <input type="checkbox" x-model="perf.compile" @change="if(!perf.compile) perf.cudaGraphs=false; if(perf.compile) perf.fa2Attn=false"> torch.compile
+          <input type="checkbox" x-model="perf.compile" @change="if(!perf.compile) perf.cudaGraphs=false; if(perf.compile) { perf.fa2Attn=false; perf.int8Attn=false }"> torch.compile
         </label>
         <label class="chip" :class="{on: perf.cudaGraphs, disabled: !perf.compile}">
           <input type="checkbox" x-model="perf.cudaGraphs" :disabled="!perf.compile"> CUDA Graphs
@@ -139,7 +139,12 @@
         <label class="chip" :class="{on: perf.fa2Attn, disabled: perf.compile}"
                x-show="fa2Available && modelType!=='SD/SDXL'"
                title="FlashAttention-2 port for Turing GPUs (DiT attention; not bit-exact)">
-          <input type="checkbox" x-model="perf.fa2Attn" :disabled="perf.compile"> fa2 attn
+          <input type="checkbox" x-model="perf.fa2Attn" :disabled="perf.compile" @change="if(perf.fa2Attn) perf.int8Attn=false"> fa2 attn
+        </label>
+        <label class="chip" :class="{on: perf.int8Attn, disabled: perf.compile}"
+               x-show="int8Available && modelType!=='SD/SDXL'"
+               title="INT8 attention for Turing GPUs: ~1.5× faster than fa2 on self-attention, not exact (cross-attention stays exact). The first load builds the kernel (~1 min).">
+          <input type="checkbox" x-model="perf.int8Attn" :disabled="perf.compile" @change="if(perf.int8Attn) perf.fa2Attn=false"> int8 attn
         </label>
       </div>
 

@@ -290,7 +290,7 @@ class LoadPayload(BaseModel):
     tf32: bool = False                  # SD/SDXL only (fp32 VAE path; Ampere+)
     fp16_accumulation: bool = False     # fp16-accumulate matmuls; all families
     vae_fp16: bool = False              # non-finite output falls back to fp32
-    attention: str = "sdpa"             # "sdpa" | "fa2_turing" (sm75-only; Anima/FLUX)
+    attention: str = "sdpa"             # "sdpa" | "fa2_turing" | "int8_turing" (sm75-only; Anima/FLUX)
 
 
 class DetailerModel(BaseModel):
@@ -1477,6 +1477,8 @@ def api_models():
         "recommended_offload": ENGINE.recommended_offload(),
         # Gates the UI's "fa2 attn" chip (package installed and an sm75 GPU).
         "fa2_available": ENGINE.fa2_attention_available(),
+        # Gates the "int8 attn" chip (sm75 GPU and a CUDA toolchain to build it).
+        "int8_available": ENGINE.int8_attention_available(),
         "ui_id": md.UI_ID,
         "diff_id": md.DIFF_ID,
     }
@@ -1505,8 +1507,9 @@ def _validate_load(p: LoadPayload) -> Optional[str]:
         return None
 
     # The custom op graph-breaks in every block under compile.
-    if p.attention == "fa2_turing" and p.compile:
-        return "fa2 attention is incompatible with torch.compile; disable one"
+    if p.attention in ("fa2_turing", "int8_turing") and p.compile:
+        name = "fa2" if p.attention == "fa2_turing" else "int8"
+        return f"{name} attention is incompatible with torch.compile; disable one"
 
     if p.model_type == "Anima":
         for label, name, d in (("DiT", p.dit, DIFFUSION_DIR),

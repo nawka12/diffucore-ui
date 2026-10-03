@@ -60,6 +60,7 @@ from diffucore import (
     apply_lora,
     clear_loras as clear_bundle_loras,
     fa2_turing_available,
+    int8_turing_available,
     load_anima_checkpoint,
     load_checkpoint,
     load_flux_checkpoint,
@@ -344,6 +345,12 @@ class Engine:
         """Whether the locally built FA2-Turing kernel is installed and the GPU
         is sm75."""
         return fa2_turing_available()
+
+    @staticmethod
+    def int8_attention_available() -> bool:
+        """Whether the in-tree INT8 attention kernel can be built and run here
+        (sm75 GPU plus nvcc and ninja; the build happens at model load)."""
+        return int8_turing_available()
 
     def recommended_offload(self) -> str:
         """Default offload mode from the GPU's VRAM: ``none`` > ``encoders`` >
@@ -760,8 +767,10 @@ class Engine:
             flags.append("fp16_acc")
         if self._vae_fp16:
             flags.append("fp16_vae")
-        if self._attention != "sdpa":
+        if self._attention == "fa2_turing":
             flags.append("fa2_attn")
+        elif self._attention == "int8_turing":
+            flags.append("int8_attn")
         if self._offload is True:
             flags.append("offload=full")
         elif self._offload == "encoders":
@@ -787,8 +796,10 @@ class Engine:
             parts.append("fp16_acc")
         if self._vae_fp16:
             parts.append("fp16_vae")
-        if self._attention != "sdpa":
+        if self._attention == "fa2_turing":
             parts.append("fa2_attn")
+        elif self._attention == "int8_turing":
+            parts.append("int8_attn")
         return ", ".join(parts) if parts else "default"
 
     def _unload(self) -> None:

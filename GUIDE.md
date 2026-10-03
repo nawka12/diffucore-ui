@@ -61,6 +61,18 @@ network/share flags, architecture, and status.
   hosts add `-std=c++20` and `-Xcompiler -fpermissive` to `nvcc_flags` in its
   `setup.py`). Newer GPUs (sm80+) don't need it: they already use PyTorch's
   built-in flash attention, and this flag never engages there.
+- **int8 attention (Turing GPUs)**: opt-in per-load perf flag for DiT families
+  on RTX 20-series cards (sm75). An in-tree kernel that runs Q·Kᵀ on INT8 tensor
+  cores and P·V on fp16-accumulate tensor cores, the two formats GeForce Turing
+  runs 4× and 2× faster than the fp32-accumulate math FlashAttention-2 uses.
+  Measured on an RTX 2060 (Anima 1024×1536, 50 steps): ~1.5× faster than fa2 on
+  the attention kernel, ~1.12× end-to-end. Not exact: per-call attention error
+  is ~20× fa2's (cosine ≥ 0.9998 on real Anima layers), which on the ancestral
+  samplers shows up as a different sample of the same quality rather than a
+  softer one. Anima's cross-attention stays exact (fa2 when installed, else
+  SDPA). Needs nvcc and ninja; the first load builds the kernel (~1 min, then
+  cached). Incompatible with torch.compile. GTX 16-series cards are sm75 but
+  have no tensor cores; untested there.
 - **35+ samplers, multiple schedulers**: Euler, Heun, DPM++ family, ER-SDE,
   SECANT, UniPC, cogent; Karras, exponential, sgm_uniform, flow, and more.
 - **Gallery with metadata round-trip**: every generated image saves its full
