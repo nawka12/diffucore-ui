@@ -72,8 +72,8 @@ network/share flags, architecture, and status.
   is ~20× fa2's (cosine ≥ 0.9998 on real Anima layers), which on the ancestral
   samplers shows up as a different sample of the same quality rather than a
   softer one. Anima's cross-attention stays exact (fa2 when installed, else
-  SDPA). Needs nvcc and ninja; the first load builds the kernel (~1 min, then
-  cached). Incompatible with torch.compile. GTX 16-series cards are sm75 but
+  SDPA). Needs nvcc, ninja and a C++ compiler (MSVC Build Tools on Windows,
+  untested there); the first load builds the kernel (~1 min, then cached). Incompatible with torch.compile. GTX 16-series cards are sm75 but
   have no tensor cores; untested there.
 - **fused glue (Anima)**: opt-in per-load perf flag. Each DiT block's chain of
   small steps (LayerNorm, scale/shift modulation, casts, gated residual add, and
