@@ -2,7 +2,7 @@
 
 Wraps ``Engine.calibrate_teacache``. The coefficients are per architecture
 (arXiv:2411.19108), so one run writes ``models/teacache_cache/<family>.json``
-for every Anima checkpoint.
+for every Anima checkpoint of that depth (``anima_40blocks.json`` for 2.9B).
 
     python calibrate_teacache.py \
         --dit anima-base-v1.0.safetensors \

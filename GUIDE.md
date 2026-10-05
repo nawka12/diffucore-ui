@@ -7,7 +7,8 @@ network/share flags, architecture, and status.
 ## Highlights
 
 - **Four model families, one interface**: Stable Diffusion 1.5, SDXL,
-  **Anima** (a 2 B DiT built on Cosmos-Predict2), and **FLUX** (FLUX.1 and
+  **Anima** (a 2 B DiT built on Cosmos-Predict2, plus the 40-block
+  Anima-2.9B), and **FLUX** (FLUX.1 and
   FLUX.2 Klein). All four do txt2img, img2img, and inpaint; Anima and FLUX use
   soft, latent-mask inpaint (no dedicated inpaint model). Switch between them
   from the model bar.
@@ -282,6 +283,12 @@ bugs, just how the model responds):
   is the lighter pick (≈0.8 B params, BF16, closer to the stock 0.6 B); the 4B
   is heavier (fp8, higher VRAM/RAM, slower encoding). Treat output quality as
   experimental and uncalibrated for both.
+
+- **Anima-2.9B.** The 40-block layer expansion of Anima loads like any other
+  Anima DiT (same VAE and text encoder; the depth is read from the file). It is
+  ~1.5× slower per image than the 2 B base. LoRAs trained on the 28-block Anima
+  are remapped onto 2.9B's original blocks automatically (the status line says
+  "28-block LoRA remapped"); the 12 inserted blocks get no LoRA delta.
 
 - **img2img strength is more aggressive than the number suggests.** The
   `shift = 3` schedule front-loads noise, so a given strength injects far more
@@ -724,7 +731,9 @@ speedup over the smooth middle of a trajectory. Enable it in the Generate panel.
   polynomial that remaps the raw per-step *input* drift into an estimate of the
   *output* change, so the threshold tracks what actually matters for fidelity. It
   runs once for the Anima family, is cached to `models/teacache_cache/anima.json`,
-  and is then reused for every Anima checkpoint.
+  and is then reused for every Anima checkpoint. The fit depends on depth, so
+  Anima-2.9B gets its own (`anima_40blocks.json`); calibrate once with 2.9B
+  loaded.
 
 - **Use calibrated coefficients (toggle, on by default).** When on, generation
   applies that fitted polynomial. Turn it **off** to gate on the raw estimate

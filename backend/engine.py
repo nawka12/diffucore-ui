@@ -150,8 +150,8 @@ def oss_cache_path(name: str, steps: int, width: int, height: int, shift: float)
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
     return _OSS_CACHE_DIR / f"{safe}__{steps}s_{width}x{height}_shift{shift:g}.json"
 
-# TeaCache coefficients are per architecture: one JSON per family, with an
-# optional per-checkpoint override.
+# TeaCache coefficients are per architecture: one JSON per family (and Anima
+# depth), with an optional per-checkpoint override.
 _TEACACHE_CACHE_DIR = _ROOT / "models" / "teacache_cache"
 
 
@@ -430,7 +430,8 @@ class Engine:
                 continue
             report = apply_lora(self._loaded.model, str(path), multiplier=mult)
             self._loaded.applied_loras.append(name)
-            msgs.append(f"{name}@{mult}: {report.applied} matched")
+            msgs.append(f"{name}@{mult}: {report.applied} matched"
+                        + (" (28-block LoRA remapped)" if report.remapped else ""))
         self._invalidate_cond_cache()  # LoRA patches the TE/adapter
         return " | ".join(msgs) if msgs else "No LoRAs"
 
@@ -1028,12 +1029,22 @@ class Engine:
         lm.model.policy.vae_tile = always
         self._vae_tile = always
 
+    def _teacache_key(self) -> str:
+        """The family, except a non-28-block Anima (2.9B = 40) gets its own fit:
+        the curve depends on depth, so the 28-block one does not transfer."""
+        lm = self._loaded
+        if lm.family == MODEL_FAMILY_ANIMA:
+            depth = len(lm.model.backbone.blocks)
+            if depth != 28:
+                return f"{lm.family}_{depth}blocks"
+        return lm.family
+
     def _load_teacache_coeffs(self) -> "list[float] | None":
         """Per-checkpoint override, else the family fit, else None (identity)."""
         if not self._loaded:
             return None
         for p in (teacache_override_path(self._loaded.name),
-                  teacache_cache_path(self._loaded.family)):
+                  teacache_cache_path(self._teacache_key())):
             if p.exists():
                 coeffs = _read_cache_json(p)
                 if coeffs is not None:
@@ -1057,7 +1068,8 @@ class Engine:
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> str:
         """Fit and cache TeaCache coefficients for the loaded Anima family
-        (``teacache_cache/<family>.json``, shared by every Anima checkpoint)."""
+        (``teacache_cache/<key>.json``, shared by every Anima checkpoint of that
+        depth; see :meth:`_teacache_key`)."""
         if not self._loaded or self._loaded.family != MODEL_FAMILY_ANIMA:
             raise RuntimeError("Load an Anima model first")
         if self._cuda_graphs:
@@ -1079,9 +1091,10 @@ class Engine:
             raise RuntimeError(
                 "TeaCache calibration produced non-finite coefficients and was "
                 "not cached (try more steps)")
-        p = teacache_cache_path(self._loaded.family)
+        key = self._teacache_key()
+        p = teacache_cache_path(key)
         _write_cache_json(p, values)
-        return f"Calibrated TeaCache for {self._loaded.family}: {steps} steps → {p.name}"
+        return f"Calibrated TeaCache for {key}: {steps} steps → {p.name}"
 
     # ── live preview (latent→RGB approximation) ────────────────────
 
