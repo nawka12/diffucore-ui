@@ -290,6 +290,13 @@ bugs, just how the model responds):
   are remapped onto 2.9B's original blocks automatically (the status line says
   "28-block LoRA remapped"); the 12 inserted blocks get no LoRA delta.
 
+- **Anime-tuned VAE (Qwen2D).** [Anzhc](https://github.com/Anzhc)'s
+  [Qwen2D-Anime-VAE](https://huggingface.co/Anzhc/Qwen2D-Anime-VAE) is a decoder
+  tune of Anima's VAE that reduces oversharpening and noise. Drop its
+  `.safetensors` into `models/vae/` and pick it as the Anima VAE; the 2D layout
+  is converted on load. Same latent space and speed as the stock VAE; the
+  result is a slightly softer, cleaner decode.
+
 - **img2img strength is more aggressive than the number suggests.** The
   `shift = 3` schedule front-loads noise, so a given strength injects far more
   than the same value on SD/SDXL: around `0.6` already noises away most of the
