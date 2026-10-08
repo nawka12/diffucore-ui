@@ -511,6 +511,32 @@ bugs, just how the model responds):
   accessories came out right depended on the noise draw even at 50 and 100
   steps, so judge coherency over several seeds.
 
+- **The `secant_tilt` scheduler** is built for `secant_anneal` and replaces
+  `beta_mix` as its pairing. It came from measuring where AnimaFranken v1.3
+  decides what (1024×1536, CFG 5, CFG interval 0.1–0.75):
+
+  *Above σ ≈ 0.98 nothing happens.* Before CFG switches on, the x0 prediction
+  barely moves.
+
+  *Anatomy is decided at the top.* Coarse layout is half decided by σ 0.89, and
+  mid-size parts (hands, faces) by σ 0.82. The x0 prediction changes fastest
+  right after CFG switches on.
+
+  *Detail is decided inside the CFG band, not in the tail.* Fine detail is half
+  decided by σ 0.68 and 80% by σ 0.33. Swapping only `beta_mix`'s last 8 steps
+  (σ < 0.29, after CFG ends) for evenly spaced ones moved the image by RMSE
+  1–3/255 on the same scene, with no change in sharpness.
+
+  So `secant_tilt` starts at σ 0.985 and spaces its steps by a λ-density
+  `0.6·exp(−0.4·λ) + 0.4·uniform` down to σ 0.01. At 32 steps it moves 5 steps
+  from σ 0.3–0.75 into σ 0.98–0.89, where the structure forms, and keeps the
+  CFG interval's σ range almost exactly `beta_mix`'s ((0.276, 0.979] vs
+  (0.287, 0.979] at 0.1–0.75). The `shift` slider does not affect it.
+
+  On a 12-image A/B it matched `beta_mix` on detail and sharpness. In normal
+  use it was judged better on **niche anatomy**, the kind generic prompts rarely
+  stress. Use it with `secant_anneal` at 30–32 steps.
+
 - **`stork2`** (STORK-2, ICLR 2026, arXiv:2505.24210, clean-room) is a
   deterministic multistep solver built from a stabilized Runge–Kutta–Gegenbauer
   stage cascade driven by Taylor-extrapolated "virtual" stage velocities, still
