@@ -68,11 +68,11 @@ network/share flags, architecture, and status.
   on RTX 20-series cards (sm75). An in-tree kernel that runs Q·Kᵀ on INT8 tensor
   cores and P·V on fp16-accumulate tensor cores, the two formats GeForce Turing
   runs 4× and 2× faster than the fp32-accumulate math FlashAttention-2 uses.
-  Measured on an RTX 2060 (Anima 1024×1536, 50 steps): ~1.5× faster than fa2 on
-  the attention kernel, ~1.12× end-to-end. Not exact: per-call attention error
-  is ~20× fa2's (cosine ≥ 0.9998 on real Anima layers), which on the ancestral
-  samplers shows up as a different sample of the same quality rather than a
-  softer one. Anima's cross-attention stays exact (fa2 when installed, else
+  Measured on an RTX 2060 (Anima 1024×1536): ~1.75× faster than fa2 per
+  self-attention call. Not exact: per-call attention error is ~20× fa2's
+  (cosine ≥ 0.9998 on real Anima layers), which on the ancestral samplers shows
+  up as a different sample of the same quality rather than a softer one. It is
+  deterministic, so a seed reproduces its image. Anima's cross-attention stays exact (fa2 when installed, else
   SDPA). Needs nvcc, ninja and a C++ compiler (MSVC Build Tools on Windows,
   untested there); the first load builds the kernel (~1 min, then cached). Incompatible with torch.compile. GTX 16-series cards are sm75 but
   have no tensor cores; untested there.
