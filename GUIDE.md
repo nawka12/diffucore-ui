@@ -537,6 +537,39 @@ bugs, just how the model responds):
   use it was judged better on **niche anatomy**, the kind generic prompts rarely
   stress. Use it with `secant_anneal` at 30–32 steps.
 
+- **The `relay_tilt` scheduler** pairs with `cogent3_pump_rate` and aims to
+  keep its prompt coherency while getting the anatomy of `secant_anneal` +
+  `secant_tilt`.
+
+  *What the two combos share.* From σ 0.985 down to 0.45, `secant_tilt` and
+  `pump_taper` place their steps almost alike (at 50 steps: 21 vs 22 in
+  σ 0.985–0.89, 13 vs 15 in 0.89–0.45).
+
+  *Where they differ.* With a step-fraction CFG interval of 0.1–0.75,
+  `pump_taper` turns CFG off at σ ≈ 0.67, while `secant_tilt` keeps it on to
+  ≈ 0.27, through the mid σ where hands and limbs settle. `relay_tilt` takes
+  the second: 28% of its steps run uniform in λ from the pump cutoff (0.45) to
+  σ 0.01, which puts the end of a 0.1–0.75 interval at σ ≈ 0.24. Above the
+  cutoff its λ-density is `0.8·exp(−0.4·λ) + 0.2·uniform`, so σ 0.985–0.89,
+  where anatomy forms right after CFG switches on, keeps as many steps as
+  `pump_taper` (14 at 32, 22 at 50), and σ 0.89–0.45, where fine detail
+  settles, as many as `secant_tilt` (13 at 50, 8 vs 9 at 32). The `shift`
+  slider does not affect it.
+
+  *What was tried and dropped.* A first version used `exp(−0.25·λ)`, which left
+  the anatomy band 12 steps at 32, fewer than either parent; anatomy broke on
+  niche prompts. The pure `exp(−0.4·λ)` that fixed it left σ 0.89–0.45 only 7
+  evaluations at 32, and `secant_anneal` came out softer than on
+  `secant_tilt` (about 8% less fine-detail energy over 6 images). Giving the
+  same run `secant_tilt`'s mid band, everything above σ 0.89 unchanged,
+  sharpened 5 of 6 same-scene pairs. A `relay` sampler that turned off
+  `cogent3`'s multistep correction while pumping changed images so little
+  (same seed, near-identical result) that it was removed. Running the pump under CFG in
+  σ 0.70–0.45 also turned out not to matter: stopping it at 0.70 gave
+  near-identical images.
+
+  **Status:** the mid-band fix is new; being judged in normal use.
+
 - **`stork2`** (STORK-2, ICLR 2026, arXiv:2505.24210, clean-room) is a
   deterministic multistep solver built from a stabilized Runge–Kutta–Gegenbauer
   stage cascade driven by Taylor-extrapolated "virtual" stage velocities, still
