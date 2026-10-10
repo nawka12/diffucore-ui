@@ -646,187 +646,187 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
     clean_neg, neg_loras = ENGINE.parse_lora_prompt(p.neg)
     loras = prompt_loras + neg_loras
 
-    try:
-        lora_info = ""
-        if loras:
-            lora_info = ENGINE.apply_temp_loras(loras) + "  |  "
+    # The tag set stays fused after the run (see Engine.apply_temp_loras), so a
+    # repeat skips the re-fuse; an untagged run samples the plain weights.
+    lora_info = ""
+    if loras:
+        lora_info = ENGINE.apply_temp_loras(loras) + "  |  "
+    else:
+        ENGINE.clear_temp_loras()
 
-        common = dict(
-            negative_prompt=clean_neg, steps=int(p.steps), cfg_scale=float(p.cfg),
-            sampler=p.sampler, scheduler=p.scheduler, seed=int(p.seed),
-            teacache_thresh=float(p.teacache),
-            teacache_use_coeffs=bool(p.teacache_calibrated),
-            teacache_forecast=p.teacache_forecast,
-            teacache_rule=p.teacache_rule,
-            teacache_sigma_floor=float(p.teacache_sigma_floor),
-            deepcache_interval=int(p.deepcache),
-            progress_callback=on_progress,
-            preview_callback=on_preview if p.preview else None,
+    common = dict(
+        negative_prompt=clean_neg, steps=int(p.steps), cfg_scale=float(p.cfg),
+        sampler=p.sampler, scheduler=p.scheduler, seed=int(p.seed),
+        teacache_thresh=float(p.teacache),
+        teacache_use_coeffs=bool(p.teacache_calibrated),
+        teacache_forecast=p.teacache_forecast,
+        teacache_rule=p.teacache_rule,
+        teacache_sigma_floor=float(p.teacache_sigma_floor),
+        deepcache_interval=int(p.deepcache),
+        progress_callback=on_progress,
+        preview_callback=on_preview if p.preview else None,
+    )
+    common.update(_settings_knobs(p.sampler, p.scheduler, p.teacache))
+
+    if p.mode == "i2i":
+        if not p.input_image:
+            raise RuntimeError("Provide an input image")
+        gen_kwargs = dict(
+            prompt=clean_prompt, input_image=_decode_image(p.input_image),
+            width=int(p.width), height=int(p.height),
+            strength=float(p.strength), **common,
         )
-        common.update(_settings_knobs(p.sampler, p.scheduler, p.teacache))
+        gen_fn = ENGINE.generate_i2i
+    elif p.mode == "inpaint":
+        if not p.input_image or not p.mask_image:
+            raise RuntimeError("Provide both an input image and a mask")
+        gen_kwargs = dict(
+            prompt=clean_prompt, input_image=_decode_image(p.input_image),
+            mask_image=_decode_mask(p.mask_image),
+            width=int(p.width), height=int(p.height),
+            strength=float(p.strength), **common,
+        )
+        gen_fn = ENGINE.generate_inpaint
+    else:  # t2i
+        gen_kwargs = dict(
+            prompt=clean_prompt, width=int(p.width), height=int(p.height),
+            shift=float(p.shift), **common,
+        )
+        gen_fn = ENGINE.generate_t2i
 
-        if p.mode == "i2i":
-            if not p.input_image:
-                raise RuntimeError("Provide an input image")
-            gen_kwargs = dict(
-                prompt=clean_prompt, input_image=_decode_image(p.input_image),
-                width=int(p.width), height=int(p.height),
-                strength=float(p.strength), **common,
-            )
-            gen_fn = ENGINE.generate_i2i
-        elif p.mode == "inpaint":
-            if not p.input_image or not p.mask_image:
-                raise RuntimeError("Provide both an input image and a mask")
-            gen_kwargs = dict(
-                prompt=clean_prompt, input_image=_decode_image(p.input_image),
-                mask_image=_decode_mask(p.mask_image),
-                width=int(p.width), height=int(p.height),
-                strength=float(p.strength), **common,
-            )
-            gen_fn = ENGINE.generate_inpaint
-        else:  # t2i
-            gen_kwargs = dict(
-                prompt=clean_prompt, width=int(p.width), height=int(p.height),
-                shift=float(p.shift), **common,
-            )
-            gen_fn = ENGINE.generate_t2i
+    t0 = time.perf_counter()
+    # Reuse the last base when only the post passes changed. Seed -1 asks for
+    # a new image, so it never reads the cache but still writes one under the
+    # resolved seed.
+    fp = _base_fingerprint(gen_kwargs, p.mode, loras) if p.seed != -1 else None
+    cached = _BASE_CACHE.get(fp) if fp else None
+    # Copies in and out: a post_generate extension may draw on its image.
+    if cached is not None:
+        base, info = cached
+        image, seed = base.copy(), int(p.seed)
+    else:
+        image, info = gen_fn(**gen_kwargs)
+        seed = ENGINE.last_seed
+        if fp is None and seed >= 0:
+            fp = _base_fingerprint({**gen_kwargs, "seed": seed}, p.mode, loras)
+        if fp is not None:
+            _BASE_CACHE.clear()
+            _BASE_CACHE[fp] = (image.copy(), info)
 
-        t0 = time.perf_counter()
-        # Reuse the last base when only the post passes changed. Seed -1 asks for
-        # a new image, so it never reads the cache but still writes one under the
-        # resolved seed.
-        fp = _base_fingerprint(gen_kwargs, p.mode, loras) if p.seed != -1 else None
-        cached = _BASE_CACHE.get(fp) if fp else None
-        # Copies in and out: a post_generate extension may draw on its image.
-        if cached is not None:
-            base, info = cached
-            image, seed = base.copy(), int(p.seed)
-        else:
-            image, info = gen_fn(**gen_kwargs)
-            seed = ENGINE.last_seed
-            if fp is None and seed >= 0:
-                fp = _base_fingerprint({**gen_kwargs, "seed": seed}, p.mode, loras)
-            if fp is not None:
-                _BASE_CACHE.clear()
-                _BASE_CACHE[fp] = (image.copy(), info)
+    # Upscale first so the detailer refines at the final resolution.
+    upscale_info = ""
+    upscaled = False
+    if p.upscale_enabled and float(p.upscale_scale) > 1.0:
+        try:
+            image, unote = ENGINE.upscale(
+                image,
+                scale=float(p.upscale_scale), tile=int(p.upscale_tile),
+                overlap=int(p.upscale_overlap), denoise=float(p.upscale_denoise),
+                base_upscaler=p.upscale_base,
+                prompt=p.upscale_prompt.strip() or clean_prompt,
+                negative_prompt=clean_neg,
+                steps=int(p.steps), cfg_scale=float(p.cfg),
+                sampler=p.sampler, scheduler=p.scheduler,
+                seed=seed,
+                teacache_thresh=float(p.upscale_teacache),
+                teacache_use_coeffs=bool(p.teacache_calibrated),
+                teacache_forecast=p.teacache_forecast,
+                teacache_rule=p.teacache_rule,
+                teacache_sigma_floor=float(p.teacache_sigma_floor),
+                progress_callback=on_progress,
+                preview_callback=on_preview if p.preview else None,
+                **_settings_knobs(p.sampler, p.scheduler, p.upscale_teacache),
+            )
+            upscale_info = "  |  " + unote
+            upscaled = True
+        except Exception as e:  # noqa: BLE001
+            # Keep the base image, and leave out the upscale metadata so a
+            # swallowed OOM can't pass for a successful upscale.
+            upscale_info = f"  |  ⚠ UPSCALE FAILED, saved the un-upscaled base image ({e})"
 
-        # Upscale first so the detailer refines at the final resolution.
-        upscale_info = ""
-        upscaled = False
-        if p.upscale_enabled and float(p.upscale_scale) > 1.0:
+    # Stacked detection models run in sequence, each on the previous result.
+    detail_info = ""
+    active = [dm for dm in p.detail_models
+              if dm.model and not dm.model.startswith("(")] if p.detail_enabled else []
+    applied = []  # models that actually refined the image (drives metadata)
+    if active and not ENGINE.can_inpaint:
+        detail_info = "  |  detailer skipped (no inpaint for this model)"
+    elif active:
+        notes = []
+        detail_tc = float(p.teacache) if p.detail_teacache else 0.0
+        for dm in active:
             try:
-                image, unote = ENGINE.upscale(
+                image, dnote = ENGINE.detail(
                     image,
-                    scale=float(p.upscale_scale), tile=int(p.upscale_tile),
-                    overlap=int(p.upscale_overlap), denoise=float(p.upscale_denoise),
-                    base_upscaler=p.upscale_base,
-                    prompt=p.upscale_prompt.strip() or clean_prompt,
-                    negative_prompt=clean_neg,
+                    detector_path=str(detector_path(dm.model)),
+                    prompt=dm.prompt.strip() or clean_prompt,
+                    negative_prompt=p.detail_neg.strip() or clean_neg,
+                    confidence=float(p.detail_confidence),
+                    strength=float(p.detail_strength),
                     steps=int(p.steps), cfg_scale=float(p.cfg),
                     sampler=p.sampler, scheduler=p.scheduler,
+                    dilation=int(p.detail_dilation), padding=int(p.detail_padding),
+                    blur=int(p.detail_blur), max_det=int(p.detail_max),
                     seed=seed,
-                    teacache_thresh=float(p.upscale_teacache),
+                    teacache_thresh=detail_tc,
                     teacache_use_coeffs=bool(p.teacache_calibrated),
                     teacache_forecast=p.teacache_forecast,
                     teacache_rule=p.teacache_rule,
                     teacache_sigma_floor=float(p.teacache_sigma_floor),
                     progress_callback=on_progress,
                     preview_callback=on_preview if p.preview else None,
-                    **_settings_knobs(p.sampler, p.scheduler, p.upscale_teacache),
+                    **_settings_knobs(p.sampler, p.scheduler, detail_tc),
                 )
-                upscale_info = "  |  " + unote
-                upscaled = True
+                notes.append(f"{dm.model}: {dnote.replace('Detailer: ', '')}")
+                applied.append(dm)
             except Exception as e:  # noqa: BLE001
-                # Keep the base image, and leave out the upscale metadata so a
-                # swallowed OOM can't pass for a successful upscale.
-                upscale_info = f"  |  ⚠ UPSCALE FAILED, saved the un-upscaled base image ({e})"
+                # Keep the image and leave this model out of the metadata.
+                notes.append(f"⚠ {dm.model} FAILED: {e}")
+        detail_info = "  |  detailer [" + "; ".join(notes) + "]"
 
-        # Stacked detection models run in sequence, each on the previous result.
-        detail_info = ""
-        active = [dm for dm in p.detail_models
-                  if dm.model and not dm.model.startswith("(")] if p.detail_enabled else []
-        applied = []  # models that actually refined the image (drives metadata)
-        if active and not ENGINE.can_inpaint:
-            detail_info = "  |  detailer skipped (no inpaint for this model)"
-        elif active:
-            notes = []
-            detail_tc = float(p.teacache) if p.detail_teacache else 0.0
-            for dm in active:
-                try:
-                    image, dnote = ENGINE.detail(
-                        image,
-                        detector_path=str(detector_path(dm.model)),
-                        prompt=dm.prompt.strip() or clean_prompt,
-                        negative_prompt=p.detail_neg.strip() or clean_neg,
-                        confidence=float(p.detail_confidence),
-                        strength=float(p.detail_strength),
-                        steps=int(p.steps), cfg_scale=float(p.cfg),
-                        sampler=p.sampler, scheduler=p.scheduler,
-                        dilation=int(p.detail_dilation), padding=int(p.detail_padding),
-                        blur=int(p.detail_blur), max_det=int(p.detail_max),
-                        seed=seed,
-                        teacache_thresh=detail_tc,
-                        teacache_use_coeffs=bool(p.teacache_calibrated),
-                        teacache_forecast=p.teacache_forecast,
-                        teacache_rule=p.teacache_rule,
-                        teacache_sigma_floor=float(p.teacache_sigma_floor),
-                        progress_callback=on_progress,
-                        preview_callback=on_preview if p.preview else None,
-                        **_settings_knobs(p.sampler, p.scheduler, detail_tc),
-                    )
-                    notes.append(f"{dm.model}: {dnote.replace('Detailer: ', '')}")
-                    applied.append(dm)
-                except Exception as e:  # noqa: BLE001
-                    # Keep the image and leave this model out of the metadata.
-                    notes.append(f"⚠ {dm.model} FAILED: {e}")
-            detail_info = "  |  detailer [" + "; ".join(notes) + "]"
+    # Everything but the disk save.
+    elapsed = time.perf_counter() - t0
 
-        # Everything but the disk save.
-        elapsed = time.perf_counter() - t0
+    # Save the raw prompt/neg so <lora:…> tags round-trip through metadata.
+    gen_kwargs["prompt"], gen_kwargs["negative_prompt"] = p.prompt, p.neg
+    detailer_meta = {
+        "models": [{"model": dm.model, "prompt": dm.prompt} for dm in applied],
+        "neg": p.detail_neg,
+        "confidence": p.detail_confidence,
+        "strength": p.detail_strength,
+        "dilation": p.detail_dilation,
+        "padding": p.detail_padding,
+        "blur": p.detail_blur,
+        "maxDet": p.detail_max,
+    } if applied else None
+    upscale_meta = {
+        "scale": float(p.upscale_scale),
+        "tile": int(p.upscale_tile),
+        "overlap": int(p.upscale_overlap),
+        "denoise": float(p.upscale_denoise),
+        "teacache": float(p.upscale_teacache),
+        "base": p.upscale_base or "Lanczos",
+        "prompt": p.upscale_prompt.strip() or "",
+    } if upscaled else None
+    gctx = EXTENSIONS.run_hook(
+        "post_generate", payload=p, image=image, info=info,
+    )
+    image = gctx.image
 
-        # Save the raw prompt/neg so <lora:…> tags round-trip through metadata.
-        gen_kwargs["prompt"], gen_kwargs["negative_prompt"] = p.prompt, p.neg
-        detailer_meta = {
-            "models": [{"model": dm.model, "prompt": dm.prompt} for dm in applied],
-            "neg": p.detail_neg,
-            "confidence": p.detail_confidence,
-            "strength": p.detail_strength,
-            "dilation": p.detail_dilation,
-            "padding": p.detail_padding,
-            "blur": p.detail_blur,
-            "maxDet": p.detail_max,
-        } if applied else None
-        upscale_meta = {
-            "scale": float(p.upscale_scale),
-            "tile": int(p.upscale_tile),
-            "overlap": int(p.upscale_overlap),
-            "denoise": float(p.upscale_denoise),
-            "teacache": float(p.upscale_teacache),
-            "base": p.upscale_base or "Lanczos",
-            "prompt": p.upscale_prompt.strip() or "",
-        } if upscaled else None
-        gctx = EXTENSIONS.run_hook(
-            "post_generate", payload=p, image=image, info=info,
-        )
-        image = gctx.image
-
-        out = _save_output(image, gen_kwargs, detailer=detailer_meta,
-                           upscale=upscale_meta, seed=seed, blur_check=p.blur_check)
-        rel = out.relative_to(OUTPUTS_DIR)
-        EXTENSIONS.run_hook("post_save", payload=p, image=image, path=out)
-        return {
-            "image_url": _output_url(out),
-            # Instant prompt verdict; the background AI rating arrives later as
-            # a "rated" SSE event.
-            "path": rel.as_posix(),
-            "nsfw_prompt": md.prompt_is_nsfw(clean_prompt),
-            "prompt_rating": md.prompt_rating(clean_prompt),
-            "info": f"{lora_info}{info}  |  inference: {elapsed:.2f}s{upscale_info}{detail_info}  |  saved to {rel}",
-            "seed": seed,
-        }
-    finally:
-        if loras:
-            ENGINE.clear_temp_loras()
+    out = _save_output(image, gen_kwargs, detailer=detailer_meta,
+                       upscale=upscale_meta, seed=seed, blur_check=p.blur_check)
+    rel = out.relative_to(OUTPUTS_DIR)
+    EXTENSIONS.run_hook("post_save", payload=p, image=image, path=out)
+    return {
+        "image_url": _output_url(out),
+        # Instant prompt verdict; the background AI rating arrives later as
+        # a "rated" SSE event.
+        "path": rel.as_posix(),
+        "nsfw_prompt": md.prompt_is_nsfw(clean_prompt),
+        "prompt_rating": md.prompt_rating(clean_prompt),
+        "info": f"{lora_info}{info}  |  inference: {elapsed:.2f}s{upscale_info}{detail_info}  |  saved to {rel}",
+        "seed": seed,
+    }
 
 
 def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
@@ -1202,6 +1202,18 @@ EXTENSIONS = ExtensionLoader(
 )
 
 
+# Job kinds that set their own prompt-tag LoRAs, or never sample.
+_KEEPS_TAG_LORAS = {"generate", "xyz", "tag"}
+
+
+def _drop_tag_loras_for(job: Job) -> None:
+    """A generation leaves its tag LoRAs fused; every other job that samples
+    (standalone upscale/detail, calibration, extensions) expects the plain
+    weights."""
+    if job.kind not in _KEEPS_TAG_LORAS:
+        ENGINE.clear_temp_loras()
+
+
 def _worker() -> None:
     global CURRENT
     while True:
@@ -1228,6 +1240,7 @@ def _worker() -> None:
                 and ENGINE.active_offload == "stream"):
             tagger_mod.TAGGER.unload()
         try:
+            _drop_tag_loras_for(job)
             result = job.run(job)
             job.status = "done"
             _push({"type": "done", "job": job.id, **result})

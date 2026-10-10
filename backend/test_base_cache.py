@@ -298,6 +298,124 @@ def test_load_and_unload_move_the_epoch():
     assert eng.weights_epoch == before + 2
 
 
+# ── prompt-tag LoRAs stay fused across repeats ──────────────────────
+
+@pytest.fixture
+def lora_engine(monkeypatch, tmp_path):
+    """A real Engine over a fake bundle; counts fuses and unfuses."""
+    import engine as engine_mod
+    from types import SimpleNamespace
+    from diffucore.runtime import ConditioningCache
+
+    calls = {"fuse": 0, "clear": 0}
+    files = {}
+
+    def fake_lora_path(name):
+        if name not in files:
+            files[name] = tmp_path / f"{name}.safetensors"
+            files[name].touch()
+        return files[name]
+
+    def fake_apply(bundle, path, multiplier=1.0):
+        calls["fuse"] += 1
+        return SimpleNamespace(applied=3, remapped=False)
+
+    def fake_clear(bundle):
+        calls["clear"] += 1
+
+    monkeypatch.setattr(engine_mod, "lora_path", fake_lora_path)
+    monkeypatch.setattr(engine_mod, "apply_lora", fake_apply)
+    monkeypatch.setattr(engine_mod, "clear_bundle_loras", fake_clear)
+    eng = Engine()
+    eng._loaded = engine_mod.LoadedModel(
+        name="m", family="anima", model=SimpleNamespace(cond_cache=ConditioningCache()),
+        native_res=1024)
+    eng.calls, eng.files = calls, files
+    return eng
+
+
+def test_repeating_a_tag_set_skips_the_refuse(lora_engine):
+    """A batch or re-roll with the same tags must not pay the 3-5 s fuse and
+    the unfuse again, and keeps the conditioning cache."""
+    eng = lora_engine
+    msg = eng.apply_temp_loras([("style", 0.8)])
+    eng._loaded.model.cond_cache.put(("p", "n"), {})
+    assert eng.apply_temp_loras([("style", 0.8)]) == msg
+    assert eng.calls["fuse"] == 1
+    assert eng._loaded.model.cond_cache.get(("p", "n")) is not None
+    assert eng.applied_loras == ["style"]
+
+
+@pytest.mark.parametrize("second", [[("style", 0.5)], [("other", 0.8)],
+                                    [("style", 0.8), ("other", 0.8)]])
+def test_a_different_tag_set_refuses(lora_engine, second):
+    eng = lora_engine
+    eng.apply_temp_loras([("style", 0.8)])
+    eng._loaded.model.cond_cache.put(("p", "n"), {})
+    eng.apply_temp_loras(second)
+    assert eng.calls["fuse"] == 1 + len(second)
+    assert eng._loaded.model.cond_cache.get(("p", "n")) is None
+
+
+def test_an_overwritten_lora_file_refuses(lora_engine):
+    import os
+    eng = lora_engine
+    eng.apply_temp_loras([("style", 0.8)])
+    st = eng.files["style"].stat()
+    os.utime(eng.files["style"], ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+    eng.apply_temp_loras([("style", 0.8)])
+    assert eng.calls["fuse"] == 2
+
+
+def test_clear_is_a_no_op_with_nothing_fused(lora_engine):
+    """Untagged runs call clear every time; with nothing fused it must not
+    restore weights or drop the conditioning cache."""
+    eng = lora_engine
+    eng._loaded.model.cond_cache.put(("p", "n"), {})
+    eng.clear_temp_loras()
+    assert eng.calls["clear"] == 0
+    assert eng._loaded.model.cond_cache.get(("p", "n")) is not None
+    eng.apply_temp_loras([("style", 0.8)])
+    eng.clear_temp_loras()
+    eng.clear_temp_loras()
+    assert eng.applied_loras == []
+    assert eng.calls["clear"] == 2           # apply's reset + one real clear
+    eng.apply_temp_loras([("style", 0.8)])
+    assert eng.calls["fuse"] == 2            # cleared, so the next run re-fuses
+
+
+def test_a_failed_fuse_is_cleared_next_time(lora_engine, monkeypatch):
+    """A fuse that raises midway leaves partial deltas, so the recorded set
+    must not claim the weights are clean."""
+    import engine as engine_mod
+    eng = lora_engine
+    monkeypatch.setattr(engine_mod, "apply_lora",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("bad file")))
+    with pytest.raises(RuntimeError):
+        eng.apply_temp_loras([("style", 0.8)])
+    before = eng.calls["clear"]
+    eng.clear_temp_loras()
+    assert eng.calls["clear"] == before + 1
+
+
+def test_untagged_run_drops_the_previous_tags(stub):
+    _run(prompt="a cat <lora:style:0.8>", seed=7)
+    assert stub.applied == [("style", 0.8)]
+    _run(prompt="a cat", seed=7)
+    assert stub.applied == []
+
+
+@pytest.mark.parametrize("kind,drops", [
+    ("generate", False), ("xyz", False), ("tag", False),
+    ("upscale", True), ("detail", True), ("calibrate", True), ("load", True),
+    ("ext:manual-detailer", True),
+])
+def test_jobs_that_sample_plain_weights_drop_tag_loras(stub, kind, drops):
+    stub.applied = [("style", 0.8)]
+    server._drop_tag_loras_for(server.Job(kind, "t", lambda j: {}))
+    assert (stub.applied == []) is drops
+
+
 # ── standalone detailer ─────────────────────────────────────────────
 
 def test_detail_route_rejects_an_empty_model_stack():

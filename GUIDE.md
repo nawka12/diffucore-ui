@@ -256,6 +256,8 @@ browse); in **inpaint**, paint over the region to repaint; tune the brush size
 or clear the mask to start over.
 
 LoRAs can be activated inline: `a castle in autumn, <lora:autumn_style:0.8>`.
+The tag set stays loaded between images, so only the first image after a change
+of LoRAs or weights pays the load.
 
 > **The first image is slower**, and so is the first image at each new
 > resolution. The first generation pays a one-time GPU warmup (CUDA kernel

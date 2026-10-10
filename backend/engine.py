@@ -263,6 +263,10 @@ class LoadedModel:
     # Staging settings it was loaded under (offload, vae_tile, …), so an LRU
     # restore can check the placement still matches.
     stage_settings: Optional[tuple] = None
+    # The prompt-tag LoRA set fused into the weights (see apply_temp_loras) and
+    # its report; None = unknown (a permanent LoRA was fused on top).
+    temp_lora_key: Optional[tuple] = ()
+    temp_lora_msg: str = "No LoRAs"
 
 
 class Engine:
@@ -413,9 +417,27 @@ class Engine:
         cleaned = LORA_PROMPT_RE.sub(_extract, prompt)
         return cleaned, loras
 
+    @staticmethod
+    def _temp_lora_key(loras: list[tuple[str, float]]) -> tuple:
+        """Identity of a tag set, file mtimes included so an overwritten LoRA
+        file is re-read."""
+        def mtime(name):
+            try:
+                return lora_path(name).stat().st_mtime_ns
+            except (ValueError, OSError):
+                return None
+        return tuple((name, float(mult), mtime(name)) for name, mult in loras)
+
     def apply_temp_loras(self, loras: list[tuple[str, float]]) -> str:
+        """Fuse the prompt-tag LoRA set. The set stays fused afterwards, so a
+        repeat (a batch, or a re-roll) skips the re-fuse and keeps the
+        conditioning cache; :meth:`clear_temp_loras` drops it."""
         if not self._loaded:
             return "No model loaded"
+        key = self._temp_lora_key(loras)
+        if key == self._loaded.temp_lora_key:
+            return self._loaded.temp_lora_msg
+        self._loaded.temp_lora_key = None   # unknown until the fuse below finishes
         clear_bundle_loras(self._loaded.model)
         self._loaded.applied_loras.clear()
         msgs = []
@@ -433,12 +455,15 @@ class Engine:
             msgs.append(f"{name}@{mult}: {report.applied} matched"
                         + (" (28-block LoRA remapped)" if report.remapped else ""))
         self._invalidate_cond_cache()  # LoRA patches the TE/adapter
-        return " | ".join(msgs) if msgs else "No LoRAs"
+        msg = " | ".join(msgs) if msgs else "No LoRAs"
+        self._loaded.temp_lora_key, self._loaded.temp_lora_msg = key, msg
+        return msg
 
     def clear_temp_loras(self) -> None:
-        if self._loaded:
+        if self._loaded and self._loaded.temp_lora_key != ():
             clear_bundle_loras(self._loaded.model)
             self._loaded.applied_loras.clear()
+            self._loaded.temp_lora_key, self._loaded.temp_lora_msg = (), "No LoRAs"
             self._invalidate_cond_cache()
 
     # ── model loading ──────────────────────────────────────────────
@@ -874,6 +899,7 @@ class Engine:
             # moves. A restore then matches a fresh load from disk.
             clear_bundle_loras(lm.model)
             lm.applied_loras.clear()
+            lm.temp_lora_key, lm.temp_lora_msg = (), "No LoRAs"
             _bundle_to(lm.model, "cpu")
         except Exception as e:  # noqa: BLE001  proxy/wrapper can't be moved wholesale
             log.debug("ckpt cache: can't move %s to CPU (%s); dropping", lm.name, e)
