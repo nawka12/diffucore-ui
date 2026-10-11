@@ -330,6 +330,20 @@ bugs, just how the model responds):
   extra evaluation per step but needs no warm-up history, which can help at very
   low step counts; image-quality A/B versus `dpmpp_2m` is still pending.
 
+- **`seeds_2` / `seeds_3`** (SEEDS, Gonzalez et al., NeurIPS 2023,
+  arXiv:2305.14267, clean-room from the paper) are stochastic single-step
+  solvers for the reverse SDE: exponential Runge–Kutta in half-logSNR with
+  2 (`seeds_2`, midpoint) or 3 (`seeds_3`) model evaluations per step. What sets
+  them apart from `dpmpp_sde` is the noise: every stage of a step reads the same
+  Brownian path, so the step's total noise is the exact SDE's. On a Gaussian
+  test at 20 steps, `seeds_3` lands within 0.5% of the true variance, while
+  independent per-stage noise loses about a quarter of it. (`dpmpp_sde` did
+  exactly that until 2026-10-11 and came out too smooth; it now chains its two
+  noise draws too.) Like any SDE sampler they want more evaluations than the deterministic
+  multistep solvers (the paper's wins are at 90–270 evaluations), so compare
+  `seeds_3` at 10 steps with a 30-step deterministic run, not at equal steps.
+  All families. Image-quality A/B on Anima is still pending.
+
 - **`uni_pc` / `uni_pc_bh2`** (UniPC, a unified predictor-corrector multistep
   solver) are deterministic and, like `dpmpp_2m`, stay ~one model evaluation per
   step, because the corrector's evaluation doubles as the next step's history. The
@@ -584,6 +598,17 @@ bugs, just how the model responds):
   against `uni_pc` at low step counts here. Works on all families (SD/SDXL,
   Anima, FLUX); pair with `beta`/`flow` like the other multistep solvers.
   Image-quality A/B on Anima is still pending.
+
+- **`stork4`** (STORK-4, same paper, clean-room) is the paper's stronger
+  variant: it swaps the stage cascade for ROCK4, a fourth-order
+  Runge–Kutta–Chebyshev method. With the virtual stage velocities the cascade
+  integrates the velocity's Taylor polynomial exactly (checked against the
+  ROCK4 tables to 2.5e-4), so it runs in closed form and the stage count
+  drops out. The result is `stork2` *without* the damping: a variable-step
+  2-step Adams–Bashforth (identical to `ipndm_v` held at order 2). The paper
+  measures it ahead of `stork2` on SANA at 7–10 steps (MJHQ FID 6.67 vs 7.59
+  at 8 steps); at 30–50 steps the two should be close. One model evaluation
+  per step, deterministic, all families.
 
 - **`infinity`** is an implementation of
   [Infinity Diffusion](https://github.com/galpt/infinity-diffusion)'s sampler
