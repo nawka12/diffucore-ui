@@ -1492,7 +1492,7 @@ def api_models():
         "recommended_offload": ENGINE.recommended_offload(),
         # Gates the UI's "fa2 attn" chip (package installed and an sm75 GPU).
         "fa2_available": ENGINE.fa2_attention_available(),
-        # Gates the "int8 attn" chip (sm75 GPU and a CUDA toolchain to build it).
+        # Gates the "int8 attn" chip (sm75 or sm80+ GPU and a CUDA toolchain to build it).
         "int8_available": ENGINE.int8_attention_available(),
         # Gates the "fused glue" chip (Triton + CUDA; Anima only).
         "fused_glue_available": ENGINE.fused_glue_available(),

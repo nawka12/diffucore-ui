@@ -143,7 +143,7 @@
         </label>
         <label class="chip" :class="{on: perf.int8Attn, disabled: perf.compile}"
                x-show="int8Available && modelType!=='SD/SDXL'"
-               title="INT8 attention for Turing GPUs: ~1.5× faster than fa2 on self-attention, not exact (cross-attention stays exact). The first load builds the kernel (~1 min).">
+               title="INT8 attention for RTX 20-series and newer: self-attention ~1.75x faster than fa2 on an RTX 2060, ~1.85x faster than PyTorch attention on an RTX 5090. Not exact (cross-attention stays exact). The first load builds the kernel (~1 min, needs the CUDA toolkit).">
           <input type="checkbox" x-model="perf.int8Attn" :disabled="perf.compile" @change="if(perf.int8Attn) perf.fa2Attn=false"> int8 attn
         </label>
         <label class="chip" :class="{on: perf.fusedGlue}"

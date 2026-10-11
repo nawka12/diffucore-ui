@@ -361,7 +361,7 @@ class Engine:
     @staticmethod
     def int8_attention_available() -> bool:
         """Whether the in-tree INT8 attention kernel can be built and run here
-        (sm75 GPU plus nvcc and ninja; the build happens at model load)."""
+        (sm75 or sm80+ GPU plus nvcc and ninja; the build happens at model load)."""
         return int8_turing_available()
 
     @staticmethod
