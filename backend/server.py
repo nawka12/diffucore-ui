@@ -292,6 +292,7 @@ class LoadPayload(BaseModel):
     vae_fp16: bool = False              # non-finite output falls back to fp32
     attention: str = "sdpa"             # "sdpa" | "fa2_turing" (sm75; all families) | "int8_turing" (sm75; Anima/FLUX)
     fused_glue: bool = False            # Anima only; Triton-fused block glue
+    int8: bool = False                  # Anima only; quantize DiT linears to INT8 at load
 
 
 class DetailerModel(BaseModel):
@@ -1495,6 +1496,8 @@ def api_models():
         "int8_available": ENGINE.int8_attention_available(),
         # Gates the "fused glue" chip (Triton + CUDA; Anima only).
         "fused_glue_available": ENGINE.fused_glue_available(),
+        # Gates the "int8" chip (CUDA sm75+ and Triton; Anima only).
+        "int8_weights_available": ENGINE.int8_weights_available(),
         "ui_id": md.UI_ID,
         "diff_id": md.DIFF_ID,
     }
@@ -1586,6 +1589,7 @@ def _do_load_impl(p: LoadPayload) -> str:
             attention=p.attention,
             vae_fp16=p.vae_fp16,
             fused_glue=p.fused_glue,
+            int8=p.int8,
         )
     if p.model_type == "FLUX":
         # An all-in-one checkpoint takes precedence over split files.

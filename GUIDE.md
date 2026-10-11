@@ -85,6 +85,23 @@ network/share flags, architecture, and status.
   about as much as nudging 0.01% of the latent by one ulp), so not bit-exact.
   Works on any CUDA GPU with Triton (bundled with PyTorch on Linux); resolution
   changes never recompile. No effect under torch.compile, which fuses on its own.
+- **INT8 models (Anima)**: ComfyUI's INT8 checkpoints (`int8_tensorwise`, with
+  or without ConvRot, e.g. the Anima-ConvRot files on Hugging Face) load as-is
+  from the DiT dropdown, and the opt-in **int8** load flag quantizes a normal
+  bf16/fp16 Anima DiT the same way at load (about a second). The attention and
+  MLP linears of every block but the first and last get int8 weights and
+  per-token int8 activations (W8A8): the GEMM runs on int8 tensor cores
+  (cuBLASLt), quantize and rescale are Triton kernels, and each MLP's GELU is
+  fused into the hop between its two GEMMs. Measured on an RTX 2060 with fp16
+  accumulation, fused glue, int8 attn and fp16 VAE (1024×1024, 30 steps, CFG
+  4.5): 32.7 to 28.5 s per image (×1.11-1.15 across runs), DiT weights 4.2 to
+  2.5 GB, peak VRAM 7.7 to 6.1 GB. Images keep composition and quality but are
+  not identical (a different sample, like int8 attn). LoRAs work: each touched
+  layer is re-quantized with seeded stochastic rounding, since rounding to
+  nearest would erase most of a LoRA's small deltas, and removing the LoRA
+  restores the original int8 bytes. Needs an RTX 20-series or newer with Triton;
+  elsewhere an INT8 file is converted back to fp16 at load (no speedup). Only
+  `int8_tensorwise` is read; fp8 and nvfp4 files are rejected with an error.
 - **35+ samplers, multiple schedulers**: Euler, Heun, DPM++ family, ER-SDE,
   SECANT, UniPC, cogent; Karras, exponential, sgm_uniform, flow, and more.
 - **Gallery with metadata round-trip**: every generated image saves its full
@@ -142,8 +159,9 @@ pip install -r requirements.txt
 pip install -e ./diffucore
 
 # 3. Install the CUDA build of torch for your GPU
-#    cu124 covers most cards; RTX 50-series (Blackwell) needs cu128 instead.
-pip install torch --index-url https://download.pytorch.org/whl/cu124
+#    cu130 for RTX 20-series and newer on an NVIDIA driver 580+; otherwise
+#    cu124 (cu128 for an RTX 50-series on an older driver).
+pip install torch --index-url https://download.pytorch.org/whl/cu130
 ```
 
 Or run `./setup.sh` to do all of the above automatically. On Windows, run

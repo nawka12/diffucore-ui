@@ -23,13 +23,16 @@ if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$REQ_HASH" ]; then
     echo "requirements.txt changed, syncing dependencies..."
     pip install -q -r "$REQ_FILE"
     # A new dep can pull torchvision from PyPI and clobber the CUDA torch, so
-    # repair it from the right index (cu128 for Blackwell, like setup.sh).
+    # repair it from the right index (the same pick as setup.sh).
     if ! python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
         echo "Repairing CUDA torch..."
         TORCH_INDEX="https://download.pytorch.org/whl/cu124"
         if command -v nvidia-smi >/dev/null 2>&1; then
             cc="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n1 | tr -dc 0-9)"
-            if { [ -n "$cc" ] && [ "$cc" -ge 100 ] 2>/dev/null; } \
+            drv="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 | cut -d. -f1 | tr -dc 0-9)"
+            if [ -n "$cc" ] && [ -n "$drv" ] && [ "$cc" -ge 75 ] 2>/dev/null && [ "$drv" -ge 580 ] 2>/dev/null; then
+                TORCH_INDEX="https://download.pytorch.org/whl/cu130"
+            elif { [ -n "$cc" ] && [ "$cc" -ge 100 ] 2>/dev/null; } \
                || nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -qiE 'RTX *50[0-9][0-9]'; then
                 TORCH_INDEX="https://download.pytorch.org/whl/cu128"
             fi

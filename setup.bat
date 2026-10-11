@@ -68,7 +68,13 @@ where nvidia-smi >nul 2>nul && (
     findstr /i /r "RTX 50[0-9][0-9]" "%TEMP%\dc_gpu.txt" >nul 2>nul && set "TORCH_INDEX=https://download.pytorch.org/whl/cu128"
     del "%TEMP%\dc_gpu.txt" >nul 2>nul
 )
-if /i not "%TORCH_INDEX%"=="https://download.pytorch.org/whl/cu124" echo Detected Blackwell-class GPU - using CUDA 12.8 torch wheels.
+REM cu130 instead with driver 580+ on an RTX 20-series or newer (sm_75+).
+set "DC_DRV=0"
+set "DC_CC=0"
+for /f "tokens=1 delims=." %%a in ('nvidia-smi --query-gpu^=driver_version --format^=csv^,noheader 2^>nul') do set "DC_DRV=%%a"
+for /f "tokens=1,2 delims=." %%a in ('nvidia-smi --query-gpu^=compute_cap --format^=csv^,noheader 2^>nul') do set "DC_CC=%%a%%b"
+if %DC_DRV% GEQ 580 if %DC_CC% GEQ 75 set "TORCH_INDEX=https://download.pytorch.org/whl/cu130"
+echo Using torch wheels from %TORCH_INDEX%
 echo Downloading the CUDA torch build, ~2.5 GB - this is the slow part...
 "%VPY%" -m pip install torch torchvision --index-url %TORCH_INDEX%
 if errorlevel 1 goto :error
@@ -80,7 +86,7 @@ if errorlevel 1 goto :error
 REM --- CUDA torch sanity check ---
 "%VPY%" -c "import torch; assert torch.cuda.is_available()" 2>nul
 if errorlevel 1 (
-    echo [4/4] WARNING: torch present but CUDA unavailable ^(check NVIDIA driver vs cu124^).
+    echo [4/4] WARNING: torch present but CUDA unavailable ^(check the NVIDIA driver vs %TORCH_INDEX%^).
 ) else (
     echo [4/4] CUDA torch OK.
 )

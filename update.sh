@@ -31,12 +31,15 @@ pip install -q -e "$SCRIPT_DIR/diffucore"
 # --- ensure CUDA torch is still present ---
 # On failure, uninstall first: a bare `pip install torch` is a no-op when a
 # mismatched wheel is already installed, so it could never repair a CPU build.
-# Pick the wheel by GPU arch: cu124 wheels stop at sm_90, so Blackwell
-# (RTX 50-series, compute cap 10.0+/sm_120) needs the cu128 build.
+# Pick the wheel as setup.sh does: cu130 with driver 580+ on sm_75+, else
+# cu124, or cu128 on Blackwell (RTX 50-series, compute cap 10.0+/sm_120).
 TORCH_INDEX="https://download.pytorch.org/whl/cu124"
 if command -v nvidia-smi >/dev/null 2>&1; then
     cc="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n1 | tr -dc 0-9)"
-    if { [ -n "$cc" ] && [ "$cc" -ge 100 ] 2>/dev/null; } \
+    drv="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 | cut -d. -f1 | tr -dc 0-9)"
+    if [ -n "$cc" ] && [ -n "$drv" ] && [ "$cc" -ge 75 ] 2>/dev/null && [ "$drv" -ge 580 ] 2>/dev/null; then
+        TORCH_INDEX="https://download.pytorch.org/whl/cu130"
+    elif { [ -n "$cc" ] && [ "$cc" -ge 100 ] 2>/dev/null; } \
        || nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -qiE 'RTX *50[0-9][0-9]'; then
         TORCH_INDEX="https://download.pytorch.org/whl/cu128"
     fi

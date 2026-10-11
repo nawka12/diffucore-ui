@@ -41,17 +41,21 @@ echo "[3/4] Installing Python dependencies..."
 pip install --upgrade pip -q
 # Install the CUDA torch build first so requirements.txt doesn't pull the
 # default PyPI wheel (built for a newer CUDA than many drivers run). torchvision
-# comes along because spandrel needs it. cu124 wheels stop at sm_90, so
-# Blackwell (RTX 50-series, compute cap 10.0+) gets cu128.
+# comes along because spandrel needs it. cu130 needs driver 580+ and an RTX
+# 20-series or newer (sm_75+); otherwise cu124, or cu128 on Blackwell (RTX
+# 50-series, compute cap 10.0+), since cu124 wheels stop at sm_90.
 TORCH_INDEX="https://download.pytorch.org/whl/cu124"
 if command -v nvidia-smi >/dev/null 2>&1; then
     cc="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n1 | tr -dc 0-9)"
-    if { [ -n "$cc" ] && [ "$cc" -ge 100 ] 2>/dev/null; } \
+    drv="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 | cut -d. -f1 | tr -dc 0-9)"
+    if [ -n "$cc" ] && [ -n "$drv" ] && [ "$cc" -ge 75 ] 2>/dev/null && [ "$drv" -ge 580 ] 2>/dev/null; then
+        TORCH_INDEX="https://download.pytorch.org/whl/cu130"
+    elif { [ -n "$cc" ] && [ "$cc" -ge 100 ] 2>/dev/null; } \
        || nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -qiE 'RTX *50[0-9][0-9]'; then
         TORCH_INDEX="https://download.pytorch.org/whl/cu128"
-        echo "Detected Blackwell-class GPU, using CUDA 12.8 torch wheels."
     fi
 fi
+echo "Using torch wheels from $TORCH_INDEX"
 echo "Downloading the CUDA torch build (~2.5 GB). This is the slow part..."
 pip install torch torchvision --index-url "$TORCH_INDEX"
 pip install -r "$SCRIPT_DIR/requirements.txt"
@@ -60,7 +64,7 @@ pip install -q -e "$SCRIPT_DIR/diffucore"
 # --- CUDA torch sanity check ---
 python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null && \
     echo "[4/4] CUDA torch OK." || \
-    echo "[4/4] WARNING: torch present but CUDA unavailable (check NVIDIA driver vs cu124)."
+    echo "[4/4] WARNING: torch present but CUDA unavailable (check the NVIDIA driver vs ${TORCH_INDEX##*/})."
 
 echo ""
 echo "=== Setup complete ==="

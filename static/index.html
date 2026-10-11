@@ -151,6 +151,11 @@
                title="Fuse each Anima block's norm/modulation/residual steps into single Triton kernels (~1.38× per step at 1024×1536 on an RTX 2060). Within 1 fp16 rounding step of the unfused math, not bit-exact. No effect under torch.compile.">
           <input type="checkbox" x-model="perf.fusedGlue"> fused glue
         </label>
+        <label class="chip" :class="{on: perf.int8}"
+               x-show="int8WeightsAvailable && modelType==='Anima'"
+               title="Quantize the DiT's attention and MLP layers to INT8 at load (weights and activations). About 1.13x faster per image on an RTX 2060 and 1.6 GB less VRAM; a different sample of the same quality, not identical to fp16. INT8 checkpoint files load as INT8 without this.">
+          <input type="checkbox" x-model="perf.int8"> int8
+        </label>
       </div>
 
       <div class="status" :class="{live: modelLoaded}" x-text="status"></div>

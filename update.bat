@@ -70,6 +70,12 @@ where nvidia-smi >nul 2>nul && (
     findstr /i /r "RTX 50[0-9][0-9]" "%TEMP%\dc_gpu.txt" >nul 2>nul && set "TORCH_INDEX=https://download.pytorch.org/whl/cu128"
     del "%TEMP%\dc_gpu.txt" >nul 2>nul
 )
+REM cu130 instead with driver 580+ on an RTX 20-series or newer (sm_75+).
+set "DC_DRV=0"
+set "DC_CC=0"
+for /f "tokens=1 delims=." %%a in ('nvidia-smi --query-gpu^=driver_version --format^=csv^,noheader 2^>nul') do set "DC_DRV=%%a"
+for /f "tokens=1,2 delims=." %%a in ('nvidia-smi --query-gpu^=compute_cap --format^=csv^,noheader 2^>nul') do set "DC_CC=%%a%%b"
+if %DC_DRV% GEQ 580 if %DC_CC% GEQ 75 set "TORCH_INDEX=https://download.pytorch.org/whl/cu130"
 "%VPY%" -m pip uninstall -y -q torch torchvision
 "%VPY%" -m pip install -q torch torchvision --index-url %TORCH_INDEX%
 goto :eof
