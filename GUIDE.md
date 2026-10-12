@@ -9,8 +9,8 @@ network/share flags, architecture, and status.
 - **Five model families, one interface**: Stable Diffusion 1.5, SDXL,
   **Anima** (a 2 B DiT built on Cosmos-Predict2, plus the 40-block
   Anima-2.9B), **FLUX** (FLUX.1 and
-  FLUX.2 Klein), and **Krea 2** (Raw and Turbo, txt2img only for now). The first
-  four do txt2img, img2img, and inpaint; Anima and FLUX use
+  FLUX.2 Klein), and **Krea 2** (Raw and Turbo). All five do txt2img, img2img,
+  and inpaint; Anima, FLUX and Krea 2 use
   soft, latent-mask inpaint (no dedicated inpaint model). Switch between them
   from the model bar.
 - **Unified Generate workspace**: one shared control panel with a
@@ -814,7 +814,14 @@ Things worth knowing:
   (page cache) instead of RAM copies, so the 13.5 GB INT8 DiT runs on a 12 GB
   GPU with 23 GB of RAM (RTX 2060: about 29 s per Turbo image at 1024²,
   about 4.7 min per Raw image).
-- **Not yet supported:** img2img, inpaint, the detailer, the upscaler, and LoRA.
+- **LoRA** works in both formats in circulation (ComfyUI `diffusion_model.*`
+  and diffusers `transformer.*`). Krea 2 LoRAs are applied as a side branch
+  instead of being merged into the weights, so they need no extra RAM and
+  switching them is instant. Tip: Raw with Comfy-Org's
+  `krea2_turbo_lora_rank_64_bf16` and the **Turbo** variant setting gives
+  Turbo-speed images from Raw (and lets Raw-trained LoRAs run at 8 steps).
+- img2img, inpaint, the detailer and the upscaler work as for Anima. TeaCache
+  is not available for Krea 2.
 - **License.** The weights are under the Krea 2 Community License (commercial
   use only below $1M annual revenue; deployers must run content filtering).
   Diffucore ships no weights. The UI's NSFW filter can be part of that

@@ -273,7 +273,6 @@ document.addEventListener('alpine:init', () => {
     get isFlowModel() {
       return this.modelType === 'Anima' || this.modelType === 'FLUX' || this.modelType === 'Krea2';
     },
-    // img2img, inpaint, detailer, upscaler and LoRA have no Krea 2 engine path yet.
     get isKrea2() { return this.modelType === 'Krea2'; },
     get krea2RawTooLarge() {
       return this.isKrea2 && this.krea2Variant === 'raw' && this.form.width * this.form.height > 1.3 * 1024 * 1024;
@@ -575,7 +574,6 @@ document.addEventListener('alpine:init', () => {
       if (f.model_type === 'Krea2') {
         this.krea2Variant = f.variant || this.inferKrea2Variant(f.dit);
         this.krea2Applied = true;   // the restored variant stands; don't reset the form to its defaults
-        this.mode = 't2i';
       }
       if (f.offload) this.perf.offload = f.offload;
       this.perf.compile = !!f.compile;
@@ -667,7 +665,6 @@ document.addEventListener('alpine:init', () => {
         this.form.cfg = 3.5;
       }
       if (type === 'Krea2') {
-        this.mode = 't2i';
         if (!this.krea2Applied) {
           this.krea2Applied = true;
           this.krea2Variant = this.inferKrea2Variant(this.dit);
@@ -1085,7 +1082,6 @@ document.addEventListener('alpine:init', () => {
     async generate() {
       // A load in flight is fine: the job queues behind it.
       if (!this.modelLoaded && !this.loadingModel) { this.flash('Load a model first'); return; }
-      if (this.isKrea2 && this.mode !== 't2i') { this.flash('img2img and inpaint: not supported for Krea 2 yet'); return; }
       if (this.mode === 'i2i' && !this.inputImage) { this.flash('Provide an input image'); return; }
       if (this.mode === 'inpaint') {
         if (!this.inputImage) { this.flash('Provide an input image'); return; }
@@ -1132,7 +1128,7 @@ document.addEventListener('alpine:init', () => {
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
           preview: this.preview,
           blur_check: this.blurOn,
-          detail_enabled: this.detail.enabled && !this.isKrea2,
+          detail_enabled: this.detail.enabled,
           detail_models: this.detail.models,
           detail_neg: this.detail.neg,
           detail_confidence: this.detail.confidence,
@@ -1142,7 +1138,7 @@ document.addEventListener('alpine:init', () => {
           detail_blur: this.detail.blur,
           detail_max: this.detail.maxDet,
           detail_teacache: this.detail.teacache,
-          upscale_enabled: this.upscale.enabled && !this.isKrea2,
+          upscale_enabled: this.upscale.enabled,
           upscale_scale: this.upscale.scale,
           upscale_denoise: this.upscale.denoise,
           upscale_tile: this.upscale.tile,
@@ -2025,7 +2021,6 @@ document.addEventListener('alpine:init', () => {
 
     async sendToMode(mode) {
       if (!this.selected) return;
-      if (this.isKrea2) { this.flash('img2img and inpaint: not supported for Krea 2 yet'); return; }
       try {
         const blob = await (await fetch(this.selected.url)).blob();
         this.inputImage = await new Promise((res, rej) => {

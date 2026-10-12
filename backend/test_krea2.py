@@ -69,7 +69,7 @@ def test_engine_krea2_surface():
     eng._loaded = _krea2()
     assert eng.available_schedulers == SCHEDULERS_KREA2
     assert eng.loaded_variant == "turbo"
-    assert not eng.can_inpaint
+    assert eng.can_inpaint
     assert Engine._native_res("krea2") == 1024
 
 
@@ -106,16 +106,7 @@ def test_load_krea2_reloads_on_variant_override():
                        variant="raw", offload=True, vae_tile=True)
 
 
-def test_krea2_rejects_loras():
-    eng = Engine(device="cpu")
-    eng._loaded = _krea2()
-    with pytest.raises(RuntimeError, match="not supported for Krea 2 yet"):
-        eng.apply_temp_loras([("style", 0.8)])
-    with pytest.raises(RuntimeError, match="not supported for Krea 2 yet"):
-        eng.apply_lora("style")
-
-
-# ── server: load validation, gates, caps ─────────────────────────────
+# ── server: load validation, caps ─────────────────────────────
 
 def test_validate_load_krea2(tmp_path, monkeypatch):
     for attr, name in (("DIFFUSION_DIR", "dit"), ("VAE_DIR", "vae"), ("TE_DIR", "te")):
@@ -140,38 +131,24 @@ def krea2_loaded(monkeypatch):
     monkeypatch.setattr(ENGINE, "_loaded", _krea2())
 
 
-@pytest.mark.parametrize("body,what", [
-    ({"mode": "i2i"}, "img2img"),
-    ({"mode": "inpaint"}, "inpaint"),
-    ({"detail_enabled": True}, "detailer"),
-    ({"upscale_enabled": True}, "upscaler"),
-    ({"prompt": "a fox <lora:style:0.8>"}, "LoRA"),
-])
-def test_generate_rejects_unsupported_features(krea2_loaded, body, what):
+def test_krea2_takes_every_mode_and_drops_cache_knobs(krea2_loaded, monkeypatch):
+    """img2img / inpaint / detailer / upscaler / LoRA tags reach the engine;
+    TeaCache and DeepCache, which Krea 2 lacks, are zeroed first."""
+    seen = {}
+    def fake_t2i(**kw):
+        seen.update(kw)
+        raise RuntimeError("stop")
+    monkeypatch.setattr(ENGINE, "generate_t2i", fake_t2i, raising=False)
+    monkeypatch.setattr(ENGINE, "apply_temp_loras", lambda loras: "", raising=False)
+    p = server.GeneratePayload(prompt="a fox <lora:style:0.8>", teacache=0.3, upscale_teacache=0.4,
+                               deepcache=3, detail_enabled=True, upscale_enabled=True)
+    with pytest.raises(RuntimeError, match="stop"):
+        server._run_generation(p, lambda *a: None)
+    assert (p.teacache, p.deepcache, p.upscale_teacache) == (0.0, 1, 0.0)
     with TestClient(server.app) as c:
-        r = c.post("/api/generate", json=body)
-    assert r.status_code == 400
-    assert what in r.json()["detail"] and "not supported for Krea 2 yet" in r.json()["detail"]
-
-
-def test_standalone_passes_and_xyz_loras_are_rejected(krea2_loaded):
-    with TestClient(server.app) as c:
-        assert c.post("/api/upscale", json={"input_image": ""}).status_code == 400
-        assert c.post("/api/detail", json={"input_image": "",
-                                           "models": [{"model": "face.pt"}]}).status_code == 400
-        assert c.post("/api/xyz", json={"prompt": "<lora:a:1>"}).status_code == 400
-
-
-def test_runtime_recheck_covers_a_model_swapped_while_queued(krea2_loaded):
-    with pytest.raises(RuntimeError, match="not supported for Krea 2 yet"):
-        server._run_generation(server.GeneratePayload(mode="i2i"), lambda *a: None)
-
-
-def test_gates_do_not_fire_for_other_families(monkeypatch):
-    monkeypatch.setattr(ENGINE, "_loaded", LoadedModel(
-        name="Anima(x)", family="anima", model=object(), native_res=1024))
-    assert server._krea2_unsupported(server._generate_features(
-        server.GeneratePayload(mode="i2i", upscale_enabled=True))) is None
+        for body in ({"mode": "i2i"}, {"mode": "inpaint"}, {"detail_enabled": True},
+                     {"upscale_enabled": True}, {"prompt": "a fox <lora:style:0.8>"}):
+            assert c.post("/api/generate", json=body).status_code == 200
 
 
 def test_krea2_settings_knobs_match_anima(monkeypatch):

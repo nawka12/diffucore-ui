@@ -36,7 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
-from engine import (ENGINE, LORA_PROMPT_RE, SAMPLERS_SD, SAMPLERS_ANIMA, SAMPLERS_FLUX, SAMPLERS_KREA2,
+from engine import (ENGINE, SAMPLERS_SD, SAMPLERS_ANIMA, SAMPLERS_FLUX, SAMPLERS_KREA2,
                     SCHEDULERS_SD, SCHEDULERS_ANIMA, SCHEDULERS_FLUX, SCHEDULERS_KREA2)
 from utils import (
     OUTPUTS_DIR, MODELS_DIR, CHECKPOINTS_DIR, DIFFUSION_DIR, VAE_DIR, TE_DIR,
@@ -637,29 +637,6 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
     return knobs
 
 
-def _krea2_unsupported(features: "dict[str, bool]") -> Optional[str]:
-    """Error text when a Krea 2 model is loaded and a request uses a feature
-    its engine lacks (img2img, inpaint, detailer, upscaler, LoRA), else None."""
-    if ENGINE.loaded_family != "krea2":
-        return None
-    used = [name for name, on in features.items() if on]
-    return f"{', '.join(used)}: not supported for Krea 2 yet" if used else None
-
-
-def _has_lora_tag(*prompts: str) -> bool:
-    return any(LORA_PROMPT_RE.search(t) for t in prompts)
-
-
-def _generate_features(p: GeneratePayload) -> "dict[str, bool]":
-    return {
-        "img2img": p.mode == "i2i",
-        "inpaint": p.mode == "inpaint",
-        "detailer": p.detail_enabled,
-        "upscaler": p.upscale_enabled,
-        "LoRA": _has_lora_tag(p.prompt, p.neg),
-    }
-
-
 def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                     on_preview: Optional[Callable] = None) -> dict:
     if not ENGINE.loaded_name:
@@ -668,12 +645,9 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
     # Extensions may mutate the payload in place.
     EXTENSIONS.run_hook("pre_generate", payload=p)
 
-    # The model can change while a job is queued, so re-check what submit checked.
-    err = _krea2_unsupported(_generate_features(p))
-    if err:
-        raise RuntimeError(err)
     if ENGINE.loaded_family == "krea2":
-        p.teacache, p.deepcache = 0.0, 1    # no cache support; keep it out of the metadata
+        # No cache support; keep it out of the metadata.
+        p.teacache, p.deepcache, p.upscale_teacache = 0.0, 1, 0.0
 
     clean_prompt, prompt_loras = ENGINE.parse_lora_prompt(p.prompt)
     clean_neg, neg_loras = ENGINE.parse_lora_prompt(p.neg)
@@ -866,9 +840,6 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
              on_preview: Optional[Callable] = None) -> dict:
     if not ENGINE.loaded_name:
         raise RuntimeError("Load a model first")
-    err = _krea2_unsupported({"LoRA": _has_lora_tag(p.prompt, p.neg)})
-    if err:
-        raise RuntimeError(err)
     if ENGINE.loaded_family == "krea2":
         p.teacache = 0.0    # no TeaCache support; keep it out of the metadata
     base_kwargs = dict(
@@ -1274,8 +1245,10 @@ def _worker() -> None:
         # The tagger stays resident across jobs, except when the loaded model
         # streams its backbone: there its ~600 MB would OOM the next generation.
         # Read the active mode, not recommended_offload(); FLUX streams on any card.
+        # Krea 2's streaming leaves a VRAM reserve that covers it, and a reload
+        # per image is slow next to its file-backed weights in the page cache.
         if (job.kind != "tag" and tagger_mod.TAGGER.loaded
-                and ENGINE.active_offload == "stream"):
+                and ENGINE.active_offload == "stream" and ENGINE.loaded_family != "krea2"):
             tagger_mod.TAGGER.unload()
         try:
             _drop_tag_loras_for(job)
@@ -1723,9 +1696,6 @@ def _teacache_cuda_graphs_conflict(*thresholds: float) -> Optional[str]:
 
 @app.post("/api/generate")
 async def api_generate(p: GeneratePayload):
-    err = _krea2_unsupported(_generate_features(p))
-    if err:
-        raise HTTPException(status_code=400, detail=err)
     err = _teacache_cuda_graphs_conflict(
         p.teacache, p.upscale_teacache if p.upscale_enabled else 0.0)
     if err:
@@ -1740,9 +1710,8 @@ async def api_generate(p: GeneratePayload):
 
 @app.post("/api/upscale")
 async def api_upscale(p: UpscalePayload):
-    err = _krea2_unsupported({"upscaler": True})
-    if err:
-        raise HTTPException(status_code=400, detail=err)
+    if ENGINE.loaded_family == "krea2":
+        p.teacache = 0.0
     err = _teacache_cuda_graphs_conflict(p.teacache)
     if err:
         raise HTTPException(status_code=400, detail=err)
@@ -1802,9 +1771,8 @@ async def api_upscale(p: UpscalePayload):
 
 @app.post("/api/detail")
 async def api_detail(p: DetailPayload):
-    err = _krea2_unsupported({"detailer": True})
-    if err:
-        raise HTTPException(status_code=400, detail=err)
+    if ENGINE.loaded_family == "krea2":
+        p.teacache = 0.0
     err = _teacache_cuda_graphs_conflict(p.teacache)
     if err:
         raise HTTPException(status_code=400, detail=err)
@@ -1888,9 +1856,6 @@ async def api_detail(p: DetailPayload):
 
 @app.post("/api/xyz")
 async def api_xyz(p: XYZPayload):
-    err = _krea2_unsupported({"LoRA": _has_lora_tag(p.prompt, p.neg)})
-    if err:
-        raise HTTPException(status_code=400, detail=err)
     def run(job: Job) -> dict:
         on_progress, on_preview = _make_callbacks(job)
         return _run_xyz(p, on_progress, on_preview)

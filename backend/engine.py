@@ -228,7 +228,6 @@ MODEL_FAMILY_FLUX1 = "flux1"
 MODEL_FAMILY_FLUX2 = "flux2"
 _FLUX_FAMILIES = (MODEL_FAMILY_FLUX1, MODEL_FAMILY_FLUX2)
 MODEL_FAMILY_KREA2 = "krea2"
-_KREA2_UNSUPPORTED = "not supported for Krea 2 yet"
 
 # Latent→RGB preview factors from ComfyUI's comfy/latent_formats.py, as
 # (factors[C][3], bias[3] | None). Anima uses the Wan2.1 latent format.
@@ -368,8 +367,8 @@ class Engine:
     @property
     def can_inpaint(self) -> bool:
         """Whether the detailer (per-region ``Inpaint``) can run; every family
-        but Krea 2 can."""
-        return bool(self._loaded) and self._loaded.family != MODEL_FAMILY_KREA2
+        can."""
+        return bool(self._loaded)
 
     @staticmethod
     def fa2_attention_available() -> bool:
@@ -466,8 +465,6 @@ class Engine:
         conditioning cache; :meth:`clear_temp_loras` drops it."""
         if not self._loaded:
             return "No model loaded"
-        if loras and self._loaded.family == MODEL_FAMILY_KREA2:
-            raise RuntimeError(f"LoRA is {_KREA2_UNSUPPORTED}")
         key = self._temp_lora_key(loras)
         if key == self._loaded.temp_lora_key:
             return self._loaded.temp_lora_msg
@@ -1124,8 +1121,6 @@ class Engine:
     def apply_lora(self, lora_name: str, multiplier: float = 1.0) -> str:
         if not self._loaded:
             raise RuntimeError("No model loaded")
-        if self._loaded.family == MODEL_FAMILY_KREA2:
-            raise RuntimeError(f"LoRA is {_KREA2_UNSUPPORTED}")
         path = lora_path(lora_name)
         if not path.exists():
             raise FileNotFoundError(f"LoRA not found: {path}")

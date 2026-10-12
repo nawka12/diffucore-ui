@@ -1,7 +1,54 @@
 # Krea 2 (Raw + Turbo): implementation plan
 
-> Status: **Phases 0, 1 and 2 done 2026-10-12 (uncommitted); Phase 3 next.**
+> Status: **Phases 0 to 3 done 2026-10-12** (0 to 2 committed: diffucore
+> ad732aa, ui 6673f4e). The low-RAM slow steps are fixed (see below).
 > Written for an executor agent.
+>
+> **Phase 3 results.**
+> - `krea2_img2img` (img2img + inpaint, Anima's conventions) and the
+>   ImageToImage / Inpaint dispatch.
+> - **LoRA as forward-hook side branches** (`out += up(down(x))·scale`, factors
+>   on the GPU), not the in-place fuse. Fusing needs a RAM snapshot of every
+>   touched weight (~12 GB for a full LoRA) and writes into file-backed or
+>   pinned masters; hooks need neither and avoid INT8 requant noise.
+>   Formats: `diffusion_model.*`, kohya `lora_unet_*`, and diffusers
+>   `transformer.*` via `from_diffusers_name`. LoKr is not supported.
+>   apply/remove/clear clear the cond cache.
+> - **Diffusers transformer folders** (folder, repo root, or `*.index.json`)
+>   load through `from_diffusers`; all 430 official keys map exactly.
+> - UI gates removed; TeaCache is still zeroed for Krea 2 (main, upscaler,
+>   detailer).
+>
+> Gate 3, through the server on the 2060, all checked visually:
+> - img2img and inpaint work; the inpaint keep region is pixel-identical.
+> - The face detailer runs.
+> - The diffusers-format retroanime LoRA restyles the image.
+> - **Raw + Comfy `krea2_turbo_lora_rank_64` at the Turbo preset gives crisp
+>   8-step images, while Raw alone at 8 steps is a ghost.**
+>
+> **Fixed: slow steps with file-backed masters.** Symptom: on the 23 GB
+> PC, some jobs ran DiT steps at 18-138 s instead of about 3 s, a load
+> stalled for 63 s, and a TE pass took 55 s. Intermittent, not tied to
+> model switches (a plain Turbo to Raw switch ran at full speed).
+> - Root cause: Linux stops read-around on an mmap whose page faults miss
+>   more than they hit (`mmap_miss`, per open file). Under page-cache churn
+>   the DiT and TE mmaps cross that line, and then every fault reads one
+>   4 KB page: about 60 MB/s from an NVMe that does 2 GB/s. Reproduced
+>   outside the server: a fresh map reads at 1810 MB/s, and the same map
+>   after 400 scattered misses at 61 MB/s.
+> - Fix: `runtime._readahead` issues `MADV_WILLNEED` before each upload
+>   from a file master (streamed groups, `on_device`, resident blocks at
+>   load). It reads at about 2.1 GB/s even in the stuck state. One call reads
+>   at most one readahead window (4 MB on btrfs, 128 KB by default
+>   elsewhere), so it goes in 128 KB chunks: 8.7 ms per cached GB, and no
+>   measurable change in step time. `MADV_SEQUENTIAL` also unsticks it,
+>   but at about 900 MB/s, and it drops page recency.
+> - Also shipped, to shrink the per-forward file working set: the TE
+>   streams layer by layer, and as many leading DiT blocks as fit stay on
+>   the GPU (`_KREA2_VRAM_RESERVE` 5 GB, so 8-10 on 12 GB). The UI keeps
+>   the WD tagger resident for Krea 2 instead of reloading it per job.
+> - Same LoRA, detailer and switch sequence: slow-read seconds 79 to 23,
+>   cold first job 83 s to 31 s, Raw after the switch 30 s and 24 s.
 >
 > **Phase 2 results.**
 >
