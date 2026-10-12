@@ -134,6 +134,7 @@ body {
 .rack-models .field { margin-bottom: 0; }
 .anima-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
 .anima-grid .field.span-all { grid-column: 1 / -1; }
+.anima-grid.cols-4 { grid-template-columns: 1fr 1fr 1fr 7rem; }
 .rack-actions { display: flex; gap: 8px; }
 .rack-actions .btn { height: 38px; min-width: 84px; }
 
@@ -272,6 +273,7 @@ body {
   background: var(--surface-2);
 }
 .hint { font-size: 12px; color: var(--txt-3); margin: -2px 0 12px; }
+.hint.warn { color: var(--accent); }
 /* Hints inside a bordered container sit tight; the default -2px/12px is for
    hints floating between fields. */
 fieldset > .hint { margin: 0 0 8px; }

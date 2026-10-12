@@ -6,10 +6,11 @@ network/share flags, architecture, and status.
 
 ## Highlights
 
-- **Four model families, one interface**: Stable Diffusion 1.5, SDXL,
+- **Five model families, one interface**: Stable Diffusion 1.5, SDXL,
   **Anima** (a 2 B DiT built on Cosmos-Predict2, plus the 40-block
-  Anima-2.9B), and **FLUX** (FLUX.1 and
-  FLUX.2 Klein). All four do txt2img, img2img, and inpaint; Anima and FLUX use
+  Anima-2.9B), **FLUX** (FLUX.1 and
+  FLUX.2 Klein), and **Krea 2** (Raw and Turbo, txt2img only for now). The first
+  four do txt2img, img2img, and inpaint; Anima and FLUX use
   soft, latent-mask inpaint (no dedicated inpaint model). Switch between them
   from the model bar.
 - **Unified Generate workspace**: one shared control panel with a
@@ -197,9 +198,9 @@ no-op otherwise), so a newly added dependency won't surface as a runtime error.
 ```
 models/
 ├── checkpoints/             # SD/SDXL .safetensors or .ckpt (+ FLUX all-in-one)
-├── diffusion-models/        # Anima / FLUX DiT .safetensors
-├── vae/                     # Anima / FLUX VAE .safetensors
-├── text-encoders/           # Anima / FLUX text encoders .safetensors
+├── diffusion-models/        # Anima / FLUX / Krea 2 DiT .safetensors
+├── vae/                     # Anima / FLUX / Krea 2 VAE .safetensors
+├── text-encoders/           # Anima / FLUX / Krea 2 text encoders .safetensors
 ├── loras/                   # LoRA adapters (.safetensors)
 ├── detailers/               # YOLO detection models for the detailer (.pt)
 └── upscalers/               # ESRGAN-family models for the upscaler base (.pth)
@@ -258,7 +259,7 @@ public.
 
 ### Load a model
 
-1. Select **SD/SDXL**, **Anima**, or **FLUX** from the top-bar radio.
+1. Select **SD/SDXL**, **Anima**, **FLUX**, or **Krea 2** from the top-bar radio.
 2. Pick your checkpoint files from the dropdowns. FLUX takes either an all-in-one
    checkpoint or split DiT / VAE / text-encoder files (CLIP-L for FLUX.1 only).
 3. Click **Load**. The status bar shows model info and VRAM usage. Loading a
@@ -784,6 +785,40 @@ bugs, just how the model responds):
   upstream's comparisons were made against, and it does pair coherently with
   `infinity_omega` (whose detail gain is also strongest at high sigma). Just
   reach for it to spend steps on structure, not on texture.
+
+### Working with Krea 2
+
+Krea 2 is a 12.8 B single-stream DiT from Krea, in two checkpoints that share
+one network: **Raw** (the pretrained base, 28+ steps with CFG) and **Turbo**
+(distilled, 8 steps, no CFG pass). Get the files from
+[Comfy-Org/Krea-2](https://huggingface.co/Comfy-Org/Krea-2):
+
+- DiT: `krea2_turbo_int8_convrot.safetensors` or `krea2_raw_int8_convrot.safetensors`
+  (13.5 GB; the bf16 files are 26 GB) into `diffusion-models/`
+- text encoder: `qwen3vl_4b_bf16.safetensors` (Qwen3-VL-4B) into `text-encoders/`
+- VAE: `qwen_image_vae.safetensors`, the same file Anima uses
+
+Things worth knowing:
+
+- **Variant.** The load form picks Raw or Turbo from the DiT filename; override
+  it if a renamed file guesses wrong. Changing it resets steps / CFG / sampler
+  to that variant's defaults (Raw: 28 steps, CFG 5.5; Turbo: 8 steps, CFG 1).
+- **CFG is offset by one from Krea's docs.** Krea's guidance g is CFG g + 1
+  here: Krea's 4.5 is 5.5. CFG 1 skips the negative-prompt pass (Turbo).
+- **Scheduler `krea2`** is each checkpoint's own shift (Raw scales it with
+  resolution; Turbo was distilled at a fixed one). The shift slider only
+  applies to `flow`.
+- **Raw was trained up to about 1 MP**; Turbo handles 1 to 2 MP.
+- **Low RAM / VRAM.** Krea 2 always streams its DiT. When the files don't fit
+  in free RAM, the DiT and text encoder are read straight from the files
+  (page cache) instead of RAM copies, so the 13.5 GB INT8 DiT runs on a 12 GB
+  GPU with 23 GB of RAM (RTX 2060: about 29 s per Turbo image at 1024²,
+  about 4.7 min per Raw image).
+- **Not yet supported:** img2img, inpaint, the detailer, the upscaler, and LoRA.
+- **License.** The weights are under the Krea 2 Community License (commercial
+  use only below $1M annual revenue; deployers must run content filtering).
+  Diffucore ships no weights. The UI's NSFW filter can be part of that
+  filtering; whether it is enough for your deployment is yours to judge.
 
 ### TeaCache: faster Anima sampling
 

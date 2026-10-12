@@ -36,7 +36,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
-from engine import ENGINE, SAMPLERS_SD, SAMPLERS_ANIMA, SAMPLERS_FLUX, SCHEDULERS_SD, SCHEDULERS_ANIMA, SCHEDULERS_FLUX
+from engine import (ENGINE, LORA_PROMPT_RE, SAMPLERS_SD, SAMPLERS_ANIMA, SAMPLERS_FLUX, SAMPLERS_KREA2,
+                    SCHEDULERS_SD, SCHEDULERS_ANIMA, SCHEDULERS_FLUX, SCHEDULERS_KREA2)
 from utils import (
     OUTPUTS_DIR, MODELS_DIR, CHECKPOINTS_DIR, DIFFUSION_DIR, VAE_DIR, TE_DIR,
     detector_path, model_name_ok,
@@ -290,9 +291,10 @@ class LoadPayload(BaseModel):
     tf32: bool = False                  # SD/SDXL only (fp32 VAE path; Ampere+)
     fp16_accumulation: bool = False     # fp16-accumulate matmuls; all families
     vae_fp16: bool = False              # non-finite output falls back to fp32
-    attention: str = "sdpa"             # "sdpa" | "fa2_turing" (sm75; all families) | "int8_turing" (sm75; Anima/FLUX)
+    attention: str = "sdpa"             # "sdpa" | "fa2_turing" (sm75; all families) | "int8_turing" (sm75; Anima/FLUX/Krea 2)
     fused_glue: bool = False            # Anima only; Triton-fused block glue
-    int8: bool = False                  # Anima only; quantize DiT linears to INT8 at load
+    int8: bool = False                  # Anima/Krea 2; quantize DiT linears to INT8 at load
+    variant: Optional[Literal["raw", "turbo"]] = None   # Krea 2 only; None = infer from the DiT filename
 
 
 class DetailerModel(BaseModel):
@@ -606,9 +608,9 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
     if sampler in ("cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate"):
         knobs["gate_reduce"] = SETTINGS["gate_reduce"]
 
-    # Anima only. Inject just the knobs the sampler/scheduler consumes, so the
-    # metadata carries no unused keys.
-    if ENGINE.loaded_family == "anima":
+    # Anima and Krea 2. Inject just the knobs the sampler/scheduler consumes, so
+    # the metadata carries no unused keys.
+    if ENGINE.loaded_family in ("anima", "krea2"):
         if sampler in ("secant", "secant_anneal"):
             knobs["curvature"] = float(SETTINGS["curvature"])
         if sampler in ("secant_anneal", "euler_ancestral_anneal", "cogent", "cogent3", "cogent3_pump",
@@ -635,6 +637,29 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
     return knobs
 
 
+def _krea2_unsupported(features: "dict[str, bool]") -> Optional[str]:
+    """Error text when a Krea 2 model is loaded and a request uses a feature
+    its engine lacks (img2img, inpaint, detailer, upscaler, LoRA), else None."""
+    if ENGINE.loaded_family != "krea2":
+        return None
+    used = [name for name, on in features.items() if on]
+    return f"{', '.join(used)}: not supported for Krea 2 yet" if used else None
+
+
+def _has_lora_tag(*prompts: str) -> bool:
+    return any(LORA_PROMPT_RE.search(t) for t in prompts)
+
+
+def _generate_features(p: GeneratePayload) -> "dict[str, bool]":
+    return {
+        "img2img": p.mode == "i2i",
+        "inpaint": p.mode == "inpaint",
+        "detailer": p.detail_enabled,
+        "upscaler": p.upscale_enabled,
+        "LoRA": _has_lora_tag(p.prompt, p.neg),
+    }
+
+
 def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                     on_preview: Optional[Callable] = None) -> dict:
     if not ENGINE.loaded_name:
@@ -642,6 +667,13 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
 
     # Extensions may mutate the payload in place.
     EXTENSIONS.run_hook("pre_generate", payload=p)
+
+    # The model can change while a job is queued, so re-check what submit checked.
+    err = _krea2_unsupported(_generate_features(p))
+    if err:
+        raise RuntimeError(err)
+    if ENGINE.loaded_family == "krea2":
+        p.teacache, p.deepcache = 0.0, 1    # no cache support; keep it out of the metadata
 
     clean_prompt, prompt_loras = ENGINE.parse_lora_prompt(p.prompt)
     clean_neg, neg_loras = ENGINE.parse_lora_prompt(p.neg)
@@ -834,6 +866,11 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
              on_preview: Optional[Callable] = None) -> dict:
     if not ENGINE.loaded_name:
         raise RuntimeError("Load a model first")
+    err = _krea2_unsupported({"LoRA": _has_lora_tag(p.prompt, p.neg)})
+    if err:
+        raise RuntimeError(err)
+    if ENGINE.loaded_family == "krea2":
+        p.teacache = 0.0    # no TeaCache support; keep it out of the metadata
     base_kwargs = dict(
         prompt=p.prompt, negative_prompt=p.neg,
         width=int(p.width), height=int(p.height),
@@ -1481,9 +1518,11 @@ def api_models():
         "samplers_sd": SAMPLERS_SD,
         "samplers_anima": SAMPLERS_ANIMA,
         "samplers_flux": SAMPLERS_FLUX,
+        "samplers_krea2": SAMPLERS_KREA2,
         "schedulers_sd": SCHEDULERS_SD,
         "schedulers_anima": SCHEDULERS_ANIMA,
         "schedulers_flux": SCHEDULERS_FLUX,
+        "schedulers_krea2": SCHEDULERS_KREA2,
         "xyz_param_types": XYZ_PARAM_TYPES,
         "status": ENGINE.status_text(),
         "loaded": bool(ENGINE.loaded_name),
@@ -1496,7 +1535,7 @@ def api_models():
         "int8_available": ENGINE.int8_attention_available(),
         # Gates the "fused glue" chip (Triton + CUDA; Anima only).
         "fused_glue_available": ENGINE.fused_glue_available(),
-        # Gates the "int8" chip (CUDA sm75+ and Triton; Anima only).
+        # Gates the "int8" chip (CUDA sm75+ and Triton; Anima and Krea 2).
         "int8_weights_available": ENGINE.int8_weights_available(),
         "ui_id": md.UI_ID,
         "diff_id": md.DIFF_ID,
@@ -1540,6 +1579,18 @@ def _validate_load(p: LoadPayload) -> Optional[str]:
             if err:
                 return err
         return None
+    if p.model_type == "Krea2":
+        if p.cuda_graphs or p.fused_glue:
+            return "CUDA Graphs and fused glue: not supported for Krea 2 yet"
+        for label, name, d in (("DiT", p.dit, DIFFUSION_DIR),
+                               ("VAE", p.vae, VAE_DIR),
+                               ("Text encoder", p.te, TE_DIR)):
+            if not name or name.startswith("("):
+                return "Select all three Krea 2 files"
+            err = _missing(label, name, d)
+            if err:
+                return err
+        return None
     if p.model_type == "FLUX":
         if p.checkpoint and not p.checkpoint.startswith("("):
             return _missing("Checkpoint", p.checkpoint, CHECKPOINTS_DIR)
@@ -1563,12 +1614,12 @@ def _validate_load(p: LoadPayload) -> Optional[str]:
 
 
 def _do_load_impl(p: LoadPayload) -> str:
-    # Default offload: stream for FLUX (its ~23 GB transformer OOMs under full)
-    # and on low-VRAM cards, full otherwise.
+    # Default offload: stream for FLUX and Krea 2 (their 13-26 GB DiTs OOM under
+    # full) and on low-VRAM cards, full otherwise.
     _to_bundle = {"none": False, "full": True,
                   "encoders": "encoders", "stream": "stream"}
     if p.offload is None:
-        stream = p.model_type == "FLUX" or ENGINE.recommended_offload() == "stream"
+        stream = p.model_type in ("FLUX", "Krea2") or ENGINE.recommended_offload() == "stream"
         offload = "stream" if stream else True
     else:
         offload = _to_bundle.get(p.offload, True)
@@ -1589,6 +1640,19 @@ def _do_load_impl(p: LoadPayload) -> str:
             attention=p.attention,
             vae_fp16=p.vae_fp16,
             fused_glue=p.fused_glue,
+            int8=p.int8,
+        )
+    if p.model_type == "Krea2":
+        for name in (p.dit, p.vae, p.te):
+            if not name or name.startswith("("):
+                return "Select all three Krea 2 files"
+        return ENGINE.load_krea2(
+            p.dit, p.vae, p.te, variant=p.variant,
+            offload=offload, vae_tile=vae_tile_pref,
+            compile=p.compile,
+            fp16_accumulation=p.fp16_accumulation,
+            attention=p.attention,
+            vae_fp16=p.vae_fp16,
             int8=p.int8,
         )
     if p.model_type == "FLUX":
@@ -1659,6 +1723,9 @@ def _teacache_cuda_graphs_conflict(*thresholds: float) -> Optional[str]:
 
 @app.post("/api/generate")
 async def api_generate(p: GeneratePayload):
+    err = _krea2_unsupported(_generate_features(p))
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     err = _teacache_cuda_graphs_conflict(
         p.teacache, p.upscale_teacache if p.upscale_enabled else 0.0)
     if err:
@@ -1673,6 +1740,9 @@ async def api_generate(p: GeneratePayload):
 
 @app.post("/api/upscale")
 async def api_upscale(p: UpscalePayload):
+    err = _krea2_unsupported({"upscaler": True})
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     err = _teacache_cuda_graphs_conflict(p.teacache)
     if err:
         raise HTTPException(status_code=400, detail=err)
@@ -1732,6 +1802,9 @@ async def api_upscale(p: UpscalePayload):
 
 @app.post("/api/detail")
 async def api_detail(p: DetailPayload):
+    err = _krea2_unsupported({"detailer": True})
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     err = _teacache_cuda_graphs_conflict(p.teacache)
     if err:
         raise HTTPException(status_code=400, detail=err)
@@ -1815,6 +1888,9 @@ async def api_detail(p: DetailPayload):
 
 @app.post("/api/xyz")
 async def api_xyz(p: XYZPayload):
+    err = _krea2_unsupported({"LoRA": _has_lora_tag(p.prompt, p.neg)})
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     def run(job: Job) -> dict:
         on_progress, on_preview = _make_callbacks(job)
         return _run_xyz(p, on_progress, on_preview)

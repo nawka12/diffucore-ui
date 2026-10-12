@@ -66,11 +66,13 @@ from diffucore import (
     load_anima_checkpoint,
     load_checkpoint,
     load_flux_checkpoint,
+    load_krea2_checkpoint,
     ImageToImage,
     Inpaint,
     TextToImage,
 )
 from diffucore.models._int8 import Int8Linear
+from diffucore.loading import read_header
 from diffucore.runtime import ConditioningCache, DevicePolicy
 
 from utils import checkpoint_path, lora_path, diffusion_model_path, vae_path, te_path
@@ -78,8 +80,9 @@ from utils import checkpoint_path, lora_path, diffusion_model_path, vae_path, te
 
 LORA_PROMPT_RE = re.compile(r"<lora:([^:]+):([^>]+)>")
 
-# Flow families (Anima, FLUX) drive everything except "ddpm" (VP/VE-only). Keep
-# these lists in sync with the pipelines' _ANIMA_SAMPLERS / _FLUX_SAMPLERS.
+# Flow families (Anima, FLUX, Krea 2) drive everything except "ddpm" (VP/VE-only).
+# Keep these lists in sync with the pipelines' _ANIMA_SAMPLERS / _FLUX_SAMPLERS /
+# _KREA2_SAMPLERS and _KREA2_SCHEDULERS.
 # GUIDE.md describes each sampler and scheduler.
 SAMPLERS_SD = [
     "euler",
@@ -131,6 +134,8 @@ _SAMPLERS_4D_ONLY = {"infinity_omega", "infinity_realism",
 # Anima-only additions.
 SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal"]
 SAMPLERS_FLUX = [s for s in SAMPLERS_FLOW if s not in _SAMPLERS_4D_ONLY]
+# Krea 2 samples the same 4-D latents as Anima.
+SAMPLERS_KREA2 = SAMPLERS_ANIMA
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
                  "align_your_steps", "sgm_uniform", "simple", "normal",
@@ -145,6 +150,11 @@ SCHEDULERS_ANIMA = ["flow", "flow_dyn", "oss", "sgm_uniform", "simple",
                     "pump_dual", "pump_taper", "secant_tilt", "relay_tilt"]
 SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple", "normal",
                    "infinity", "infinity_htds", "kl_optimal", "linear_quadratic"]
+# "krea2" is the checkpoint's own shift; the shift slider only applies to "flow".
+SCHEDULERS_KREA2 = ["krea2", "flow", "flow_dyn", "sgm_uniform", "simple", "normal",
+                    "infinity", "infinity_htds", "kl_optimal", "linear_quadratic",
+                    "smoothstep", "beta", "beta_mix", "pump_dual", "pump_taper",
+                    "secant_tilt", "relay_tilt"]
 
 # Calibrated OSS schedules: one JSON of descending sigmas per
 # (model, steps, resolution, shift), written by calibrate_oss.py.
@@ -217,6 +227,8 @@ _TEACACHE_CUDA_GRAPHS_ERROR = (
 MODEL_FAMILY_FLUX1 = "flux1"
 MODEL_FAMILY_FLUX2 = "flux2"
 _FLUX_FAMILIES = (MODEL_FAMILY_FLUX1, MODEL_FAMILY_FLUX2)
+MODEL_FAMILY_KREA2 = "krea2"
+_KREA2_UNSUPPORTED = "not supported for Krea 2 yet"
 
 # Latent→RGB preview factors from ComfyUI's comfy/latent_formats.py, as
 # (factors[C][3], bias[3] | None). Anima uses the Wan2.1 latent format.
@@ -243,6 +255,8 @@ _PREVIEW_RGB = {
         [-0.1835, -0.0868, -0.3360],
     ),
 }
+# Krea 2 shares Anima's latent space (same Qwen-Image VAE statistics).
+_PREVIEW_RGB[MODEL_FAMILY_KREA2] = _PREVIEW_RGB[MODEL_FAMILY_ANIMA]
 
 
 def _bundle_to(bundle, device) -> None:
@@ -265,6 +279,7 @@ class LoadedModel:
     vae_name: Optional[str] = None
     te_name: Optional[str] = None
     clip_name: Optional[str] = None
+    variant: Optional[str] = None       # Krea 2: "raw" | "turbo"
     # Staging settings it was loaded under (offload, vae_tile, …), so an LRU
     # restore can check the placement still matches.
     stage_settings: Optional[tuple] = None
@@ -324,6 +339,10 @@ class Engine:
         return self._offload
 
     @property
+    def loaded_variant(self) -> Optional[str]:
+        return self._loaded.variant if self._loaded else None
+
+    @property
     def applied_loras(self) -> List[str]:
         return list(self._loaded.applied_loras) if self._loaded else []
 
@@ -349,8 +368,8 @@ class Engine:
     @property
     def can_inpaint(self) -> bool:
         """Whether the detailer (per-region ``Inpaint``) can run; every family
-        can."""
-        return bool(self._loaded)
+        but Krea 2 can."""
+        return bool(self._loaded) and self._loaded.family != MODEL_FAMILY_KREA2
 
     @staticmethod
     def fa2_attention_available() -> bool:
@@ -394,6 +413,8 @@ class Engine:
             return SCHEDULERS_ANIMA
         if self._loaded and self._loaded.family in _FLUX_FAMILIES:
             return SCHEDULERS_FLUX
+        if self._loaded and self._loaded.family == MODEL_FAMILY_KREA2:
+            return SCHEDULERS_KREA2
         return SCHEDULERS_SD
 
     def status_text(self) -> str:
@@ -445,6 +466,8 @@ class Engine:
         conditioning cache; :meth:`clear_temp_loras` drops it."""
         if not self._loaded:
             return "No model loaded"
+        if loras and self._loaded.family == MODEL_FAMILY_KREA2:
+            raise RuntimeError(f"LoRA is {_KREA2_UNSUPPORTED}")
         key = self._temp_lora_key(loras)
         if key == self._loaded.temp_lora_key:
             return self._loaded.temp_lora_msg
@@ -619,6 +642,17 @@ class Engine:
                 attention=self._attention,
                 vae_fp16=self._vae_fp16,
                 fused_glue=self._fused_glue,
+            )
+        if lm and lm.family == MODEL_FAMILY_KREA2:
+            # The variant is re-read from each DiT's filename.
+            return self.load_krea2(
+                name, lm.vae_name, lm.te_name,
+                offload=self._offload, vae_tile=self._vae_tile,
+                compile=self._compile,
+                fp16_accumulation=self._fp16_accumulation,
+                attention=self._attention,
+                vae_fp16=self._vae_fp16,
+                int8=self._int8,
             )
         return self.load_model(
             name,
@@ -811,6 +845,100 @@ class Engine:
         flags = self._perf_flag_summary()
         return f"Loaded {family} in {elapsed:.1f}s{flags}  (DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})"
 
+    def load_krea2(
+        self, dit_name: str, vae_name: str, te_name: str,
+        variant: str | None = None,
+        offload: bool | str = True, vae_tile: bool = True,
+        compile: bool = False,
+        fp16_accumulation: bool = False, attention: str = "sdpa",
+        vae_fp16: bool = False, int8: bool = False,
+    ) -> str:
+        """Load a split-file Krea 2 model. ``variant`` is "raw" | "turbo"; None
+        infers it from the DiT filename."""
+        label = f"Krea2({dit_name})"
+        offload, forced_stream = self._krea2_fit_offload(diffusion_model_path(dit_name), offload, int8)
+        if compile and offload is True:
+            offload = "encoders"
+        elif compile and offload == "stream":
+            compile = False
+            log.warning("compile disabled: incompatible with offload='stream' "
+                         "(backbone is block-streamed to fit VRAM)")
+        if (self._loaded and self._loaded.name == label
+                and (variant is None or self._loaded.variant == variant)
+                and self._components_match(vae_name, te_name)
+                and self._settings_match(offload, vae_tile, compile,
+                                         False, False, False,
+                                         fp16_accumulation, attention, vae_fp16, False, int8)):
+            return f"Model already loaded: {label}"
+
+        # Two Krea 2 copies never fit side by side, so no checkpoint-cache stash.
+        self._unload()
+        self._offload = offload
+        self._vae_tile = vae_tile
+        self._compile = compile
+        self._cuda_graphs = False
+        self._channels_last = False
+        self._tf32 = False
+        self._fp16_accumulation = fp16_accumulation
+        self._attention = attention
+        self._vae_fp16 = vae_fp16
+        self._fused_glue = False
+        self._int8 = int8
+
+        dit_path = diffusion_model_path(dit_name)
+        vae_file = vae_path(vae_name)
+        te_file = te_path(te_name)
+        for p in (dit_path, vae_file, te_file):
+            if not p.exists():
+                raise FileNotFoundError(f"Krea 2 file not found: {p}")
+
+        policy = DevicePolicy(
+            device=self.device, compute_dtype=self.dtype,
+            vae_dtype=self._vae_dtype(vae_fp16),
+            offload=offload, vae_tile=vae_tile,
+            compile=compile,
+            fp16_accumulation=fp16_accumulation, attention=attention,
+            int8=int8,
+            # Overlap block-streaming copies with compute.
+            stream_prefetch=(offload == "stream"),
+        )
+
+        log.info("[load] Krea2: DiT=%s VAE=%s TE=%s variant=%s offload=%s",
+                 dit_name, vae_name, te_name, variant or "auto", offload)
+        t0 = time.time()
+        model = load_krea2_checkpoint(
+            str(dit_path), str(te_file), str(vae_file),
+            variant=variant, policy=policy,
+        )
+        elapsed = time.time() - t0
+
+        self._loaded = LoadedModel(
+            name=label, family=MODEL_FAMILY_KREA2, model=model, native_res=1024,
+            vae_name=vae_name, te_name=te_name, variant=model.spec.variant,
+        )
+        self._attach_cond_cache()
+        flags = self._perf_flag_summary()
+        note = "  [offload switched to stream: the DiT doesn't fit in VRAM]" if forced_stream else ""
+        return (f"Loaded Krea 2 {model.spec.variant} in {elapsed:.1f}s{flags}{note}  "
+                f"(DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})")
+
+    def _krea2_fit_offload(self, dit_path: Path, offload: bool | str, int8: bool) -> tuple[bool | str, bool]:
+        """``(offload, forced)``: "stream" when the requested mode would keep a
+        DiT resident that can't fit in VRAM (the 13.5 GB INT8 file on a 12 GB
+        card), else the request unchanged. Resident size: the file's, halved
+        when a bf16 file is quantized to INT8 at load."""
+        if offload == "stream" or self.device.type != "cuda" or not dit_path.exists():
+            return offload, False
+        need = dit_path.stat().st_size
+        if int8 and not any(k.endswith(".comfy_quant") for k in read_header(str(dit_path))):
+            need //= 2
+        total = torch.cuda.get_device_properties(self.device).total_memory
+        if need + 3 * 1024**3 <= total:
+            return offload, False
+        log.warning("[load] Krea2: %.1f GB DiT can't stay resident in %.1f GB VRAM; offload=stream",
+                    need / 1024**3, total / 1024**3)
+        return "stream", True
+
     def _perf_flag_summary(self) -> str:
         flags = []
         if self._compile:
@@ -900,10 +1028,11 @@ class Engine:
     def _cacheable_for_stash(self) -> bool:
         """Only fully resident, non-FLUX models can be parked: offloaded models
         sit behind a staging proxy that ``.to()`` would break, CUDA graphs keep
-        the old weight addresses, and FLUX is too large for a second copy."""
+        the old weight addresses, and FLUX / Krea 2 are too large for a second
+        copy."""
         if self._loaded is None or self._offload is not False or self._cuda_graphs:
             return False
-        if self._loaded.family in _FLUX_FAMILIES:
+        if self._loaded.family in (*_FLUX_FAMILIES, MODEL_FAMILY_KREA2):
             return False
         return True
 
@@ -986,7 +1115,7 @@ class Engine:
 
     @staticmethod
     def _native_res(family: str) -> int:
-        if family in (MODEL_FAMILY_SDXL, MODEL_FAMILY_ANIMA, *_FLUX_FAMILIES):
+        if family in (MODEL_FAMILY_SDXL, MODEL_FAMILY_ANIMA, MODEL_FAMILY_KREA2, *_FLUX_FAMILIES):
             return 1024
         return 512
 
@@ -995,6 +1124,8 @@ class Engine:
     def apply_lora(self, lora_name: str, multiplier: float = 1.0) -> str:
         if not self._loaded:
             raise RuntimeError("No model loaded")
+        if self._loaded.family == MODEL_FAMILY_KREA2:
+            raise RuntimeError(f"LoRA is {_KREA2_UNSUPPORTED}")
         path = lora_path(lora_name)
         if not path.exists():
             raise FileNotFoundError(f"LoRA not found: {path}")
@@ -1278,7 +1409,7 @@ class Engine:
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
         )
-        if self._loaded.family in (MODEL_FAMILY_ANIMA, *_FLUX_FAMILIES):
+        if self._loaded.family in (MODEL_FAMILY_ANIMA, MODEL_FAMILY_KREA2, *_FLUX_FAMILIES):
             kwargs["shift"] = shift
         if self._loaded.family == MODEL_FAMILY_ANIMA and scheduler == "oss":
             kwargs["oss_sigmas"] = self._load_oss_sigmas(steps, width, height, shift)

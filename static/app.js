@@ -70,15 +70,19 @@ document.addEventListener('alpine:init', () => {
     loadFormDirty: false,
     animaApplied: false,
     fluxApplied: false,
+    krea2Applied: false,
+    krea2Variant: 'raw',   // 'raw' | 'turbo'; follows the DiT filename until overridden
     uiId: 'diffucore-ui', diffId: 'diffucore',
 
     // ── shared option sets ──────────────────────────────────────
     samplersSd: [],
     samplersAnima: [],
     samplersFlux: [],
+    samplersKrea2: [],
     schedulersSd: ['karras'],
     schedulersAnima: ['flow'],
     schedulersFlux: ['flux'],
+    schedulersKrea2: ['krea2'],
     paramTypes: ['None'],
 
     // ── navigation ──────────────────────────────────────────────
@@ -255,21 +259,28 @@ document.addEventListener('alpine:init', () => {
     get samplers() {
       if (this.modelType === 'Anima') return this.samplersAnima;
       if (this.modelType === 'FLUX') return this.samplersFlux;
+      if (this.modelType === 'Krea2') return this.samplersKrea2;
       return this.samplersSd;
     },
     get schedulers() {
       if (this.modelType === 'Anima') return this.schedulersAnima;
       if (this.modelType === 'FLUX') return this.schedulersFlux;
+      if (this.modelType === 'Krea2') return this.schedulersKrea2;
       return this.schedulersSd;
     },
     // Shift is flow-only, and honoured by Anima everywhere but flow_dyn and by
-    // FLUX only on plain flow.
+    // FLUX and Krea 2 only on plain flow.
     get isFlowModel() {
-      return this.modelType === 'Anima' || this.modelType === 'FLUX';
+      return this.modelType === 'Anima' || this.modelType === 'FLUX' || this.modelType === 'Krea2';
+    },
+    // img2img, inpaint, detailer, upscaler and LoRA have no Krea 2 engine path yet.
+    get isKrea2() { return this.modelType === 'Krea2'; },
+    get krea2RawTooLarge() {
+      return this.isKrea2 && this.krea2Variant === 'raw' && this.form.width * this.form.height > 1.3 * 1024 * 1024;
     },
     get shiftHonored() {
       if (this.modelType === 'Anima') return this.form.scheduler !== 'flow_dyn';
-      if (this.modelType === 'FLUX') return this.form.scheduler === 'flow';
+      if (this.modelType === 'FLUX' || this.modelType === 'Krea2') return this.form.scheduler === 'flow';
       return false;
     },
     get offloadOptions() {
@@ -284,8 +295,8 @@ document.addEventListener('alpine:init', () => {
     axisIsList(axis) { return axis.type === 'Sampler' || axis.type === 'Scheduler' || axis.type === 'Checkpoint'; },
     axisOptions(axis) {
       if (axis.type === 'Scheduler') return this.schedulers;
-      // Anima's "checkpoint" is the DiT (VAE + TE stay fixed).
-      if (axis.type === 'Checkpoint') return this.modelType === 'Anima' ? this.dits : this.checkpoints;
+      // Anima's and Krea 2's "checkpoint" is the DiT (VAE + TE stay fixed).
+      if (axis.type === 'Checkpoint') return (this.modelType === 'Anima' || this.modelType === 'Krea2') ? this.dits : this.checkpoints;
       return this.samplers;
     },
     axisValues(axis) {
@@ -561,6 +572,11 @@ document.addEventListener('alpine:init', () => {
       if (f.vae) this.vae = f.vae;
       if (f.te) this.te = f.te;
       if (f.clip) this.clip = f.clip;
+      if (f.model_type === 'Krea2') {
+        this.krea2Variant = f.variant || this.inferKrea2Variant(f.dit);
+        this.krea2Applied = true;   // the restored variant stands; don't reset the form to its defaults
+        this.mode = 't2i';
+      }
       if (f.offload) this.perf.offload = f.offload;
       this.perf.compile = !!f.compile;
       this.perf.cudaGraphs = !!f.cuda_graphs;
@@ -585,9 +601,11 @@ document.addEventListener('alpine:init', () => {
       this.samplersSd = m.samplers_sd;
       this.samplersAnima = m.samplers_anima;
       this.samplersFlux = m.samplers_flux;
+      this.samplersKrea2 = m.samplers_krea2;
       this.schedulersSd = m.schedulers_sd;
       this.schedulersAnima = m.schedulers_anima;
       this.schedulersFlux = m.schedulers_flux;
+      this.schedulersKrea2 = m.schedulers_krea2;
       this.paramTypes = m.xyz_param_types;
       this.recommendedOffload = m.recommended_offload || 'full';
       this.fa2Available = !!m.fa2_available;
@@ -627,9 +645,9 @@ document.addEventListener('alpine:init', () => {
       this.loadFormDirty = true;
       this.syncSampler();
       this.syncScheduler();
-      // FLUX always streams its DiT; the others take the backend's VRAM-based
-      // default.
-      this.perf.offload = (type === 'FLUX') ? 'stream' : this.recommendedOffload;
+      // FLUX and Krea 2 always stream their DiT; the others take the backend's
+      // VRAM-based default.
+      this.perf.offload = (type === 'FLUX' || type === 'Krea2') ? 'stream' : this.recommendedOffload;
       // channels_last only helps conv backbones (SD/SDXL UNet + VAE).
       this.perf.channelsLast = (type === 'SD/SDXL');
       if (type === 'Anima' && !this.animaApplied) {
@@ -648,6 +666,40 @@ document.addEventListener('alpine:init', () => {
         this.form.steps = 20;
         this.form.cfg = 3.5;
       }
+      if (type === 'Krea2') {
+        this.mode = 't2i';
+        if (!this.krea2Applied) {
+          this.krea2Applied = true;
+          this.krea2Variant = this.inferKrea2Variant(this.dit);
+          this.applyKrea2Defaults();
+        }
+      }
+    },
+
+    inferKrea2Variant(dit) {
+      return /turbo/i.test(dit || '') ? 'turbo' : 'raw';
+    },
+
+    // Raw: 28 steps at CFG 5.5 (Krea's 4.5 + 1). Turbo is distilled: 8 steps, no CFG pass.
+    applyKrea2Defaults() {
+      const turbo = this.krea2Variant === 'turbo';
+      this.form.sampler = 'euler';
+      this.form.scheduler = 'krea2';
+      this.form.steps = turbo ? 8 : 28;
+      this.form.cfg = turbo ? 1.0 : 5.5;
+      this.syncSampler();
+      this.syncScheduler();
+    },
+
+    setKrea2Variant(v) {
+      this.loadFormDirty = true;
+      if (v === this.krea2Variant) return;
+      this.krea2Variant = v;
+      this.applyKrea2Defaults();
+    },
+
+    onKrea2DitChange() {
+      this.setKrea2Variant(this.inferKrea2Variant(this.dit));
     },
 
     syncSampler() {
@@ -670,7 +722,7 @@ document.addEventListener('alpine:init', () => {
           dit: this.dit, vae: this.vae, te: this.te, clip: this.clip,
           offload: this.perf.offload,
           compile: this.perf.compile,
-          cuda_graphs: this.perf.cudaGraphs,
+          cuda_graphs: this.perf.cudaGraphs && this.modelType !== 'Krea2',
           channels_last: this.perf.channelsLast,
           tf32: this.perf.tf32,
           fp16_accumulation: this.perf.fp16Acc,
@@ -679,7 +731,8 @@ document.addEventListener('alpine:init', () => {
           attention: this.modelType !== 'SD/SDXL' && this.perf.int8Attn ? 'int8_turing'
             : this.perf.fa2Attn ? 'fa2_turing' : 'sdpa',
           fused_glue: this.perf.fusedGlue && this.modelType === 'Anima',
-          int8: this.perf.int8 && this.modelType === 'Anima',
+          int8: this.perf.int8 && (this.modelType === 'Anima' || this.modelType === 'Krea2'),
+          variant: this.modelType === 'Krea2' ? this.krea2Variant : null,
         };
         // Queued like any job; the server broadcasts the new state everywhere.
         const ev = await this.submitJob('/api/load', body);
@@ -1032,6 +1085,7 @@ document.addEventListener('alpine:init', () => {
     async generate() {
       // A load in flight is fine: the job queues behind it.
       if (!this.modelLoaded && !this.loadingModel) { this.flash('Load a model first'); return; }
+      if (this.isKrea2 && this.mode !== 't2i') { this.flash('img2img and inpaint: not supported for Krea 2 yet'); return; }
       if (this.mode === 'i2i' && !this.inputImage) { this.flash('Provide an input image'); return; }
       if (this.mode === 'inpaint') {
         if (!this.inputImage) { this.flash('Provide an input image'); return; }
@@ -1078,7 +1132,7 @@ document.addEventListener('alpine:init', () => {
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
           preview: this.preview,
           blur_check: this.blurOn,
-          detail_enabled: this.detail.enabled,
+          detail_enabled: this.detail.enabled && !this.isKrea2,
           detail_models: this.detail.models,
           detail_neg: this.detail.neg,
           detail_confidence: this.detail.confidence,
@@ -1088,7 +1142,7 @@ document.addEventListener('alpine:init', () => {
           detail_blur: this.detail.blur,
           detail_max: this.detail.maxDet,
           detail_teacache: this.detail.teacache,
-          upscale_enabled: this.upscale.enabled,
+          upscale_enabled: this.upscale.enabled && !this.isKrea2,
           upscale_scale: this.upscale.scale,
           upscale_denoise: this.upscale.denoise,
           upscale_tile: this.upscale.tile,
@@ -1971,6 +2025,7 @@ document.addEventListener('alpine:init', () => {
 
     async sendToMode(mode) {
       if (!this.selected) return;
+      if (this.isKrea2) { this.flash('img2img and inpaint: not supported for Krea 2 yet'); return; }
       try {
         const blob = await (await fetch(this.selected.url)).blob();
         this.inputImage = await new Promise((res, rej) => {

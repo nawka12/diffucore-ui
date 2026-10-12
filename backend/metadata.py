@@ -194,6 +194,9 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     if model_av2:
         fields.append(f"Model hash: {model_av2}")
     fields.append(f"Model: {model}")
+    variant = getattr(engine, "loaded_variant", None)
+    if variant:
+        fields.append(f"Krea2 variant: {variant}")
     if lora_hashes:
         # Forge always quotes this map, even with one entry, and Civitai expects it.
         fields.append(f"Lora hashes: {json.dumps(', '.join(lora_hashes), ensure_ascii=False)}")
@@ -290,6 +293,9 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
         params["aspectratio"] = _aspect_ratio(gen_kwargs["width"], gen_kwargs["height"])
 
     extra: dict = {"date": date.today().isoformat(), "diffucore_ui": UI_ID, "diffucore": DIFF_ID}
+    variant = getattr(engine, "loaded_variant", None)
+    if variant:
+        extra["krea2_variant"] = variant
     if "strength" in gen_kwargs:
         extra["denoising_strength"] = gen_kwargs["strength"]
     if "shift" in gen_kwargs:

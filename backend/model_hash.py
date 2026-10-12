@@ -30,8 +30,8 @@ _CACHE: dict | None = None  # {rel_path: {"mtime": int_ns, "size": int, "hash": 
 
 _MODEL_EXTS = {".safetensors", ".ckpt", ".pt", ".pth"}
 
-# Split-DiT loads are named ``Anima(dit.safetensors)`` / ``FLUX(dit.safetensors)``.
-_WRAP_RE = re.compile(r"^(?:Anima|FLUX)\((.*)\)$")
+# Split-DiT loads are named ``Anima(dit.safetensors)`` / ``FLUX(...)`` / ``Krea2(...)``.
+_WRAP_RE = re.compile(r"^(?:Anima|FLUX|Krea2)\((.*)\)$")
 
 
 # ── model-name / path identity ──────────────────────────────────────
@@ -45,7 +45,7 @@ def _unwrap(loaded_name: str) -> tuple[str, bool]:
 
 
 def clean_model_name(loaded_name: str, strip_ext: bool = False) -> str:
-    """Model name without the ``Anima(...)``/``FLUX(...)`` wrapper; with
+    """Model name without the ``Anima(...)``/``FLUX(...)``/``Krea2(...)`` wrapper; with
     ``strip_ext``, also without the file extension."""
     name = _unwrap(loaded_name)[0]
     if strip_ext:

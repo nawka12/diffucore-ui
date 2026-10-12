@@ -50,6 +50,7 @@
           <button role="radio" :aria-checked="modelType==='SD/SDXL'" :tabindex="modelType==='SD/SDXL' ? 0 : -1" :class="{active: modelType==='SD/SDXL'}" @click="setModelType('SD/SDXL')">SD / SDXL</button>
           <button role="radio" :aria-checked="modelType==='Anima'" :tabindex="modelType==='Anima' ? 0 : -1" :class="{active: modelType==='Anima'}" @click="setModelType('Anima')">Anima</button>
           <button role="radio" :aria-checked="modelType==='FLUX'" :tabindex="modelType==='FLUX' ? 0 : -1" :class="{active: modelType==='FLUX'}" @click="setModelType('FLUX')">FLUX</button>
+          <button role="radio" :aria-checked="modelType==='Krea2'" :tabindex="modelType==='Krea2' ? 0 : -1" :class="{active: modelType==='Krea2'}" @click="setModelType('Krea2')">Krea 2</button>
         </div>
 
         <div class="rack-models">
@@ -71,6 +72,28 @@
             <label class="field">
               <span>TE</span>
               <select x-model="te" @change="loadFormDirty = true"><template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+            </label>
+          </div>
+          <div class="anima-grid cols-4" x-show="modelType==='Krea2'">
+            <label class="field">
+              <span>DiT</span>
+              <select x-model="dit" @change="onKrea2DitChange()"><template x-for="m in ditChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+            </label>
+            <label class="field">
+              <span>VAE</span>
+              <select x-model="vae" @change="loadFormDirty = true"><template x-for="m in vaeChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+            </label>
+            <label class="field">
+              <span>TE</span>
+              <select x-model="te" @change="loadFormDirty = true"><template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
+            </label>
+            <label class="field">
+              <span>Variant</span>
+              <select :value="krea2Variant" @change="setKrea2Variant($event.target.value)"
+                      title="Picked from the DiT filename; override if it is wrong. Sets the Generate defaults (Raw: 28 steps, CFG 5.5; Turbo: 8 steps, CFG 1).">
+                <option value="raw">Raw</option>
+                <option value="turbo">Turbo</option>
+              </select>
             </label>
           </div>
           <div class="anima-grid" x-show="modelType==='FLUX'">
@@ -120,7 +143,7 @@
         <label class="chip" :class="{on: perf.compile}">
           <input type="checkbox" x-model="perf.compile" @change="if(!perf.compile) perf.cudaGraphs=false; if(perf.compile) { perf.fa2Attn=false; perf.int8Attn=false }"> torch.compile
         </label>
-        <label class="chip" :class="{on: perf.cudaGraphs, disabled: !perf.compile}">
+        <label class="chip" :class="{on: perf.cudaGraphs, disabled: !perf.compile}" x-show="modelType!=='Krea2'">
           <input type="checkbox" x-model="perf.cudaGraphs" :disabled="!perf.compile"> CUDA Graphs
         </label>
         <label class="chip" :class="{on: perf.channelsLast}">
@@ -152,7 +175,7 @@
           <input type="checkbox" x-model="perf.fusedGlue"> fused glue
         </label>
         <label class="chip" :class="{on: perf.int8}"
-               x-show="int8WeightsAvailable && modelType==='Anima'"
+               x-show="int8WeightsAvailable && (modelType==='Anima' || modelType==='Krea2')"
                title="Quantize the DiT's attention and MLP layers to INT8 at load (weights and activations). About 1.13x faster per image on an RTX 2060 and 1.6 GB less VRAM; a different sample of the same quality, not identical to fp16. INT8 checkpoint files load as INT8 without this.">
           <input type="checkbox" x-model="perf.int8"> int8
         </label>
@@ -180,8 +203,8 @@
       <div class="controls">
         <div class="seg modes" role="radiogroup" aria-label="Mode" @keydown="navGroup($event)">
           <button role="radio" :aria-checked="mode==='t2i'" :tabindex="mode==='t2i' ? 0 : -1" :class="{active: mode==='t2i'}" @click="mode='t2i'">txt2img</button>
-          <button role="radio" :aria-checked="mode==='i2i'" :tabindex="mode==='i2i' ? 0 : -1" :class="{active: mode==='i2i'}" @click="mode='i2i'">img2img</button>
-          <button role="radio" :aria-checked="mode==='inpaint'" :tabindex="mode==='inpaint' ? 0 : -1" :class="{active: mode==='inpaint'}" @click="mode='inpaint'">inpaint</button>
+          <button role="radio" :aria-checked="mode==='i2i'" :tabindex="mode==='i2i' ? 0 : -1" :class="{active: mode==='i2i'}" @click="mode='i2i'" x-show="!isKrea2">img2img</button>
+          <button role="radio" :aria-checked="mode==='inpaint'" :tabindex="mode==='inpaint' ? 0 : -1" :class="{active: mode==='inpaint'}" @click="mode='inpaint'" x-show="!isKrea2">inpaint</button>
         </div>
 
         <label class="field lora-ac-wrap" @click.outside="loraAC.open=false">
@@ -323,6 +346,7 @@
             <div class="slider-head"><span>CFG scale</span>
               <input type="number" x-model.number="form.cfg" min="1" max="30" step="0.5"></div>
             <input type="range" x-model.number="form.cfg" min="1" max="30" step="0.5">
+            <p class="sub" x-show="isKrea2">Krea's documented guidance g is g + 1 here (Krea 4.5 = 5.5). 1.0 skips the negative-prompt pass.</p>
           </div>
           <div class="slider" x-show="isFlowModel">
             <div class="slider-head"><span>Shift</span>
@@ -401,7 +425,7 @@
           </div>
         </fieldset>
 
-        <fieldset x-show="!sweeping">
+        <fieldset x-show="!sweeping && !isKrea2">
           <legend>Detailer <small>(after generate)</small></legend>
           <label class="chip toggle" :class="{on: detail.enabled}">
             <input type="checkbox" x-model="detail.enabled"> Enable detailer
@@ -464,7 +488,7 @@
           </div>
         </fieldset>
 
-        <fieldset x-show="!sweeping">
+        <fieldset x-show="!sweeping && !isKrea2">
           <legend>Upscaler <small>(after generate)</small></legend>
           <label class="chip toggle" :class="{on: upscale.enabled}">
             <input type="checkbox" x-model="upscale.enabled"> Upscale (after generate)
@@ -507,6 +531,7 @@
         <fieldset>
           <legend>Size</legend>
           <p class="hint" x-show="mode!=='t2i'">Defaults to the input image; the image is resized to fit.</p>
+          <p class="hint warn" x-show="krea2RawTooLarge">Krea 2 Raw was trained up to ~1 MP; this size is larger and may lose coherence.</p>
           <div class="slider">
             <div class="slider-head"><span>Width</span>
               <input type="number" x-model.number="form.width" min="256" max="2048" step="64"></div>
@@ -756,8 +781,8 @@
         </div>
         <div class="info" :class="{err: (sweeping ? xyzInfo : info).startsWith('Error')}"
              x-text="sweeping ? xyzInfo : info"></div>
-        <button class="btn small wide" x-show="resultUrl && !sweeping && !busy" @click="openUpscale()">Upscale</button>
-        <button class="btn small wide" x-show="resultUrl && !sweeping && !busy" @click="openDetail()">Detail</button>
+        <button class="btn small wide" x-show="resultUrl && !sweeping && !busy && !isKrea2" @click="openUpscale()">Upscale</button>
+        <button class="btn small wide" x-show="resultUrl && !sweeping && !busy && !isKrea2" @click="openDetail()">Detail</button>
       </div>
     </section>
 
@@ -911,10 +936,10 @@
                     title="Copy AUTO1111 parameters to clipboard">Copy params</button>
             <a class="btn small" x-show="selected" :href="selected ? selected.url : '#'"
                :download="selected ? selected.name : ''">Download</a>
-            <button class="btn small" @click="sendToMode('i2i')">To img2img</button>
-            <button class="btn small" @click="sendToMode('inpaint')">To inpaint</button>
-            <button class="btn small" @click="openUpscale()">Upscale</button>
-            <button class="btn small" @click="openDetail()">Detail</button>
+            <button class="btn small" x-show="!isKrea2" @click="sendToMode('i2i')">To img2img</button>
+            <button class="btn small" x-show="!isKrea2" @click="sendToMode('inpaint')">To inpaint</button>
+            <button class="btn small" x-show="!isKrea2" @click="openUpscale()">Upscale</button>
+            <button class="btn small" x-show="!isKrea2" @click="openDetail()">Detail</button>
             <button class="btn small primary" @click="loadToWorkspace()">Load to Generate</button>
             <button class="btn small"
                     :class="{danger: deleteConfirm}"
@@ -1042,7 +1067,7 @@
                  x-text="'CFG start must be below CFG end. Changes save once the pair is valid.'"></p>
               <p class="set-foot">Guidance interval: apply CFG only between these fractions of the sampling
                 run. Outside the band the negative-prompt pass is skipped, saving a full model pass per
-                skipped step. 0 / 1 = every step. Anima + SD/SDXL (FLUX has no CFG pass).</p>
+                skipped step. 0 / 1 = every step. Anima, Krea 2 and SD/SDXL (FLUX has no CFG pass).</p>
               <p class="set-foot">Per-channel gives each latent channel its own measured coherence gate.
                 Global keeps the original single-gate path and remains the default; per-channel also applies
                 to <code>cogent3_pump</code>, where the clearest review win was at 24 steps. Token-packed
