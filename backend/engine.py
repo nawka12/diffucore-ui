@@ -156,6 +156,30 @@ SCHEDULERS_KREA2 = ["krea2", "flow", "flow_dyn", "sgm_uniform", "simple", "norma
                     "smoothstep", "beta", "beta_mix", "pump_dual", "pump_taper",
                     "secant_tilt", "relay_tilt"]
 
+# Sections of the UI's sampler / scheduler dropdowns; a test keeps every name above in one.
+SAMPLER_GROUPS = {
+    "Classic": ["euler", "euler_ancestral", "heun", "heunpp2", "dpm_2",
+                "dpm_2_ancestral", "lms", "ddpm", "lcm"],
+    "DPM++": ["dpmpp_2s_ancestral", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_2m_sde_heun",
+              "dpmpp_sde", "dpmpp_3m_sde"],
+    "Higher-order": ["ipndm", "ipndm_v", "res_multistep", "res_multistep_ancestral",
+                     "uni_pc", "uni_pc_bh2", "stork2", "stork4", "exp_heun_2_x0",
+                     "gradient_estimation"],
+    "SDE": ["er_sde", "sa_solver", "sa_solver_pece", "seeds_2", "seeds_3"],
+    "Infinity": ["infinity", "infinity_realism", "infinity_omega", "infinity_aether"],
+    "Diffucore": ["cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate", "secant",
+                  "secant_anneal", "euler_ancestral_anneal"],
+}
+SCHEDULER_GROUPS = {
+    "Model default": ["flow", "flow_dyn", "flux", "krea2", "oss"],
+    "Classic": ["karras", "exponential", "polyexponential", "normal", "simple",
+                "sgm_uniform", "ddim_uniform", "kl_optimal", "align_your_steps",
+                "linear_quadratic", "beta"],
+    "Infinity": ["infinity", "infinity_htds"],
+    "Diffucore": ["smoothstep", "beta_mix", "pump_dual", "pump_taper", "secant_tilt",
+                  "relay_tilt"],
+}
+
 # Calibrated OSS schedules: one JSON of descending sigmas per
 # (model, steps, resolution, shift), written by calibrate_oss.py.
 _OSS_CACHE_DIR = _ROOT / "models" / "oss_cache"

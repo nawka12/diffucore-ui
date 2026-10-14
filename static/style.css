@@ -130,11 +130,17 @@ body {
   align-items: flex-end;
   gap: 14px;
 }
-.rack-models { flex: 1 1 0; min-width: 0; }
-.rack-models .field { margin-bottom: 0; }
-.anima-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
-.anima-grid .field.span-all { grid-column: 1 / -1; }
-.anima-grid.cols-4 { grid-template-columns: 1fr 1fr 1fr 7rem; }
+.rack-models {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+.rack-models > .field { flex: 1 1 180px; min-width: 0; margin-bottom: 0; }
+.rack-models > .model-field { flex: 2 1 340px; }
+.rack-models > .field.narrow { flex: 0 0 8rem; }
 .rack-actions { display: flex; gap: 8px; }
 .rack-actions .btn { height: 38px; min-width: 84px; }
 
@@ -188,7 +194,6 @@ body {
   background: var(--surface-3);
   border-color: var(--line-hi);
 }
-.type-seg { flex: 0 0 auto; }
 .seg.modes { width: 100%; }
 
 /* ── perf chips ───────────────────────────────────────────────── */
@@ -315,6 +320,7 @@ textarea:focus, input:focus, select:focus {
 .tabs button:focus-visible,
 .settings-nav button:focus-visible,
 .ms-btn:focus-visible,
+.combo-btn:focus-visible,
 .queue-x:focus-visible,
 .lb-close:focus-visible,
 .lb-nav:focus-visible,
@@ -1197,6 +1203,97 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 /* Clip long checkpoint/DiT names instead of widening the dropdown panel. */
 .ms-opt span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+.ms-q { margin-bottom: 4px; padding: 6px 9px; }
+
+/* searchable, sectioned dropdown (model / sampler / scheduler) */
+.combo { position: relative; }
+.combo-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  background: var(--surface-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a09d98' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  color: var(--txt);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: normal;  /* same height as a native select */
+  padding: 9px 30px 9px 11px;
+  cursor: pointer;
+  transition: border-color 120ms ease;
+}
+.combo-btn:hover { border-color: var(--line-hi); }
+.combo-btn[aria-expanded="true"] { border-color: var(--accent); }
+.combo-val { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo-badge {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--teal);
+  border: 1px solid rgba(93,214,192,0.35);
+  border-radius: 4px;
+}
+.combo-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  min-width: 240px;
+  padding: 6px;
+  background: var(--surface-3);
+  border: 1px solid var(--line-hi);
+  border-radius: var(--r);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.combo-panel.up { top: auto; bottom: calc(100% + 4px); }
+.combo-q { margin-bottom: 6px; padding: 7px 10px; }
+.combo-list { max-height: 320px; overflow: auto; overscroll-behavior: contain; }
+.combo-group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 8px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--txt-3);
+  background: var(--surface-3);
+}
+.combo-opt {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px 6px 22px;
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--txt-2);
+  cursor: pointer;
+}
+.combo-opt span { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo-opt small { flex: 0 0 auto; font-size: 11px; color: var(--txt-3); }
+.combo-opt.active { background: var(--surface-2); color: var(--txt); }
+.combo-opt.sel { color: var(--accent); }
+.combo-opt.sel::before {
+  content: '';
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.combo-empty { padding: 10px 8px; font-size: 12px; color: var(--txt-3); }
+
 /* <lora:…> autocomplete dropdown under the prompt */
 .lora-ac-wrap { position: relative; }
 .lora-ac {
@@ -1291,7 +1388,6 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 
 @media (max-width: 640px) {
   .rack-row:not(.perf) { flex-direction: column; align-items: stretch; }
-  .type-seg { align-self: flex-start; }
   .rack-actions .btn { flex: 1; }
 
   .mask-editor.maximized {

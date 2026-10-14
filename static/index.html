@@ -46,84 +46,82 @@
     <!-- ── model rack ─────────────────────────────────────────── -->
     <section class="rack">
       <div class="rack-row">
-        <div class="seg type-seg" role="radiogroup" aria-label="Model type" @keydown="navGroup($event)">
-          <button role="radio" :aria-checked="modelType==='SD/SDXL'" :tabindex="modelType==='SD/SDXL' ? 0 : -1" :class="{active: modelType==='SD/SDXL'}" @click="setModelType('SD/SDXL')">SD / SDXL</button>
-          <button role="radio" :aria-checked="modelType==='Anima'" :tabindex="modelType==='Anima' ? 0 : -1" :class="{active: modelType==='Anima'}" @click="setModelType('Anima')">Anima</button>
-          <button role="radio" :aria-checked="modelType==='FLUX'" :tabindex="modelType==='FLUX' ? 0 : -1" :class="{active: modelType==='FLUX'}" @click="setModelType('FLUX')">FLUX</button>
-          <button role="radio" :aria-checked="modelType==='Krea2'" :tabindex="modelType==='Krea2' ? 0 : -1" :class="{active: modelType==='Krea2'}" @click="setModelType('Krea2')">Krea 2</button>
-        </div>
-
         <div class="rack-models">
-          <label class="field" x-show="modelType==='SD/SDXL'">
-            <span>Checkpoint</span>
-            <select x-model="checkpoint" @change="loadFormDirty = true">
-              <template x-for="m in checkpointChoices" :key="m"><option :value="m" x-text="m"></option></template>
+          <div class="field model-field">
+            <span>Model <small>(type detected from the file)</small></span>
+            <div class="combo" x-data="combo({ name: 'Model', items: () => modelItems, get: () => modelKey,
+                                              set: v => pickModel(v), badge: () => modelBadge,
+                                              placeholder: 'No models in models/checkpoints/ or models/diffusion-models/' })"
+                 @click.outside="open && close()" @keydown.escape="open && ($event.stopPropagation(), close(true))">
+              <button type="button" class="combo-btn" x-ref="btn" @click="toggle()" @keydown="btnKey($event)"
+                      aria-haspopup="listbox" :aria-expanded="open" :aria-label="name + ': ' + label">
+                <span class="combo-val" x-text="label"></span>
+                <span class="combo-badge" x-show="badge" x-text="badge"></span>
+              </button>
+              <div class="combo-panel" :class="{up}" :hidden="!open">
+                <input type="text" class="combo-q" x-ref="q" x-model="q" @input="idx = 0; scrollActive()" @keydown="listKey($event)"
+                       placeholder="Search models…" autocomplete="off" spellcheck="false"
+                       role="combobox" aria-expanded="true" aria-autocomplete="list" :aria-controls="uid + '-list'"
+                       :aria-activedescendant="matches.length ? uid + '-' + idx : ''">
+                <div class="combo-list" role="listbox" :id="uid + '-list'" :aria-label="name" x-ref="list">
+                  <template x-for="g in groups" :key="g.name">
+                    <div role="group" :aria-label="g.name">
+                      <div class="combo-group" x-show="g.name" x-text="g.name" aria-hidden="true"></div>
+                      <template x-for="it in g.items" :key="it.value">
+                        <div class="combo-opt" role="option" :id="uid + '-' + it.n"
+                             :class="{active: it.n === idx, sel: it.value === value()}" :aria-selected="it.value === value()"
+                             @mousemove="idx = it.n" @click="choose(it)">
+                          <span x-text="it.label"></span><small x-show="it.tag" x-text="it.tag"></small>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                  <div class="combo-empty" x-show="!matches.length">No matches</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <label class="field narrow" x-show="modelKnown && !modelArch"
+                 title="This file's architecture wasn't recognized; choose how to load it.">
+            <span>Load as</span>
+            <select :value="modelType" @change="pickModel(modelKey, $event.target.value)"
+                    x-effect="loadAsOptions; $nextTick(() => $el.value = modelType)">
+              <template x-for="f in loadAsOptions" :key="f"><option :value="f" x-text="familyLabel(f)"></option></template>
             </select>
           </label>
-          <div class="anima-grid" x-show="modelType==='Anima'">
-            <label class="field">
-              <span>DiT</span>
-              <select x-model="dit" @change="loadFormDirty = true"><template x-for="m in ditChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
-            </label>
-            <label class="field">
-              <span>VAE</span>
-              <select x-model="vae" @change="loadFormDirty = true"><template x-for="m in vaeChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
-            </label>
-            <label class="field">
-              <span>TE</span>
-              <select x-model="te" @change="loadFormDirty = true"><template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
-            </label>
-          </div>
-          <div class="anima-grid cols-4" x-show="modelType==='Krea2'">
-            <label class="field">
-              <span>DiT</span>
-              <select x-model="dit" @change="onKrea2DitChange()"><template x-for="m in ditChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
-            </label>
-            <label class="field">
-              <span>VAE</span>
-              <select x-model="vae" @change="loadFormDirty = true"><template x-for="m in vaeChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
-            </label>
-            <label class="field">
-              <span>TE</span>
-              <select x-model="te" @change="loadFormDirty = true"><template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
-            </label>
-            <label class="field">
-              <span>Variant</span>
-              <select :value="krea2Variant" @change="setKrea2Variant($event.target.value)"
-                      title="Picked from the DiT filename; override if it is wrong. Sets the Generate defaults (Raw: 28 steps, CFG 5.5; Turbo: 8 steps, CFG 1).">
-                <option value="raw">Raw</option>
-                <option value="turbo">Turbo</option>
-              </select>
-            </label>
-          </div>
-          <div class="anima-grid" x-show="modelType==='FLUX'">
-            <label class="field span-all">
-              <span>All-in-one checkpoint <small>(optional, or use the files below)</small></span>
-              <select x-model="fluxCheckpoint" @change="loadFormDirty = true">
-                <option value="">(none)</option>
-                <template x-for="m in checkpointChoices" :key="m"><option :value="m" x-text="m"></option></template>
-              </select>
-            </label>
-            <label class="field">
-              <span>DiT</span>
-              <select x-model="dit" @change="loadFormDirty = true"><template x-for="m in ditChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
-            </label>
-            <label class="field">
-              <span>VAE</span>
-              <select x-model="vae" @change="loadFormDirty = true"><template x-for="m in vaeChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
-            </label>
-            <label class="field">
-              <span>Text enc <small>(T5 / Mistral)</small></span>
-              <select x-model="te" @change="loadFormDirty = true"><template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template></select>
-            </label>
-            <label class="field">
-              <span>CLIP-L <small>(FLUX.1 only, none for FLUX.2)</small></span>
-              <select x-model="clip" @change="loadFormDirty = true">
-                <option value="">(none)</option>
-                <template x-for="m in teChoices" :key="m"><option :value="m" x-text="m"></option></template>
-              </select>
-            </label>
-          </div>
+          <label class="field" x-show="needsSplitFiles">
+            <span>VAE</span>
+            <select x-model="vae" @change="loadFormDirty = true" x-effect="companionGroups('vae'); $nextTick(() => $el.value = vae)">
+              <template x-for="g in companionGroups('vae')" :key="g.label">
+                <optgroup :label="g.label"><template x-for="m in g.files" :key="m"><option :value="m" x-text="m"></option></template></optgroup>
+              </template>
+            </select>
+          </label>
+          <label class="field" x-show="needsSplitFiles">
+            <span x-text="modelType === 'FLUX' ? 'Text encoder' : 'TE'"></span>
+            <select x-model="te" @change="loadFormDirty = true" x-effect="companionGroups('te'); $nextTick(() => $el.value = te)">
+              <template x-for="g in companionGroups('te')" :key="g.label">
+                <optgroup :label="g.label"><template x-for="m in g.files" :key="m"><option :value="m" x-text="m"></option></template></optgroup>
+              </template>
+            </select>
+          </label>
+          <label class="field" x-show="modelType === 'FLUX' && !fluxCheckpoint && modelArch !== 'flux2'">
+            <span>CLIP-L <small>(FLUX.1 only)</small></span>
+            <select x-model="clip" @change="loadFormDirty = true" x-effect="companionGroups('clip'); $nextTick(() => $el.value = clip)">
+              <option value="">(none)</option>
+              <template x-for="g in companionGroups('clip')" :key="g.label">
+                <optgroup :label="g.label"><template x-for="m in g.files" :key="m"><option :value="m" x-text="m"></option></template></optgroup>
+              </template>
+            </select>
+          </label>
+          <label class="field narrow" x-show="modelType==='Krea2'">
+            <span>Variant</span>
+            <select :value="krea2Variant" @change="setKrea2Variant($event.target.value)"
+                    title="Picked from the DiT filename; override if it is wrong. Sets the Generate defaults (Raw: 28 steps, CFG 5.5; Turbo: 8 steps, CFG 1).">
+              <option value="raw">Raw</option>
+              <option value="turbo">Turbo</option>
+            </select>
+          </label>
         </div>
 
         <div class="rack-actions">
@@ -312,18 +310,68 @@
 
         <fieldset>
           <legend>Sampling</legend>
-          <label class="field">
+          <div class="field">
             <span>Sampler</span>
-            <select x-model="form.sampler" x-effect="samplers; $nextTick(() => $el.value = form.sampler)">
-              <template x-for="s in samplers" :key="s"><option :value="s" x-text="s"></option></template>
-            </select>
-          </label>
-          <label class="field">
+            <div class="combo" x-data="combo({ name: 'Sampler', items: () => samplerItems, get: () => form.sampler, set: v => form.sampler = v })"
+                 @click.outside="open && close()" @keydown.escape="open && ($event.stopPropagation(), close(true))">
+              <button type="button" class="combo-btn" x-ref="btn" @click="toggle()" @keydown="btnKey($event)"
+                      aria-haspopup="listbox" :aria-expanded="open" :aria-label="name + ': ' + label">
+                <span class="combo-val" x-text="label"></span>
+              </button>
+              <div class="combo-panel" :class="{up}" :hidden="!open">
+                <input type="text" class="combo-q" x-ref="q" x-model="q" @input="idx = 0; scrollActive()" @keydown="listKey($event)"
+                       placeholder="Search samplers…" autocomplete="off" spellcheck="false"
+                       role="combobox" aria-expanded="true" aria-autocomplete="list" :aria-controls="uid + '-list'"
+                       :aria-activedescendant="matches.length ? uid + '-' + idx : ''">
+                <div class="combo-list" role="listbox" :id="uid + '-list'" :aria-label="name" x-ref="list">
+                  <template x-for="g in groups" :key="g.name">
+                    <div role="group" :aria-label="g.name">
+                      <div class="combo-group" x-show="g.name" x-text="g.name" aria-hidden="true"></div>
+                      <template x-for="it in g.items" :key="it.value">
+                        <div class="combo-opt" role="option" :id="uid + '-' + it.n"
+                             :class="{active: it.n === idx, sel: it.value === value()}" :aria-selected="it.value === value()"
+                             @mousemove="idx = it.n" @click="choose(it)">
+                          <span x-text="it.label"></span>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                  <div class="combo-empty" x-show="!matches.length">No matches</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="field">
             <span>Scheduler</span>
-            <select x-model="form.scheduler" x-effect="schedulers; $nextTick(() => $el.value = form.scheduler)">
-              <template x-for="s in schedulers" :key="s"><option :value="s" x-text="s"></option></template>
-            </select>
-          </label>
+            <div class="combo" x-data="combo({ name: 'Scheduler', items: () => schedulerItems, get: () => form.scheduler, set: v => form.scheduler = v })"
+                 @click.outside="open && close()" @keydown.escape="open && ($event.stopPropagation(), close(true))">
+              <button type="button" class="combo-btn" x-ref="btn" @click="toggle()" @keydown="btnKey($event)"
+                      aria-haspopup="listbox" :aria-expanded="open" :aria-label="name + ': ' + label">
+                <span class="combo-val" x-text="label"></span>
+              </button>
+              <div class="combo-panel" :class="{up}" :hidden="!open">
+                <input type="text" class="combo-q" x-ref="q" x-model="q" @input="idx = 0; scrollActive()" @keydown="listKey($event)"
+                       placeholder="Search schedulers…" autocomplete="off" spellcheck="false"
+                       role="combobox" aria-expanded="true" aria-autocomplete="list" :aria-controls="uid + '-list'"
+                       :aria-activedescendant="matches.length ? uid + '-' + idx : ''">
+                <div class="combo-list" role="listbox" :id="uid + '-list'" :aria-label="name" x-ref="list">
+                  <template x-for="g in groups" :key="g.name">
+                    <div role="group" :aria-label="g.name">
+                      <div class="combo-group" x-show="g.name" x-text="g.name" aria-hidden="true"></div>
+                      <template x-for="it in g.items" :key="it.value">
+                        <div class="combo-opt" role="option" :id="uid + '-' + it.n"
+                             :class="{active: it.n === idx, sel: it.value === value()}" :aria-selected="it.value === value()"
+                             @mousemove="idx = it.n" @click="choose(it)">
+                          <span x-text="it.label"></span>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                  <div class="combo-empty" x-show="!matches.length">No matches</div>
+                </div>
+              </div>
+            </div>
+          </div>
           <div class="oss-panel" x-show="modelType==='Anima' && mode==='t2i' && form.scheduler==='oss'" x-effect="checkOssStatus()">
             <p class="hint" x-show="ossCalibrated === true">
               ✓ Calibrated for <span x-text="form.steps"></span> steps @
@@ -599,12 +647,14 @@
               <select x-model="axes.x.type" @change="clearAxisValues(axes.x)">
                 <template x-for="t in paramTypes" :key="t"><option :value="t" x-text="t"></option></template>
               </select>
-              <div class="ms" x-data="{open:false}" @click.outside="open=false" x-show="axisIsList(axes.x)">
-                <button type="button" class="ms-btn" @click="open=!open"
+              <div class="ms" x-data="{open:false, q:''}" @click.outside="open=false" x-show="axisIsList(axes.x)">
+                <button type="button" class="ms-btn" @click="open=!open; q=''"
                         x-text="axes.x.list.length ? axes.x.list.join(', ') : 'Select values…'"></button>
                 <div class="ms-panel" x-show="open">
+                  <input type="text" class="ms-q" x-model="q" placeholder="Filter…" autocomplete="off" spellcheck="false"
+                         x-show="axisOptions(axes.x).length > 8" @keydown.escape.stop="open=false">
                   <template x-for="opt in axisOptions(axes.x)" :key="opt">
-                    <label class="ms-opt"><input type="checkbox" :value="opt" x-model="axes.x.list"><span x-text="opt"></span></label>
+                    <label class="ms-opt" x-show="queryMatches(opt, q)"><input type="checkbox" :value="opt" x-model="axes.x.list"><span x-text="opt"></span></label>
                   </template>
                 </div>
               </div>
@@ -626,12 +676,14 @@
               <select x-model="axes.y.type" @change="clearAxisValues(axes.y)">
                 <template x-for="t in paramTypes" :key="t"><option :value="t" x-text="t"></option></template>
               </select>
-              <div class="ms" x-data="{open:false}" @click.outside="open=false" x-show="axisIsList(axes.y)">
-                <button type="button" class="ms-btn" @click="open=!open"
+              <div class="ms" x-data="{open:false, q:''}" @click.outside="open=false" x-show="axisIsList(axes.y)">
+                <button type="button" class="ms-btn" @click="open=!open; q=''"
                         x-text="axes.y.list.length ? axes.y.list.join(', ') : 'Select values…'"></button>
                 <div class="ms-panel" x-show="open">
+                  <input type="text" class="ms-q" x-model="q" placeholder="Filter…" autocomplete="off" spellcheck="false"
+                         x-show="axisOptions(axes.y).length > 8" @keydown.escape.stop="open=false">
                   <template x-for="opt in axisOptions(axes.y)" :key="opt">
-                    <label class="ms-opt"><input type="checkbox" :value="opt" x-model="axes.y.list"><span x-text="opt"></span></label>
+                    <label class="ms-opt" x-show="queryMatches(opt, q)"><input type="checkbox" :value="opt" x-model="axes.y.list"><span x-text="opt"></span></label>
                   </template>
                 </div>
               </div>
@@ -653,12 +705,14 @@
               <select x-model="axes.z.type" @change="clearAxisValues(axes.z)">
                 <template x-for="t in paramTypes" :key="t"><option :value="t" x-text="t"></option></template>
               </select>
-              <div class="ms" x-data="{open:false}" @click.outside="open=false" x-show="axisIsList(axes.z)">
-                <button type="button" class="ms-btn" @click="open=!open"
+              <div class="ms" x-data="{open:false, q:''}" @click.outside="open=false" x-show="axisIsList(axes.z)">
+                <button type="button" class="ms-btn" @click="open=!open; q=''"
                         x-text="axes.z.list.length ? axes.z.list.join(', ') : 'Select values…'"></button>
                 <div class="ms-panel" x-show="open">
+                  <input type="text" class="ms-q" x-model="q" placeholder="Filter…" autocomplete="off" spellcheck="false"
+                         x-show="axisOptions(axes.z).length > 8" @keydown.escape.stop="open=false">
                   <template x-for="opt in axisOptions(axes.z)" :key="opt">
-                    <label class="ms-opt"><input type="checkbox" :value="opt" x-model="axes.z.list"><span x-text="opt"></span></label>
+                    <label class="ms-opt" x-show="queryMatches(opt, q)"><input type="checkbox" :value="opt" x-model="axes.z.list"><span x-text="opt"></span></label>
                   </template>
                 </div>
               </div>

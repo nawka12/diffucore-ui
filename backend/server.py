@@ -37,7 +37,8 @@ from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
 from engine import (ENGINE, SAMPLERS_SD, SAMPLERS_ANIMA, SAMPLERS_FLUX, SAMPLERS_KREA2,
-                    SCHEDULERS_SD, SCHEDULERS_ANIMA, SCHEDULERS_FLUX, SCHEDULERS_KREA2)
+                    SCHEDULERS_SD, SCHEDULERS_ANIMA, SCHEDULERS_FLUX, SCHEDULERS_KREA2,
+                    SAMPLER_GROUPS, SCHEDULER_GROUPS)
 from utils import (
     OUTPUTS_DIR, MODELS_DIR, CHECKPOINTS_DIR, DIFFUSION_DIR, VAE_DIR, TE_DIR,
     detector_path, model_name_ok,
@@ -47,6 +48,7 @@ from utils import (
 )
 from xyz_grid import generate_xyz_grid, PARAM_TYPES as XYZ_PARAM_TYPES
 import metadata as md
+import model_arch
 import gallery_search
 import tagger as tagger_mod
 from auth import (
@@ -1480,11 +1482,20 @@ def api_auth_logout():
 
 @app.get("/api/models")
 def api_models():
+    checkpoints, dits = scan_checkpoints(), scan_diffusion_models()
+    vaes, tes = scan_vae(), scan_text_encoders()
     return {
-        "checkpoints": scan_checkpoints(),
-        "dits": scan_diffusion_models(),
-        "vaes": scan_vae(),
-        "tes": scan_text_encoders(),
+        "checkpoints": checkpoints,
+        "dits": dits,
+        "vaes": vaes,
+        "tes": tes,
+        # Header-only guesses that let the UI pick the family and matching files.
+        "file_kinds": {
+            "checkpoints": model_arch.kinds(CHECKPOINTS_DIR, checkpoints, "model"),
+            "dits": model_arch.kinds(DIFFUSION_DIR, dits, "model"),
+            "vaes": model_arch.kinds(VAE_DIR, vaes, "vae"),
+            "tes": model_arch.kinds(TE_DIR, tes, "te"),
+        },
         "loras": scan_loras(),
         "detailers": scan_detectors(),
         "upscalers": scan_upscalers(),
@@ -1496,6 +1507,8 @@ def api_models():
         "schedulers_anima": SCHEDULERS_ANIMA,
         "schedulers_flux": SCHEDULERS_FLUX,
         "schedulers_krea2": SCHEDULERS_KREA2,
+        "sampler_groups": SAMPLER_GROUPS,
+        "scheduler_groups": SCHEDULER_GROUPS,
         "xyz_param_types": XYZ_PARAM_TYPES,
         "status": ENGINE.status_text(),
         "loaded": bool(ENGINE.loaded_name),

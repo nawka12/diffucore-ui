@@ -259,9 +259,17 @@ public.
 
 ### Load a model
 
-1. Select **SD/SDXL**, **Anima**, **FLUX**, or **Krea 2** from the top-bar radio.
-2. Pick your checkpoint files from the dropdowns. FLUX takes either an all-in-one
-   checkpoint or split DiT / VAE / text-encoder files (CLIP-L for FLUX.1 only).
+1. Pick a file in the **Model** dropdown. It lists everything in `checkpoints/`
+   and `diffusion-models/`, sorted into sections by architecture (SDXL, SD 1.5,
+   Anima, Krea 2, FLUX.1, FLUX.2), which is read from the file's header, so
+   picking a file also picks the model type. Type to search. A file whose
+   architecture isn't recognized (a `.ckpt`, say) gets a **Load as** dropdown
+   instead.
+2. For a split model (Anima, Krea 2, or a FLUX DiT), check the VAE and text
+   encoder dropdowns. Each lists the files that fit the picked model first, and
+   switching models swaps in a fitting file when the current one is for another
+   architecture. A FLUX all-in-one checkpoint needs nothing else; CLIP-L is for
+   FLUX.1 only.
 3. Click **Load**. The status bar shows model info and VRAM usage. Loading a
    large model (e.g. Anima's multi-GB files) prints per-stage progress to the
    server terminal, so a slow load is distinguishable from a stuck one.
@@ -270,7 +278,9 @@ public.
 
 In the **Generate** view, pick a mode (**txt2img**, **img2img**, or
 **inpaint**), enter a prompt, adjust your sampler / steps / CFG, and click
-**Generate**. Progress streams to a live bar, a rough **live preview** updates in
+**Generate**. The sampler and scheduler dropdowns are grouped into sections and
+searchable: focus one and start typing (`2m sde` finds `dpmpp_2m_sde`), then
+pick with the arrow keys and Enter. Progress streams to a live bar, a rough **live preview** updates in
 the canvas as it samples (toggle it off beside the button), and the final result
 lands in the panel on the right.
 

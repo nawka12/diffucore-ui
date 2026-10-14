@@ -50,12 +50,143 @@ function emptyGalleryFilters() {
            date_from: '', date_to: '', ratings: [] };
 }
 
+// ── model rack: what the detected file kinds mean ─────────────────
+// /api/models file_kinds architecture -> load family; the order is the
+// picker's section order.
+const ARCHES = {
+  sdxl:  { family: 'SD/SDXL', label: 'SDXL' },
+  sd15:  { family: 'SD/SDXL', label: 'SD 1.5' },
+  anima: { family: 'Anima',   label: 'Anima' },
+  krea2: { family: 'Krea2',   label: 'Krea 2' },
+  flux1: { family: 'FLUX',    label: 'FLUX.1' },
+  flux2: { family: 'FLUX',    label: 'FLUX.2' },
+};
+const FAMILY_LABELS = { 'SD/SDXL': 'SD / SDXL', Anima: 'Anima', FLUX: 'FLUX', Krea2: 'Krea 2' };
+// Families each models/ folder can load: checkpoints/ holds SD/SDXL and
+// all-in-one FLUX, diffusion-models/ the DiTs.
+const SOURCES = { ckpt: ['SD/SDXL', 'FLUX'], dit: ['Anima', 'Krea2', 'FLUX'] };
+// VAE / text encoder kinds each architecture loads, best first.
+const COMPANIONS = {
+  anima: { vae: ['qwen_image', 'qwen2d'], te: ['qwen3', 'qwen35'] },
+  krea2: { vae: ['qwen_image', 'qwen2d'], te: ['qwen3vl'] },
+  flux1: { vae: ['flux1'], te: ['t5'], clip: ['clip_l'] },
+  flux2: { vae: ['flux2'], te: ['flux2_lm'], clip: [] },
+};
+
+// ── searchable dropdown ───────────────────────────────────────────
+// "_", "-", "." and spaces are interchangeable, so "2m sde" finds dpmpp_2m_sde.
+function normQuery(s) { return String(s).toLowerCase().replace(/[_\-.\s]+/g, ' '); }
+function queryMatches(text, q) {
+  const t = normQuery(text);
+  return normQuery(q).split(' ').every(w => !w || t.includes(w));
+}
+// Names as dropdown items, in the order and sections of `groups`
+// ({section: [names]}); names it doesn't list go last, under "Other".
+function groupItems(names, groups) {
+  const rank = {};
+  let r = 0;
+  for (const [g, members] of Object.entries(groups || {})) for (const n of members) rank[n] = [g, r++];
+  return names
+    .map((n, i) => ({ value: n, label: n, group: rank[n] ? rank[n][0] : 'Other', r: rank[n] ? rank[n][1] : r + i }))
+    .sort((a, b) => a.r - b.r);
+}
+let comboSeq = 0;
+
 document.addEventListener('alpine:init', () => {
+  // opts: name, items() -> [{value, label, group, tag}] already in section
+  // order, get(), set(value), and optional badge() for the closed button.
+  Alpine.data('combo', (opts) => ({
+    name: opts.name,
+    uid: 'combo' + (++comboSeq),
+    open: false,
+    up: false,
+    q: '',
+    idx: 0,
+    value() { return opts.get(); },
+    get current() { return opts.items().find(i => i.value === opts.get()) || null; },
+    get label() {
+      const c = this.current;
+      return c ? c.label : (opts.get() || opts.placeholder || 'Select…');
+    },
+    get badge() { return opts.badge ? opts.badge() : ''; },
+    get matches() {
+      return opts.items().filter(i => queryMatches(`${i.label} ${i.group || ''} ${i.tag || ''}`, this.q));
+    },
+    get groups() {
+      const out = [];
+      this.matches.forEach((it, n) => {
+        if (!out.length || out[out.length - 1].name !== (it.group || '')) out.push({ name: it.group || '', items: [] });
+        out[out.length - 1].items.push({ ...it, n });
+      });
+      return out;
+    },
+    toggle() { this.open ? this.close() : this.show(); },
+    show(q = '') {
+      const r = this.$el.getBoundingClientRect();
+      const below = window.innerHeight - r.bottom;
+      this.up = below < 380 && r.top > below;
+      this.q = q;
+      const i = this.matches.findIndex(it => it.value === opts.get());
+      this.idx = i < 0 ? 0 : i;
+      this.open = true;
+      this.$nextTick(() => {
+        // On touch screens focusing the search box pops the keyboard over the list.
+        if (q || matchMedia('(pointer: fine)').matches) this.$refs.q.focus();
+        this.scrollActive(true);
+      });
+    },
+    close(refocus) {
+      this.open = false;
+      if (refocus) this.$refs.btn.focus();
+    },
+    choose(it) {
+      if (!it) return;
+      if (it.value !== opts.get()) opts.set(it.value);
+      this.close(true);
+    },
+    move(d) {
+      const n = this.matches.length;
+      if (!n) return;
+      this.idx = (this.idx + d + n) % n;
+      this.scrollActive();
+    },
+    // Scrolls only the list (scrollIntoView would move the page too), keeping
+    // the active option clear of the sticky section header.
+    scrollActive(center) {
+      this.$nextTick(() => {
+        const list = this.$refs.list, el = list.querySelector('.combo-opt.active');
+        if (!el) return;
+        const l = list.getBoundingClientRect(), r = el.getBoundingClientRect(), head = 28;
+        if (center) list.scrollTop += r.top - l.top - (l.height - r.height) / 2;
+        else if (r.top < l.top + head) list.scrollTop -= l.top + head - r.top;
+        else if (r.bottom > l.bottom) list.scrollTop += r.bottom - l.bottom;
+      });
+    },
+    // Arrows open the list; typing opens it already searching.
+    btnKey(e) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); this.show(); }
+      else if (e.key.length === 1 && e.key !== ' ' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        // Keys typed before the search box takes focus extend the query.
+        if (this.open) { this.q += e.key; this.idx = 0; }
+        else this.show(e.key);
+      }
+    },
+    listKey(e) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); this.move(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); this.move(-1); }
+      else if (e.key === 'Enter') { e.preventDefault(); this.choose(this.matches[this.idx]); }
+      else if (e.key === 'Tab') this.close();
+    },
+  }));
+
   Alpine.data('app', () => ({
     // ── model rack ──────────────────────────────────────────────
     modelType: 'SD/SDXL',
     checkpoints: [], dits: [], vaes: [], tes: [], loras: [], detailers: [], upscalers: [],
     checkpoint: '', dit: '', vae: '', te: '', clip: '', fluxCheckpoint: '',
+    // Header-detected kind per file ({checkpoints, dits, vaes, tes}: {name: kind|null}).
+    fileKinds: { checkpoints: {}, dits: {}, vaes: {}, tes: {} },
     perf: { compile: false, cudaGraphs: false, channelsLast: true, tf32: false, fp16Acc: false, vaeFp16: false, fa2Attn: false, int8Attn: false, fusedGlue: false, int8: false, offload: 'full' },
     fa2Available: false,
     int8Available: false,
@@ -83,6 +214,8 @@ document.addEventListener('alpine:init', () => {
     schedulersAnima: ['flow'],
     schedulersFlux: ['flux'],
     schedulersKrea2: ['krea2'],
+    samplerGroups: {},
+    schedulerGroups: {},
     paramTypes: ['None'],
 
     // ── navigation ──────────────────────────────────────────────
@@ -268,6 +401,65 @@ document.addEventListener('alpine:init', () => {
       if (this.modelType === 'Krea2') return this.schedulersKrea2;
       return this.schedulersSd;
     },
+    get samplerItems() { return groupItems(this.samplers, this.samplerGroups); },
+    get schedulerItems() { return groupItems(this.schedulers, this.schedulerGroups); },
+
+    // The rack's main file: "ckpt:<name>" (checkpoints/) or "dit:<name>" (diffusion-models/).
+    get modelKey() {
+      if (this.modelType === 'SD/SDXL') return 'ckpt:' + this.checkpoint;
+      if (this.modelType === 'FLUX' && this.fluxCheckpoint) return 'ckpt:' + this.fluxCheckpoint;
+      return 'dit:' + this.dit;
+    },
+    // The file's architecture, or null when its header wasn't recognized or
+    // its family can't load from that folder.
+    fileArch(key) {
+      const i = key.indexOf(':');
+      const src = key.slice(0, i), name = key.slice(i + 1);
+      const arch = (src === 'ckpt' ? this.fileKinds.checkpoints : this.fileKinds.dits)[name];
+      return arch && ARCHES[arch] && SOURCES[src].includes(ARCHES[arch].family) ? arch : null;
+    },
+    get modelArch() { return this.fileArch(this.modelKey); },
+    get modelSource() { return this.modelKey.slice(0, this.modelKey.indexOf(':')); },
+    get modelKnown() { return this.modelItems.some(i => i.value === this.modelKey); },
+    get modelBadge() { return this.modelArch ? ARCHES[this.modelArch].label : ''; },
+    get modelItems() {
+      const order = Object.keys(ARCHES);
+      const items = [];
+      for (const [src, list] of [['ckpt', this.checkpoints], ['dit', this.dits]]) {
+        for (const name of list) {
+          const value = src + ':' + name, arch = this.fileArch(value);
+          let tag = '';
+          if (!arch) tag = src === 'ckpt' ? 'checkpoints' : 'diffusion-models';
+          else if (src === 'ckpt' && ARCHES[arch].family === 'FLUX') tag = 'all-in-one';
+          items.push({ value, label: name, arch, tag, group: arch ? ARCHES[arch].label : 'Not recognized' });
+        }
+      }
+      const rank = it => (it.arch ? order.indexOf(it.arch) : order.length);
+      return items.sort((a, b) => rank(a) - rank(b)
+        || a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }));
+    },
+    // Families a file the header check couldn't place may be loaded as.
+    get loadAsOptions() { return SOURCES[this.modelSource] || []; },
+    familyLabel(f) { return FAMILY_LABELS[f] || f; },
+    get needsSplitFiles() {
+      return this.modelType === 'Anima' || this.modelType === 'Krea2'
+        || (this.modelType === 'FLUX' && !this.fluxCheckpoint);
+    },
+    // The architecture whose VAE / text encoder kinds the rack suggests.
+    get companionArch() {
+      return this.modelArch || { Anima: 'anima', Krea2: 'krea2' }[this.modelType] || null;
+    },
+    // A companion dropdown's files: those of a kind this model loads first.
+    companionGroups(slot) {
+      const files = slot === 'vae' ? this.vaeChoices : this.teChoices;
+      const kinds = slot === 'vae' ? this.fileKinds.vaes : this.fileKinds.tes;
+      const want = (COMPANIONS[this.companionArch] || {})[slot];
+      if (!want) return [{ label: 'All files', files }];
+      return [
+        { label: 'For ' + ARCHES[this.companionArch].label, files: files.filter(f => want.includes(kinds[f])) },
+        { label: 'Other files', files: files.filter(f => !want.includes(kinds[f])) },
+      ].filter(g => g.files.length);
+    },
     // Shift is flow-only, and honoured by Anima everywhere but flow_dyn and by
     // FLUX and Krea 2 only on plain flow.
     get isFlowModel() {
@@ -295,9 +487,17 @@ document.addEventListener('alpine:init', () => {
     axisOptions(axis) {
       if (axis.type === 'Scheduler') return this.schedulers;
       // Anima's and Krea 2's "checkpoint" is the DiT (VAE + TE stay fixed).
-      if (axis.type === 'Checkpoint') return (this.modelType === 'Anima' || this.modelType === 'Krea2') ? this.dits : this.checkpoints;
+      // Files detected as another family are left out.
+      if (axis.type === 'Checkpoint') {
+        const src = (this.modelType === 'Anima' || this.modelType === 'Krea2') ? 'dit' : 'ckpt';
+        return (src === 'dit' ? this.dits : this.checkpoints).filter(n => {
+          const a = this.fileArch(src + ':' + n);
+          return !a || ARCHES[a].family === this.modelType;
+        });
+      }
       return this.samplers;
     },
+    queryMatches(text, q) { return queryMatches(text, q); },
     axisValues(axis) {
       if (axis.type === 'None') return '';
       return this.axisIsList(axis) ? axis.list.join(', ') : axis.text;
@@ -604,6 +804,9 @@ document.addEventListener('alpine:init', () => {
       this.schedulersAnima = m.schedulers_anima;
       this.schedulersFlux = m.schedulers_flux;
       this.schedulersKrea2 = m.schedulers_krea2;
+      this.samplerGroups = m.sampler_groups || {};
+      this.schedulerGroups = m.scheduler_groups || {};
+      this.fileKinds = m.file_kinds || { checkpoints: {}, dits: {}, vaes: {}, tes: {} };
       this.paramTypes = m.xyz_param_types;
       this.recommendedOffload = m.recommended_offload || 'full';
       this.fa2Available = !!m.fa2_available;
@@ -613,7 +816,9 @@ document.addEventListener('alpine:init', () => {
       this.uiId = m.ui_id; this.diffId = m.diff_id;
       // The first fetch seeds every selector; a later Refresh only replaces
       // selections whose file vanished.
-      if (!this._modelsFetched) {
+      const firstFetch = !this._modelsFetched;
+      const lost = !firstFetch && !this.modelKnown;
+      if (firstFetch) {
         this._modelsFetched = true;
         this.perf.offload = this.recommendedOffload;
         this.checkpoint = this.checkpointChoices[0];
@@ -636,6 +841,55 @@ document.addEventListener('alpine:init', () => {
       this.syncScheduler();
       // Hydrate from the server's load state last.
       this.applyState(m);
+      // With nothing to restore, or the picked file gone, start from the
+      // picker's first file so the family matches it.
+      if (((firstFetch && !m.load_form) || lost) && this.modelItems.length) {
+        this.pickModel(this.modelItems[0].value);
+        if (firstFetch) this.loadFormDirty = false;
+      }
+    },
+
+    // Pick the rack's main file; the family comes from its header unless given
+    // ("Load as" for a file that wasn't recognized).
+    pickModel(key, family) {
+      const i = key.indexOf(':');
+      const src = key.slice(0, i), name = key.slice(i + 1);
+      const arch = this.fileArch(key);
+      // An unrecognized checkpoint is most likely an SD .ckpt; an unrecognized
+      // DiT keeps the DiT family in use.
+      if (!family) {
+        family = arch ? ARCHES[arch].family
+          : src === 'ckpt' ? 'SD/SDXL'
+          : SOURCES.dit.includes(this.modelType) ? this.modelType : 'Anima';
+      }
+      if (src === 'ckpt' && family === 'FLUX') this.fluxCheckpoint = name;
+      else if (src === 'ckpt') this.checkpoint = name;
+      else {
+        this.dit = name;
+        if (family === 'FLUX') this.fluxCheckpoint = '';
+      }
+      if (family !== this.modelType) this.setModelType(family);
+      if (family === 'Krea2') this.onKrea2DitChange();
+      this.loadFormDirty = true;
+      this.pickCompanions();
+    },
+
+    // Swap VAE / text encoder / CLIP for files of a kind this model loads,
+    // keeping a current pick that fits or that the header check couldn't place.
+    pickCompanions() {
+      const want = COMPANIONS[this.companionArch];
+      if (!want) return;
+      const pick = (cur, files, kinds, accepted) => {
+        if (files.includes(cur) && (kinds[cur] == null || accepted.includes(kinds[cur]))) return cur;
+        for (const k of accepted) {
+          const f = files.find(n => kinds[n] === k);
+          if (f) return f;
+        }
+        return cur;
+      };
+      this.vae = pick(this.vae, this.vaes, this.fileKinds.vaes, want.vae);
+      this.te = pick(this.te, this.tes, this.fileKinds.tes, want.te);
+      if (want.clip) this.clip = want.clip.length ? pick(this.clip, this.tes, this.fileKinds.tes, want.clip) : '';
     },
 
     setModelType(type) {
