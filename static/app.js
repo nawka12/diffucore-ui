@@ -203,6 +203,11 @@ document.addEventListener('alpine:init', () => {
     fluxApplied: false,
     krea2Applied: false,
     krea2Variant: 'raw',   // 'raw' | 'turbo'; follows the DiT filename until overridden
+    enhancing: false,
+    // The prompt before the last Enhance and what it became; Undo shows while
+    // the box still holds the enhanced text.
+    promptBeforeEnhance: null,
+    enhancedPrompt: null,
     uiId: 'diffucore-ui', diffId: 'diffucore',
 
     // ── shared option sets ──────────────────────────────────────
@@ -322,7 +327,7 @@ document.addEventListener('alpine:init', () => {
     // ── settings panel (global, non-per-image knobs) ────────────
     settingsOpen: false,
     settingsTab: 'teacache',
-    settings: { curvature: 0.25, eta_max: 1.0, gate_reduce: 'all', beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, cfg_interval_start: 0.0, cfg_interval_end: 1.0, teacache_uncond_scale: 1.0, vae_tiling: 'auto', metadata_format: 'a1111', gen_defaults: null, nsfw_blur: true, blur_min_rating: 'R' },
+    settings: { curvature: 0.25, eta_max: 1.0, gate_reduce: 'all', beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, cfg_interval_start: 0.0, cfg_interval_end: 1.0, teacache_uncond_scale: 1.0, vae_tiling: 'auto', metadata_format: 'a1111', gen_defaults: null, nsfw_blur: true, blur_min_rating: 'R', enhancer_model: 'qwen3vl_4b_bf16.safetensors', enhancer_int8: false },
     teacacheStatus: { loaded: false, calibratable: false, family: null, coefficients: null },
     calibratingTea: false,
     taggerStatus: { available: false, loaded: false, rated: 0, total: 0 },
@@ -466,6 +471,10 @@ document.addEventListener('alpine:init', () => {
       return this.modelType === 'Anima' || this.modelType === 'FLUX' || this.modelType === 'Krea2';
     },
     get isKrea2() { return this.modelType === 'Krea2'; },
+    // Qwen3 / Qwen3-VL text-encoder files the Anima Enhance can run (no Qwen3.5).
+    get enhancerModels() {
+      return this.tes.filter(n => ['qwen3vl', 'qwen3'].includes(this.fileKinds.tes[n]));
+    },
     get krea2RawTooLarge() {
       return this.isKrea2 && this.krea2Variant === 'raw' && this.form.width * this.form.height > 1.3 * 1024 * 1024;
     },
@@ -2394,6 +2403,39 @@ document.addEventListener('alpine:init', () => {
       } catch (e) {
         this.flash('Could not parse: ' + e);
       }
+    },
+
+    // Rewrite the prompt with Krea 2's text encoder (a queued job). Waits on
+    // its own id so a running generation keeps the progress bar.
+    async enhancePrompt() {
+      if (!this.form.prompt.trim()) { this.flash('Write a prompt to enhance first'); return; }
+      this.enhancing = true;
+      try {
+        const original = this.form.prompt;
+        const r = await fetchJSON('/api/enhance_prompt', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: original }),
+        });
+        const ev = await new Promise((resolve) => { this._jobWaiters[r.job] = resolve; });
+        if (ev.type === 'done') {
+          this.promptBeforeEnhance = original;
+          this.enhancedPrompt = ev.prompt;
+          this.form.prompt = ev.prompt;
+          this.resizeTextareas();
+        } else if (ev.type === 'error') {
+          this.flash('Enhance failed: ' + ev.message);
+        }
+      } catch (e) {
+        this.flash('Enhance failed: ' + e.message);
+      } finally {
+        this.enhancing = false;
+      }
+    },
+
+    undoEnhance() {
+      this.form.prompt = this.promptBeforeEnhance;
+      this.promptBeforeEnhance = this.enhancedPrompt = null;
+      this.resizeTextareas();
     },
 
     // Arrow-key navigation among a group's sibling <button>s. Radio groups

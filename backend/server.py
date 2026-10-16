@@ -475,6 +475,10 @@ class Settings(BaseModel):
     nsfw_blur: bool = True
     # Lowest rating that gets blurred. No "XXX": the AI rater never outputs it.
     blur_min_rating: Literal["PG13", "R", "X"] = "R"
+    # Prompt enhance: the LM Anima's Enhance runs (Krea 2 uses its own text
+    # encoder), and INT8 linears for either (about half the VRAM, a bit slower).
+    enhancer_model: str = "qwen3vl_4b_bf16.safetensors"
+    enhancer_int8: bool = False
 
 
 class XYZPayload(BaseModel):
@@ -509,6 +513,10 @@ class CancelPayload(BaseModel):
 
 class ParseTextPayload(BaseModel):
     text: str = ""
+
+
+class EnhancePromptPayload(BaseModel):
+    prompt: str = ""
 
 
 # ── helpers ─────────────────────────────────────────────────────────
@@ -930,7 +938,7 @@ class Job:
     def __init__(self, kind: str, label: str, run: Callable[["Job"], dict],
                  *, priority: int = 0):
         self.id = next(_job_ids)
-        self.kind = kind            # generate | xyz | calibrate | load | install | update | tag
+        self.kind = kind            # generate | xyz | calibrate | load | install | update | tag | enhance
         self.label = label
         self.run = run              # run(job) -> result dict; may raise _Cancelled
         self.status = "queued"      # queued | running | done | error | cancelled
@@ -1218,7 +1226,7 @@ EXTENSIONS = ExtensionLoader(
 
 
 # Job kinds that set their own prompt-tag LoRAs, or never sample.
-_KEEPS_TAG_LORAS = {"generate", "xyz", "tag"}
+_KEEPS_TAG_LORAS = {"generate", "xyz", "tag", "enhance"}
 
 
 def _drop_tag_loras_for(job: Job) -> None:
@@ -1887,6 +1895,25 @@ async def api_calibrate_oss(p: CalibratePayload):
         on_progress, _ = _make_callbacks(job)
         return _run_calibrate(p, on_progress)
     job = Job("calibrate", "OSS calibrate", run)
+    _enqueue(job)
+    return {"job": job.id}
+
+
+@app.post("/api/enhance_prompt")
+async def api_enhance_prompt(p: EnhancePromptPayload):
+    """Rewrite the prompt (Krea 2: its own text encoder; Anima: the Settings
+    enhancer model). Runs ahead of queued generations (behind a load):
+    someone is waiting on it to edit."""
+    if ENGINE.loaded_family not in ("krea2", "anima"):
+        raise HTTPException(status_code=400, detail="Prompt enhance needs a loaded Krea 2 or Anima model")
+    if not p.prompt.strip():
+        raise HTTPException(status_code=400, detail="Write a prompt to enhance first")
+    def run(job: Job) -> dict:
+        on_progress, _ = _make_callbacks(job)
+        return {"prompt": ENGINE.enhance_prompt(
+            p.prompt, progress_callback=on_progress,
+            enhancer_model=SETTINGS["enhancer_model"], int8=SETTINGS["enhancer_int8"])}
+    job = Job("enhance", "enhance prompt", run, priority=5)
     _enqueue(job)
     return {"job": job.id}
 

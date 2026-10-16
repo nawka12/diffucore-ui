@@ -303,11 +303,21 @@ Anima is an LLM-conditioned DiT, and its `shift = 3` flow schedule makes a few
 settings behave differently from SD/SDXL. A few things worth knowing (none are
 bugs, just how the model responds):
 
-- **Write detailed prompts.** Anima conditions on a language model (Qwen3 +
-  T5-XXL) trained on long, descriptive captions, so short tag-style prompts give
-  weak guidance and drifty, low-quality results. Describe the whole scene in
-  natural language, not just keywords. This matters most in img2img and inpaint,
-  where the prompt has to carry more of the image.
+- **Don't write extremely short prompts.** Anima reads its prompt through
+  Qwen3-0.6B and an LLM adapter (T5 is only a tokenizer there; there is no
+  T5-XXL model). Danbooru tags, natural language and a mix all work: tags go in
+  the order quality/meta/year/safety, 1girl/1boy, character, series, `@artist`,
+  then general tags, and a natural-language part should be at least two
+  sentences. A one-line prompt gives weak guidance and drifty results, most of
+  all in img2img and inpaint, where the prompt has to carry more of the image.
+
+- **Enhance** (next to the Prompt label) keeps your prompt exactly as typed and
+  adds two or three descriptive sentences after it, so tags like `@artist` or a
+  character name can't be lost. Anima's own text encoder is too small to write
+  them well, so Enhance runs a separate model set in **Settings > Prompt
+  enhance**: by default Krea 2's `qwen3vl_4b_bf16.safetensors` (Comfy-Org),
+  any Qwen3 or Qwen3-VL file works. About 9 s on an RTX 2060. The **INT8**
+  option there runs it in 4.4 GB of VRAM instead of 7.7 GB, for 8 GB cards.
 
 - **Experimental: Qwen3.5 text encoder.** Anima ships with a Qwen3-0.6B semantic
   encoder, but the newer `cosmos-qwen3.5` hybrid (Mamba2-SSM + gated-attention)
@@ -832,6 +842,14 @@ Things worth knowing:
   Turbo-speed images from Raw (and lets Raw-trained LoRAs run at 8 steps).
 - img2img, inpaint, the detailer and the upscaler work as for Anima. TeaCache
   is not available for Krea 2.
+- **Enhance** (next to the Prompt label) rewrites a short prompt or a tag list
+  into the detailed description Krea 2 reads best, using Krea 2's own text
+  encoder (Qwen3-VL-4B-Instruct) as a chat model, so nothing extra to
+  download. `<lora:…>` tags are kept, each click gives a new variation, and
+  **Undo enhance** restores your prompt. It queues like a generation (ahead of
+  waiting images) and takes about 25 s on an RTX 2060, where it briefly moves
+  the GPU-resident DiT blocks to RAM to make room for the 8 GB model (the
+  **INT8** option in Settings > Prompt enhance needs 4.4 GB instead).
 - **License.** The weights are under the Krea 2 Community License (commercial
   use only below $1M annual revenue; deployers must run content filtering).
   Diffucore ships no weights. The UI's NSFW filter can be part of that

@@ -67,6 +67,7 @@ from diffucore import (
     load_checkpoint,
     load_flux_checkpoint,
     load_krea2_checkpoint,
+    load_prompt_enhancer,
     ImageToImage,
     Inpaint,
     TextToImage,
@@ -1201,6 +1202,45 @@ class Engine:
         if not self._loaded:
             return False
         return oss_cache_path(self._loaded.name, steps, width, height, shift).exists()
+
+    def enhance_prompt(
+        self, prompt: str, seed: int | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+        enhancer_model: str = "", int8: bool = False,
+    ) -> str:
+        """Rewrite ``prompt`` with a Qwen3 / Qwen3-VL LM. Krea 2 runs its own
+        text encoder (Qwen3-VL-4B Instruct) into one descriptive paragraph;
+        Anima runs ``enhancer_model`` (a text-encoders file) as a few-shot
+        completion that keeps the prompt verbatim and adds sentences after it.
+        ``<lora:…>`` tags are set aside and re-appended."""
+        family = self.loaded_family
+        if family not in (MODEL_FAMILY_KREA2, MODEL_FAMILY_ANIMA):
+            raise RuntimeError("Prompt enhance needs a loaded Krea 2 or Anima model")
+        tags = [m.group(0) for m in LORA_PROMPT_RE.finditer(prompt)]
+        text = " ".join(LORA_PROMPT_RE.sub(" ", prompt).split())
+        if not text:
+            raise ValueError("Write a prompt to enhance first")
+        if family == MODEL_FAMILY_KREA2:
+            path = te_path(self._loaded.te_name)
+        else:
+            if not enhancer_model:
+                raise ValueError("Pick an enhancer model in Settings > Prompt enhance")
+            path = te_path(enhancer_model)
+            if not path.exists():
+                raise FileNotFoundError(f"Enhancer model not found: {path} (Settings > Prompt enhance)")
+        model = self._loaded.model
+        policy = model.policy or DevicePolicy(device=self.device, compute_dtype=self.dtype)
+        # CUDA Graphs bake the backbone's addresses in, so it never moves.
+        room = [m for m in (model.backbone, model.vae, model.text_encoder, model.text_encoder_2)
+                if m is not None and not (m is model.backbone and self._cuda_graphs)]
+        enhancer = load_prompt_enhancer(str(path), policy, int8=int8)
+        run = enhancer.enhance if family == MODEL_FAMILY_KREA2 else enhancer.expand
+        try:
+            out = run(text, seed=seed, progress_callback=progress_callback, make_room=room)
+        finally:
+            del enhancer, run
+            self._reclaim_memory()
+        return " ".join([out, *tags])
 
     def calibrate_oss(
         self, *, prompt: str, negative_prompt: str = "",
