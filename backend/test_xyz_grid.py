@@ -153,7 +153,7 @@ def test_bad_checkpoint_draws_an_error_cell(monkeypatch):
     """A Checkpoint value that fails to load must not abort the whole sweep."""
     fake = _FakeEngine()
 
-    def reload_model(name):
+    def reload_model(name, te_name=None):
         if name == "bad.safetensors":
             raise FileNotFoundError("Model not found: bad.safetensors")
         return f"Loaded {name}"
@@ -168,3 +168,50 @@ def test_bad_checkpoint_draws_an_error_cell(monkeypatch):
     )
     assert len(grids) == 1
     assert len(fake.calls) == 1  # only the good cell sampled
+
+
+def test_checkpoint_and_te_axes_load_once_per_cell(monkeypatch):
+    fake = _FakeEngine()
+    loads = []
+    fake.reload_model = lambda name, te_name=None: loads.append((name, te_name)) or "Loaded"
+    monkeypatch.setattr(xyz_grid, "ENGINE", fake)
+    xyz_grid.generate_xyz_grid(
+        dict(prompt="a cat", negative_prompt="", width=64, height=64, steps=1,
+             cfg_scale=4.0, sampler="euler", scheduler="flow", seed=1, shift=3.0),
+        "Text Encoder", "a.safetensors, b.safetensors",
+        "Checkpoint", "d1.safetensors, d2.safetensors",
+        "None", "",
+    )
+    assert loads == [("d1.safetensors", "a.safetensors"), ("d1.safetensors", "b.safetensors"),
+                     ("d2.safetensors", "a.safetensors"), ("d2.safetensors", "b.safetensors")]
+    assert len(fake.calls) == 4
+
+
+def test_te_axis_restores_the_users_model(monkeypatch):
+    fake = _FakeEngine()
+    fake.reload_model = lambda name, te_name=None: "Loaded"
+    monkeypatch.setattr(server, "ENGINE", fake)
+    monkeypatch.setattr(xyz_grid, "ENGINE", fake)
+    monkeypatch.setattr(server, "_save_output",
+                        lambda image, kwargs, **kw: server.OUTPUTS_DIR / "fake.png")
+    restored = []
+    monkeypatch.setattr(server, "_do_load", lambda p: restored.append(p.te) or "Loaded")
+    monkeypatch.setattr(server, "_push", lambda ev: None)
+    monkeypatch.setattr(server, "_state_payload", lambda: {})
+    monkeypatch.setattr(server, "LAST_LOAD_FORM", dict(model_type="Anima", dit="d.safetensors",
+                                                       vae="v.safetensors", te="t.safetensors"))
+    server._run_xyz(server.XYZPayload(
+        prompt="a cat", steps=1, width=64, height=64, seed=1, preview=False,
+        x_type="Text Encoder", x_vals="a.safetensors, b.safetensors",
+    ), on_progress=lambda *a: None)
+    assert restored == ["t.safetensors"]
+
+
+def test_te_axis_needs_a_split_file_model(monkeypatch):
+    fake = _FakeEngine()
+    fake.loaded_family = "sdxl"
+    monkeypatch.setattr(server, "ENGINE", fake)
+    with pytest.raises(RuntimeError, match="Text Encoder"):
+        server._run_xyz(server.XYZPayload(
+            prompt="a cat", x_type="Text Encoder", x_vals="a.safetensors",
+        ), on_progress=lambda *a: None)

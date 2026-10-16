@@ -481,9 +481,9 @@ document.addEventListener('alpine:init', () => {
       return this.mode === 't2i' && this.xyzSweep;
     },
 
-    // Sampler / Scheduler / Checkpoint axes are multi-selects; numeric axes
-    // keep a free-text comma list.
-    axisIsList(axis) { return axis.type === 'Sampler' || axis.type === 'Scheduler' || axis.type === 'Checkpoint'; },
+    // Sampler / Scheduler / Checkpoint / Text Encoder axes are multi-selects;
+    // numeric axes keep a free-text comma list.
+    axisIsList(axis) { return ['Sampler', 'Scheduler', 'Checkpoint', 'Text Encoder'].includes(axis.type); },
     axisOptions(axis) {
       if (axis.type === 'Scheduler') return this.schedulers;
       // Anima's and Krea 2's "checkpoint" is the DiT (VAE + TE stay fixed).
@@ -494,6 +494,12 @@ document.addEventListener('alpine:init', () => {
           const a = this.fileArch(src + ':' + n);
           return !a || ARCHES[a].family === this.modelType;
         });
+      }
+      // Text encoders of a kind this model loads, plus files the header check
+      // couldn't place.
+      if (axis.type === 'Text Encoder') {
+        const want = (COMPANIONS[this.companionArch] || {}).te;
+        return this.tes.filter(n => !want || this.fileKinds.tes[n] == null || want.includes(this.fileKinds.tes[n]));
       }
       return this.samplers;
     },

@@ -13,7 +13,8 @@ from engine import ENGINE
 
 # ── public constants ──────────────────────────────────────────────
 
-PARAM_TYPES = ["None", "Seed", "Sampler", "Scheduler", "Steps", "CFG Scale", "Prompt S/R", "Checkpoint"]
+PARAM_TYPES = ["None", "Seed", "Sampler", "Scheduler", "Steps", "CFG Scale", "Prompt S/R",
+               "Checkpoint", "Text Encoder"]
 
 # Cap on |x|·|y|·|z|: "50,50,50" would be 125k generations.
 MAX_XYZ_CELLS = 1000
@@ -312,6 +313,7 @@ def generate_xyz_grid(
                 for xi, x_val in enumerate(x_vals):
                     kwargs = dict(base_kwargs)
                     cell_prompt, cell_neg = raw_prompt, raw_neg
+                    ckpt = te = None
                     load_error: Exception | None = None
                     for a_type, a_val, a_search in (
                         (x_type, x_val, x_search),
@@ -324,17 +326,23 @@ def generate_xyz_grid(
                             cell_prompt = cell_prompt.replace(a_search, str(a_val))
                             cell_neg = cell_neg.replace(a_search, str(a_val))
                         elif a_type == "Checkpoint":
-                            # reload_model no-ops on the current name; a real
-                            # reload drops the fused LoRAs, so re-fuse. A failed
-                            # load becomes this cell's error, not the grid's.
-                            try:
-                                msg = ENGINE.reload_model(str(a_val))
-                            except Exception as e:
-                                load_error, msg = e, ""
-                            if not msg.startswith("Model already loaded"):
-                                last_loras = None
+                            ckpt = str(a_val)
+                        elif a_type == "Text Encoder":
+                            te = str(a_val)
                         else:
                             kwargs[_PARAM_MAP[a_type]] = a_val
+
+                    # One load per cell even when both axes swap files.
+                    # reload_model no-ops when nothing changed; a real reload
+                    # drops the fused LoRAs, so re-fuse. A failed load becomes
+                    # this cell's error, not the grid's.
+                    if ckpt is not None or te is not None:
+                        try:
+                            msg = ENGINE.reload_model(ckpt, te_name=te)
+                        except Exception as e:
+                            load_error, msg = e, ""
+                        if not msg.startswith("Model already loaded"):
+                            last_loras = None
 
                     if cell_knobs is not None:
                         kwargs.update(cell_knobs(kwargs["sampler"], kwargs["scheduler"]))

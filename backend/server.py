@@ -842,6 +842,9 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
              on_preview: Optional[Callable] = None) -> dict:
     if not ENGINE.loaded_name:
         raise RuntimeError("Load a model first")
+    axis_types = (p.x_type, p.y_type, p.z_type)
+    if "Text Encoder" in axis_types and ENGINE.loaded_family not in ("anima", "krea2"):
+        raise RuntimeError("The Text Encoder axis needs an Anima or Krea 2 model")
     if ENGINE.loaded_family == "krea2":
         p.teacache = 0.0    # no TeaCache support; keep it out of the metadata
     base_kwargs = dict(
@@ -856,8 +859,9 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
         teacache_rule=p.teacache_rule,
         teacache_sigma_floor=float(p.teacache_sigma_floor),
     )
-    # A Checkpoint axis leaves the last swept model loaded; reload the user's.
-    swaps_model = "Checkpoint" in (p.x_type, p.y_type, p.z_type)
+    # A Checkpoint or Text Encoder axis leaves the last swept files loaded;
+    # reload the user's.
+    swaps_model = "Checkpoint" in axis_types or "Text Encoder" in axis_types
     try:
         grids, info = generate_xyz_grid(
             base_kwargs,

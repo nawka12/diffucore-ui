@@ -649,25 +649,34 @@ class Engine:
         flags = self._perf_flag_summary()
         return f"Loaded {model_name} ({family}) in {elapsed:.1f}s{flags}"
 
-    def reload_model(self, name: str) -> str:
-        """Swap the model file for an X/Y/Z Checkpoint sweep, keeping the
-        current staging settings and (for Anima) VAE + text encoder. The loaders
-        no-op when ``name`` is already current."""
+    def reload_model(self, name: Optional[str] = None, te_name: Optional[str] = None) -> str:
+        """Swap the model file and/or (Anima, Krea 2) the text encoder for an
+        X/Y/Z sweep, keeping the current staging settings and the rest of the
+        split files. ``None`` keeps the current one. The loaders no-op when
+        nothing changed."""
         lm = self._loaded
+        if lm is None and (name is None or te_name is not None):
+            raise RuntimeError("No model loaded")
+        if te_name is not None and lm.family not in (MODEL_FAMILY_ANIMA, MODEL_FAMILY_KREA2):
+            raise ValueError("The Text Encoder axis needs an Anima or Krea 2 model")
+        if name is None:
+            # Split-file labels are "Anima(<dit>)" / "Krea2(<dit>)".
+            name = lm.name.split("(", 1)[1][:-1] if "(" in lm.name else lm.name
         if lm and lm.family == MODEL_FAMILY_ANIMA:
             return self.load_anima(
-                name, lm.vae_name, lm.te_name,
+                name, lm.vae_name, te_name or lm.te_name,
                 offload=self._offload, vae_tile=self._vae_tile,
                 compile=self._compile, cuda_graphs=self._cuda_graphs,
                 fp16_accumulation=self._fp16_accumulation,
                 attention=self._attention,
                 vae_fp16=self._vae_fp16,
                 fused_glue=self._fused_glue,
+                int8=self._int8,
             )
         if lm and lm.family == MODEL_FAMILY_KREA2:
             # The variant is re-read from each DiT's filename.
             return self.load_krea2(
-                name, lm.vae_name, lm.te_name,
+                name, lm.vae_name, te_name or lm.te_name,
                 offload=self._offload, vae_tile=self._vae_tile,
                 compile=self._compile,
                 fp16_accumulation=self._fp16_accumulation,

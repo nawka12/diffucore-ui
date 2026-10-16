@@ -83,3 +83,26 @@ def test_load_flux_reloads_when_clip_changes():
     with pytest.raises(FileNotFoundError):
         eng.load_flux(_MISSING, "v.safetensors", "t.safetensors",
                       clip_name="c_new.safetensors", offload=True, vae_tile=True)
+
+
+# ── reload_model: the X/Y/Z Checkpoint / Text Encoder swap ─────────────────
+
+def test_reload_model_te_keeps_current_dit():
+    eng = _engine_with(_anima())
+    assert eng.reload_model(te_name="t.safetensors").startswith("Model already loaded")
+    with pytest.raises(FileNotFoundError):
+        eng.reload_model(te_name=_MISSING)
+
+
+def test_reload_model_keeps_int8():
+    """Dropping int8 made every swept reload a full non-int8 reload."""
+    eng = _engine_with(_anima())
+    eng._int8 = True
+    assert eng.reload_model("d.safetensors").startswith("Model already loaded")
+
+
+def test_reload_model_te_rejects_builtin_encoders():
+    eng = _engine_with(LoadedModel(name="m.safetensors", family="sdxl",
+                                   model=object(), native_res=1024))
+    with pytest.raises(ValueError, match="Text Encoder"):
+        eng.reload_model(te_name="t.safetensors")
