@@ -205,7 +205,7 @@
           <button role="radio" :aria-checked="mode==='inpaint'" :tabindex="mode==='inpaint' ? 0 : -1" :class="{active: mode==='inpaint'}" @click="mode='inpaint'">inpaint</button>
         </div>
 
-        <label class="field lora-ac-wrap" @click.outside="loraAC.open=false">
+        <label class="field lora-ac-wrap" for="prompt-input" @click.outside="loraAC.open=false">
           <span class="prompt-head">Prompt
             <span class="prompt-actions">
               <button type="button" class="btn small" x-show="enhancedPrompt !== null && form.prompt === enhancedPrompt"
@@ -219,7 +219,7 @@
                       title="Read AUTO1111 generation parameters pasted into the prompt box">Import params</button>
             </span>
           </span>
-          <textarea class="autosize" x-model="form.prompt" rows="3"
+          <textarea id="prompt-input" class="autosize" x-model="form.prompt" rows="3"
                     x-effect="autogrow($el, form.prompt)"
                     @input="autogrow($el); loraAutocomplete($el)"
                     @keydown="promptKeydown($event)"
