@@ -141,7 +141,7 @@
         <label class="chip" :class="{on: perf.compile}">
           <input type="checkbox" x-model="perf.compile" @change="if(!perf.compile) perf.cudaGraphs=false; if(perf.compile) { perf.fa2Attn=false; perf.int8Attn=false }"> torch.compile
         </label>
-        <label class="chip" :class="{on: perf.cudaGraphs, disabled: !perf.compile}" x-show="modelType!=='Krea2'">
+        <label class="chip" :class="{on: perf.cudaGraphs, disabled: !perf.compile}" x-show="modelType!=='Krea2' && !isMoss">
           <input type="checkbox" x-model="perf.cudaGraphs" :disabled="!perf.compile"> CUDA Graphs
         </label>
         <label class="chip" :class="{on: perf.channelsLast}">
@@ -173,7 +173,7 @@
           <input type="checkbox" x-model="perf.fusedGlue"> fused glue
         </label>
         <label class="chip" :class="{on: perf.int8}"
-               x-show="int8WeightsAvailable && (modelType==='Anima' || modelType==='Krea2')"
+               x-show="int8WeightsAvailable && (modelType==='Anima' || modelType==='Krea2' || isMoss)"
                title="Quantize the DiT's attention and MLP layers to INT8 at load (weights and activations). About 1.13x faster per image on an RTX 2060 and 1.6 GB less VRAM; a different sample of the same quality, not identical to fp16. INT8 checkpoint files load as INT8 without this.">
           <input type="checkbox" x-model="perf.int8"> int8
         </label>
@@ -404,7 +404,13 @@
               <input type="number" x-model.number="form.cfg" min="1" max="30" step="0.5"></div>
             <input type="range" x-model.number="form.cfg" min="1" max="30" step="0.5">
             <p class="sub" x-show="isKrea2">Krea's documented guidance g is g + 1 here (Krea 4.5 = 5.5). 1.0 skips the negative-prompt pass.</p>
+            <p class="sub" x-show="isMoss">MOSS-Image's own CFG (3) is used as is. 1.0 skips the negative-prompt pass.</p>
           </div>
+          <label class="field" x-show="isMoss"
+                 title="Transformer blocks (0-based) the negative-prompt pass skips on every step. The reference skips block 22. Leave empty to skip none.">
+            <span>Uncond skip blocks <small>(block numbers; empty = none)</small></span>
+            <input type="text" x-model="form.uncondSkip" inputmode="numeric" placeholder="22" autocomplete="off" spellcheck="false">
+          </label>
           <div class="slider" x-show="isFlowModel">
             <div class="slider-head"><span>Shift</span>
               <input type="number" x-model.number="form.shift" min="1" max="9" step="0.1" :disabled="!shiftHonored"></div>
@@ -1131,7 +1137,7 @@
                  x-text="'CFG start must be below CFG end. Changes save once the pair is valid.'"></p>
               <p class="set-foot">Guidance interval: apply CFG only between these fractions of the sampling
                 run. Outside the band the negative-prompt pass is skipped, saving a full model pass per
-                skipped step. 0 / 1 = every step. Anima, Krea 2 and SD/SDXL (FLUX has no CFG pass).</p>
+                skipped step. 0 / 1 = every step. Anima, Krea 2, MOSS-Image and SD/SDXL (FLUX has no CFG pass).</p>
               <p class="set-foot">Per-channel gives each latent channel its own measured coherence gate.
                 Global keeps the original single-gate path and remains the default; per-channel also applies
                 to <code>cogent3_pump</code>, where the clearest review win was at 24 steps. Token-packed
