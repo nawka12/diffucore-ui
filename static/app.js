@@ -2121,7 +2121,8 @@ document.addEventListener('alpine:init', () => {
       this.galleryLimit = 60;
       this.galleryQuery = '';
       this.galleryFilters = emptyGalleryFilters();
-      this.gallerySearching = false;
+      // The first open after a restart builds the backend index.
+      this.gallerySearching = true;
       if (this.galleryFiltersOpen) this.loadGalleryFacets();
       const token = ++this._galleryToken;
       try {
@@ -2131,6 +2132,8 @@ document.addEventListener('alpine:init', () => {
         this.buildGalleryGroups();
       } catch (e) {
         /* keep the previous list on a transient error */
+      } finally {
+        if (token === this._galleryToken) this.gallerySearching = false;
       }
     },
 

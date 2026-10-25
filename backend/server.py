@@ -2242,6 +2242,9 @@ def api_gallery_facets():
 _GALLERY_INDEX: Optional[list] = None
 _GALLERY_INDEX_KEY: float = 0.0
 _GALLERY_INDEX_LOCK = threading.Lock()
+# Each PNG's raw ``parameters`` chunk keyed by its mtime+size, so a rebuild
+# (every app start) only opens new or changed files: opening all ~5k took ~6 s.
+_GALLERY_CACHE_PATH = _ROOT / ".cache" / "gallery_index.json"
 
 
 def _outputs_dir_mtime() -> float:
@@ -2301,6 +2304,18 @@ def _gallery_index_add(path: Path, params: str) -> None:
         _GALLERY_INDEX_KEY = _outputs_dir_mtime()
 
 
+def _gallery_index_remove(rel: str) -> None:
+    """Drop a deleted output from the cached index instead of forcing a rebuild.
+    No-op while the index is cold."""
+    global _GALLERY_INDEX, _GALLERY_INDEX_KEY
+    with _GALLERY_INDEX_LOCK:
+        if _GALLERY_INDEX is None:
+            return
+        # Rebind rather than mutate: a search may be iterating the old list.
+        _GALLERY_INDEX = [e for e in _GALLERY_INDEX if e["path"] != rel]
+        _GALLERY_INDEX_KEY = _outputs_dir_mtime()
+
+
 def _gallery_index_patch_ratings(ratings: dict) -> None:
     """Update the rating fields of already-indexed rows, keyed by relative path.
     Unknown rows are skipped; the next build picks them up.
@@ -2322,10 +2337,21 @@ def _gallery_index() -> list:
     with _GALLERY_INDEX_LOCK:
         if _GALLERY_INDEX is not None and newest <= _GALLERY_INDEX_KEY:
             return _GALLERY_INDEX
+        try:
+            cached = json.loads(_GALLERY_CACHE_PATH.read_text())
+        except (OSError, ValueError):
+            cached = {}
+        fresh: dict = {}
         index: list = []
         for f in scan_outputs():
-            raw = md.read_png_metadata(str(f))
+            rel = f.relative_to(OUTPUTS_DIR).as_posix()
+            key = _image_key(f)
+            hit = cached.get(rel)
+            raw = hit["raw"] if hit and hit["key"] == key else md.read_png_metadata(str(f))
+            fresh[rel] = {"key": key, "raw": raw}
             index.append(_index_entry(f, md.parse_metadata(raw) if raw else {}))
+        if fresh != cached:
+            _atomic_write_text(_GALLERY_CACHE_PATH, json.dumps(fresh))
         _GALLERY_INDEX = index
         _GALLERY_INDEX_KEY = newest
         return index
@@ -2395,7 +2421,7 @@ def api_gallery_delete(path: str):
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Could not delete: {e}")
     _purge_thumb_cache(target)
-    _invalidate_gallery_index()
+    _gallery_index_remove(target.relative_to(outputs_root).as_posix())
     invalidate_outputs_cache()
     try:
         _purge_trash()

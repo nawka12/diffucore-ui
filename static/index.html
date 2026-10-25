@@ -928,7 +928,8 @@
            x-init="observeSentinel($el)">Loading more…</div>
       <p class="placeholder" x-show="gallery.length===0 && !gallerySearching"
          x-text="galleryQuery.trim() ? 'No images match your search.' : 'No outputs yet.'"></p>
-      <p class="placeholder" x-show="gallery.length===0 && gallerySearching">Searching…</p>
+      <p class="placeholder" x-show="gallery.length===0 && gallerySearching"
+         x-text="galleryQuery.trim() || galleryFilterCount ? 'Searching…' : 'Loading…'"></p>
     </section>
 
     <!-- ── METADATA ───────────────────────────────────────────── -->
