@@ -57,7 +57,10 @@ network/share flags, architecture, and status.
   end-to-end at 1024² for Anima on an RTX 2060 with fp16 accumulation on
   (stacks with it; grows with resolution). SDXL gains less (~1.03× per step):
   most of its attention is short cross-attention or 1024-token self-attention.
-  SD1.5's head sizes (40/80/160) aren't supported and stay on SDPA. Not bit-exact; incompatible with
+  SD1.5's head sizes (40/80/160) aren't supported and stay on SDPA. Anima's
+  cross-attention under fa2 (also with int8 attn) skips the text context's zero
+  padding to 512 tokens and corrects the softmax for it, the same result up to
+  rounding: ~20 ms of a 670 ms step at 1024×1536 on an RTX 2060. Not bit-exact; incompatible with
   torch.compile. The chip only appears when the kernel is installed; it's a
   local-build optional extra, never required:
   `pip install` the [flash-attention-turing](https://github.com/ssiu/flash-attention-turing)
@@ -97,7 +100,14 @@ network/share flags, architecture, and status.
   MLP linears of every block but the first and last get int8 weights and
   per-token int8 activations (W8A8): the GEMM runs on int8 tensor cores
   (cuBLASLt), quantize and rescale are Triton kernels, and each MLP's GELU is
-  fused into the hop between its two GEMMs. Measured on an RTX 2060 with fp16
+  fused into the hop between its two GEMMs. On Turing (RTX 20-series) a CUTLASS
+  int8 GEMM applies the rescale itself and writes fp16, bit-identical to the
+  separate pass and ~1.12× per step on top (1024×1536, all perf flags: 655 to
+  580 ms; 38 to 33 s per 32-step image together with the cross-attention change
+  under fa2 attention). It needs the `nvidia-cutlass` package from
+  requirements.txt (C++ headers only) and the same toolchain as int8 attn; the
+  first load builds it (~1 min, then cached), and without it the cuBLASLt path
+  runs. Measured on an RTX 2060 with fp16
   accumulation, fused glue, int8 attn and fp16 VAE (1024×1024, 30 steps, CFG
   4.5): 32.7 to 28.5 s per image (×1.11-1.15 across runs), DiT weights 4.2 to
   2.5 GB, peak VRAM 7.7 to 6.1 GB. Images keep composition and quality but are
