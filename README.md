@@ -8,7 +8,7 @@
 
 ![The Generate workspace: model bar with per-load speed flags on top, prompt and sampler controls on the left, the result on the right](docs/images/generate.png)
 
-<sub>Anima on an RTX 2060 12 GB: 1024×1536, 32 steps, 33.9 s with the fp16, int8
+<sub>Anima on an RTX 2060 12 GB: 1024×1536, 32 steps, 36.0 s with the fp16, int8
 and fused-glue speed flags on. The tabs after Metadata come from optional
 extensions.</sub>
 
