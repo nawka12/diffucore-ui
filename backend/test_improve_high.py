@@ -262,12 +262,12 @@ def _setup_outputs(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "OUTPUTS_DIR", out)
     monkeypatch.setattr(server, "_TRASH_DIR", out / ".trash")
     monkeypatch.setattr(server, "_THUMBS_DIR", tmp_path / "thumbs")
+    monkeypatch.setattr(server, "_GALLERY_CACHE_PATH", tmp_path / "gallery_index.json")
     return out, day / "01-123.png"
 
 
 def test_gallery_delete_moves_to_trash(monkeypatch, tmp_path):
     _setup_outputs(tmp_path, monkeypatch)
-    monkeypatch.setattr(server, "_invalidate_gallery_index", lambda: None)
     monkeypatch.setattr(server, "_purge_trash", lambda *a, **k: 0)
     target = server.OUTPUTS_DIR / "01-01-2026" / "01-123.png"
     assert target.is_file()
@@ -511,6 +511,51 @@ def test_gallery_index_add_is_a_noop_while_cold(monkeypatch, tmp_path,
     server._invalidate_gallery_index()
     server._gallery_index_add(target, "a cat\nSteps: 20")
     assert server._GALLERY_INDEX is None
+
+
+def test_gallery_index_rebuild_reuses_cached_metadata(monkeypatch, tmp_path,
+                                                     _isolated_ratings):
+    # A restart must not re-open unchanged PNGs, only new or modified ones.
+    import utils
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
+    _save_with_params(target, "a cat\nSteps: 20, Sampler: euler, Seed: 1")
+    server._invalidate_gallery_index()
+    utils.invalidate_outputs_cache()
+    assert server._gallery_index()[0]["prompt"] == "a cat"
+    assert server._GALLERY_CACHE_PATH.is_file()
+
+    newer = out / "01-01-2026" / "01-124.png"
+    _save_with_params(newer, "a dog\nSteps: 20, Sampler: euler, Seed: 2")
+    opened = []
+    real_read = server.md.read_png_metadata
+    monkeypatch.setattr(server.md, "read_png_metadata",
+                        lambda p: opened.append(Path(p).name) or real_read(p))
+    server._invalidate_gallery_index()
+    utils.invalidate_outputs_cache()
+    index = server._gallery_index()
+    assert opened == ["01-124.png"]
+    assert {e["prompt"] for e in index} == {"a cat", "a dog"}
+
+
+def test_gallery_delete_drops_the_row_without_rebuilding(monkeypatch, tmp_path,
+                                                         _isolated_ratings):
+    import utils
+    out, target = _setup_outputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(utils, "OUTPUTS_DIR", out)
+    monkeypatch.setattr(server, "_purge_trash", lambda *a, **k: 0)
+    keep = out / "01-01-2026" / "01-124.png"
+    _save_with_params(target, "a cat\nSteps: 20")
+    _save_with_params(keep, "a dog\nSteps: 20")
+    server._invalidate_gallery_index()
+    utils.invalidate_outputs_cache()
+    assert len(server._gallery_index()) == 2
+
+    server.api_gallery_delete(path="01-01-2026/01-123.png")
+    monkeypatch.setattr(server.md, "read_png_metadata",
+                        lambda p: pytest.fail("rebuilt the index after a delete"))
+    monkeypatch.setattr(server, "_GALLERY_CACHE_PATH", tmp_path / "missing.json")
+    assert [e["path"] for e in server._gallery_index()] == ["01-01-2026/01-124.png"]
 
 
 def test_gallery_index_patch_ratings_updates_in_place(monkeypatch, tmp_path,

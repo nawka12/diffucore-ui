@@ -163,3 +163,74 @@ def test_models_endpoint_lists_krea2_options():
     assert m["schedulers_krea2"] == SCHEDULERS_KREA2
     assert m["schedulers_krea2"][0] == "krea2"
     assert m["samplers_krea2"] == SAMPLERS_ANIMA
+
+
+class _FakeEnhancer:
+    def __init__(self, seen):
+        self.seen = seen
+    def enhance(self, text, **kw):
+        self.seen.update(mode="enhance", text=text, **kw)
+        return "a detailed fox"
+    def expand(self, text, **kw):
+        self.seen.update(mode="expand", text=text, **kw)
+        return text + ". It sleeps."
+
+
+def _fake_bundle_loaded(monkeypatch, family, seen, te="t.safetensors"):
+    from types import SimpleNamespace
+    import engine as engine_mod
+    bundle = SimpleNamespace(backbone="dit", vae="vae", text_encoder="te", text_encoder_2=None,
+                             policy="policy")
+    monkeypatch.setattr(ENGINE, "_loaded", LoadedModel(
+        name="M(m.safetensors)", family=family, model=bundle, native_res=1024,
+        vae_name="v.safetensors", te_name=te, variant="raw" if family == "krea2" else None))
+    def load(path, policy, int8=False):
+        seen.update(path=path, int8=int8)
+        return _FakeEnhancer(seen)
+    monkeypatch.setattr(engine_mod, "load_prompt_enhancer", load)
+
+
+def test_enhance_prompt_sets_lora_tags_aside(monkeypatch):
+    """Only the text reaches the LM; the tags come back at the end, and the
+    loaded model's modules are offered as room to free."""
+    seen = {}
+    _fake_bundle_loaded(monkeypatch, "krea2", seen)
+    out = ENGINE.enhance_prompt("a fox <lora:style:0.8> in  snow <lora:b:1>", int8=True)
+    assert out == "a detailed fox <lora:style:0.8> <lora:b:1>"
+    assert seen["mode"] == "enhance" and seen["text"] == "a fox in snow"
+    assert seen["path"].endswith("t.safetensors") and seen["int8"] is True
+    assert seen["make_room"] == ["dit", "vae", "te"]
+    with pytest.raises(ValueError):
+        ENGINE.enhance_prompt("<lora:style:0.8>")
+
+
+def test_anima_enhance_runs_the_settings_model_as_expand(monkeypatch, tmp_path):
+    import engine as engine_mod
+    seen = {}
+    _fake_bundle_loaded(monkeypatch, "anima", seen)
+    (tmp_path / "vl.safetensors").write_bytes(b"")
+    monkeypatch.setattr(engine_mod, "te_path", lambda name: tmp_path / name)
+    out = ENGINE.enhance_prompt("1girl, @artist <lora:a:1>", enhancer_model="vl.safetensors")
+    assert out == "1girl, @artist. It sleeps. <lora:a:1>"
+    assert seen["mode"] == "expand" and seen["path"].endswith("vl.safetensors")
+    with pytest.raises(FileNotFoundError):
+        ENGINE.enhance_prompt("1girl", enhancer_model="missing.safetensors")
+    # A CUDA-Graphs backbone keeps its addresses: never parked.
+    monkeypatch.setattr(ENGINE, "_cuda_graphs", True)
+    ENGINE.enhance_prompt("1girl", enhancer_model="vl.safetensors")
+    assert seen["make_room"] == ["vae", "te"]
+
+
+def test_enhance_endpoint_needs_krea2_and_a_prompt(monkeypatch):
+    with TestClient(server.app) as c:
+        monkeypatch.setattr(ENGINE, "_loaded", None)
+        assert c.post("/api/enhance_prompt", json={"prompt": "a fox"}).status_code == 400
+        monkeypatch.setattr(ENGINE, "_loaded", LoadedModel(
+            name="FLUX(f.safetensors)", family="flux", model=object(), native_res=1024))
+        assert c.post("/api/enhance_prompt", json={"prompt": "a fox"}).status_code == 400
+        monkeypatch.setattr(ENGINE, "_loaded", _krea2())
+        assert c.post("/api/enhance_prompt", json={"prompt": "  "}).status_code == 400
+
+
+def test_enhance_job_keeps_tag_loras():
+    assert "enhance" in server._KEEPS_TAG_LORAS

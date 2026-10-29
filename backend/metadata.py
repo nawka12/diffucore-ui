@@ -159,6 +159,12 @@ def _upscale_fields(upscale: dict) -> list[str]:
     return fields
 
 
+def _skip_layers_text(layers) -> str:
+    """MOSS-Image's uncond skip blocks as written to the parameters line:
+    "22" or "22, 30", "none" for an empty list."""
+    return ", ".join(str(int(i)) for i in layers) or "none"
+
+
 def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
                     upscale: dict | None = None, seed: int | None = None) -> str:
     """Build the AUTO1111-style ``parameters`` string for a finished generation.
@@ -197,6 +203,8 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     variant = getattr(engine, "loaded_variant", None)
     if variant:
         fields.append(f"Krea2 variant: {variant}")
+    if "uncond_skip_layers" in gen_kwargs:
+        fields.append(f"Uncond skip layers: {_quote(_skip_layers_text(gen_kwargs['uncond_skip_layers']))}")
     if lora_hashes:
         # Forge always quotes this map, even with one entry, and Civitai expects it.
         fields.append(f"Lora hashes: {json.dumps(', '.join(lora_hashes), ensure_ascii=False)}")
@@ -296,6 +304,8 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
     variant = getattr(engine, "loaded_variant", None)
     if variant:
         extra["krea2_variant"] = variant
+    if "uncond_skip_layers" in gen_kwargs:
+        extra["uncond_skip_layers"] = _skip_layers_text(gen_kwargs["uncond_skip_layers"])
     if "strength" in gen_kwargs:
         extra["denoising_strength"] = gen_kwargs["strength"]
     if "shift" in gen_kwargs:
@@ -594,6 +604,11 @@ def workspace_fields(meta: dict) -> dict:
                 out["width"], out["height"] = w, h
         except ValueError:
             pass
+    skip = meta.get("uncond_skip_layers")
+    if skip is not None:
+        ids = [t.strip() for t in str(skip).split(",") if t.strip() and t.strip() != "none"]
+        if all(t.isdigit() for t in ids):
+            out["uncondSkip"] = ", ".join(ids)
     detailer = extract_detailer(meta)
     if detailer:
         out["detailer"] = detailer

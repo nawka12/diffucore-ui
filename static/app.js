@@ -58,17 +58,19 @@ const ARCHES = {
   sd15:  { family: 'SD/SDXL', label: 'SD 1.5' },
   anima: { family: 'Anima',   label: 'Anima' },
   krea2: { family: 'Krea2',   label: 'Krea 2' },
+  moss_image: { family: 'MOSS', label: 'MOSS-Image' },
   flux1: { family: 'FLUX',    label: 'FLUX.1' },
   flux2: { family: 'FLUX',    label: 'FLUX.2' },
 };
-const FAMILY_LABELS = { 'SD/SDXL': 'SD / SDXL', Anima: 'Anima', FLUX: 'FLUX', Krea2: 'Krea 2' };
+const FAMILY_LABELS = { 'SD/SDXL': 'SD / SDXL', Anima: 'Anima', FLUX: 'FLUX', Krea2: 'Krea 2', MOSS: 'MOSS-Image' };
 // Families each models/ folder can load: checkpoints/ holds SD/SDXL and
 // all-in-one FLUX, diffusion-models/ the DiTs.
-const SOURCES = { ckpt: ['SD/SDXL', 'FLUX'], dit: ['Anima', 'Krea2', 'FLUX'] };
+const SOURCES = { ckpt: ['SD/SDXL', 'FLUX'], dit: ['Anima', 'Krea2', 'MOSS', 'FLUX'] };
 // VAE / text encoder kinds each architecture loads, best first.
 const COMPANIONS = {
   anima: { vae: ['qwen_image', 'qwen2d'], te: ['qwen3', 'qwen35'] },
   krea2: { vae: ['qwen_image', 'qwen2d'], te: ['qwen3vl'] },
+  moss_image: { vae: ['flux2_small', 'flux2'], te: ['qwen35_9b'] },
   flux1: { vae: ['flux1'], te: ['t5'], clip: ['clip_l'] },
   flux2: { vae: ['flux2'], te: ['flux2_lm'], clip: [] },
 };
@@ -203,6 +205,13 @@ document.addEventListener('alpine:init', () => {
     fluxApplied: false,
     krea2Applied: false,
     krea2Variant: 'raw',   // 'raw' | 'turbo'; follows the DiT filename until overridden
+    mossApplied: false,
+    mossUncondSkip: [22],  // the reference default, replaced by the backend's
+    enhancing: false,
+    // The prompt before the last Enhance and what it became; Undo shows while
+    // the box still holds the enhanced text.
+    promptBeforeEnhance: null,
+    enhancedPrompt: null,
     uiId: 'diffucore-ui', diffId: 'diffucore',
 
     // ── shared option sets ──────────────────────────────────────
@@ -210,10 +219,12 @@ document.addEventListener('alpine:init', () => {
     samplersAnima: [],
     samplersFlux: [],
     samplersKrea2: [],
+    samplersMoss: [],
     schedulersSd: ['karras'],
     schedulersAnima: ['flow'],
     schedulersFlux: ['flux'],
     schedulersKrea2: ['krea2'],
+    schedulersMoss: ['moss'],
     samplerGroups: {},
     schedulerGroups: {},
     paramTypes: ['None'],
@@ -232,6 +243,7 @@ document.addEventListener('alpine:init', () => {
       teacacheOn: false, teacache: 0.15, teacacheCalibrated: true, teacacheForecast: 'hermite',
       teacacheRule: 'drift', teacacheFloor: 0,
       deepcacheOn: false, deepcache: 2,
+      uncondSkip: '22',   // MOSS-Image only: blocks the negative-prompt pass skips
     },
     // >1 submits N jobs: seed+i with a pinned seed, a fresh random with -1.
     batchCount: 1,
@@ -322,7 +334,7 @@ document.addEventListener('alpine:init', () => {
     // ── settings panel (global, non-per-image knobs) ────────────
     settingsOpen: false,
     settingsTab: 'teacache',
-    settings: { curvature: 0.25, eta_max: 1.0, gate_reduce: 'all', beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, cfg_interval_start: 0.0, cfg_interval_end: 1.0, teacache_uncond_scale: 1.0, vae_tiling: 'auto', metadata_format: 'a1111', gen_defaults: null, nsfw_blur: true, blur_min_rating: 'R' },
+    settings: { curvature: 0.25, eta_max: 1.0, gate_reduce: 'all', beta_alpha: 0.6, beta_beta: 0.6, lq_threshold: 0.025, cfg_interval_start: 0.0, cfg_interval_end: 1.0, teacache_uncond_scale: 1.0, vae_tiling: 'auto', metadata_format: 'a1111', gen_defaults: null, nsfw_blur: true, blur_min_rating: 'R', enhancer_model: 'qwen3vl_4b_bf16.safetensors', enhancer_int8: false },
     teacacheStatus: { loaded: false, calibratable: false, family: null, coefficients: null },
     calibratingTea: false,
     taggerStatus: { available: false, loaded: false, rated: 0, total: 0 },
@@ -393,12 +405,14 @@ document.addEventListener('alpine:init', () => {
       if (this.modelType === 'Anima') return this.samplersAnima;
       if (this.modelType === 'FLUX') return this.samplersFlux;
       if (this.modelType === 'Krea2') return this.samplersKrea2;
+      if (this.modelType === 'MOSS') return this.samplersMoss;
       return this.samplersSd;
     },
     get schedulers() {
       if (this.modelType === 'Anima') return this.schedulersAnima;
       if (this.modelType === 'FLUX') return this.schedulersFlux;
       if (this.modelType === 'Krea2') return this.schedulersKrea2;
+      if (this.modelType === 'MOSS') return this.schedulersMoss;
       return this.schedulersSd;
     },
     get samplerItems() { return groupItems(this.samplers, this.samplerGroups); },
@@ -442,12 +456,12 @@ document.addEventListener('alpine:init', () => {
     get loadAsOptions() { return SOURCES[this.modelSource] || []; },
     familyLabel(f) { return FAMILY_LABELS[f] || f; },
     get needsSplitFiles() {
-      return this.modelType === 'Anima' || this.modelType === 'Krea2'
+      return this.modelType === 'Anima' || this.modelType === 'Krea2' || this.modelType === 'MOSS'
         || (this.modelType === 'FLUX' && !this.fluxCheckpoint);
     },
     // The architecture whose VAE / text encoder kinds the rack suggests.
     get companionArch() {
-      return this.modelArch || { Anima: 'anima', Krea2: 'krea2' }[this.modelType] || null;
+      return this.modelArch || { Anima: 'anima', Krea2: 'krea2', MOSS: 'moss_image' }[this.modelType] || null;
     },
     // A companion dropdown's files: those of a kind this model loads first.
     companionGroups(slot) {
@@ -460,17 +474,24 @@ document.addEventListener('alpine:init', () => {
         { label: 'Other files', files: files.filter(f => !want.includes(kinds[f])) },
       ].filter(g => g.files.length);
     },
-    // Shift is flow-only, and honoured by Anima everywhere but flow_dyn and by
-    // FLUX and Krea 2 only on plain flow.
+    // Shift is flow-only, and honoured by Anima and MOSS-Image everywhere but
+    // flow_dyn (and MOSS's own "moss" schedule) and by FLUX and Krea 2 only on plain flow.
     get isFlowModel() {
-      return this.modelType === 'Anima' || this.modelType === 'FLUX' || this.modelType === 'Krea2';
+      return this.modelType === 'Anima' || this.modelType === 'FLUX' || this.modelType === 'Krea2'
+        || this.modelType === 'MOSS';
     },
     get isKrea2() { return this.modelType === 'Krea2'; },
+    get isMoss() { return this.modelType === 'MOSS'; },
+    // Qwen3 / Qwen3-VL text-encoder files the Anima Enhance can run (no Qwen3.5).
+    get enhancerModels() {
+      return this.tes.filter(n => ['qwen3vl', 'qwen3'].includes(this.fileKinds.tes[n]));
+    },
     get krea2RawTooLarge() {
       return this.isKrea2 && this.krea2Variant === 'raw' && this.form.width * this.form.height > 1.3 * 1024 * 1024;
     },
     get shiftHonored() {
       if (this.modelType === 'Anima') return this.form.scheduler !== 'flow_dyn';
+      if (this.modelType === 'MOSS') return !['moss', 'flow_dyn'].includes(this.form.scheduler);
       if (this.modelType === 'FLUX' || this.modelType === 'Krea2') return this.form.scheduler === 'flow';
       return false;
     },
@@ -486,10 +507,10 @@ document.addEventListener('alpine:init', () => {
     axisIsList(axis) { return ['Sampler', 'Scheduler', 'Checkpoint', 'Text Encoder'].includes(axis.type); },
     axisOptions(axis) {
       if (axis.type === 'Scheduler') return this.schedulers;
-      // Anima's and Krea 2's "checkpoint" is the DiT (VAE + TE stay fixed).
-      // Files detected as another family are left out.
+      // Anima's, Krea 2's and MOSS-Image's "checkpoint" is the DiT (VAE + TE stay
+      // fixed). Files detected as another family are left out.
       if (axis.type === 'Checkpoint') {
-        const src = (this.modelType === 'Anima' || this.modelType === 'Krea2') ? 'dit' : 'ckpt';
+        const src = ['Anima', 'Krea2', 'MOSS'].includes(this.modelType) ? 'dit' : 'ckpt';
         return (src === 'dit' ? this.dits : this.checkpoints).filter(n => {
           const a = this.fileArch(src + ':' + n);
           return !a || ARCHES[a].family === this.modelType;
@@ -781,6 +802,10 @@ document.addEventListener('alpine:init', () => {
         this.krea2Variant = f.variant || this.inferKrea2Variant(f.dit);
         this.krea2Applied = true;   // the restored variant stands; don't reset the form to its defaults
       }
+      if (f.model_type === 'MOSS') {
+        this.mossApplied = true;
+        this.mode = 't2i';
+      }
       if (f.offload) this.perf.offload = f.offload;
       this.perf.compile = !!f.compile;
       this.perf.cudaGraphs = !!f.cuda_graphs;
@@ -806,10 +831,13 @@ document.addEventListener('alpine:init', () => {
       this.samplersAnima = m.samplers_anima;
       this.samplersFlux = m.samplers_flux;
       this.samplersKrea2 = m.samplers_krea2;
+      this.samplersMoss = m.samplers_moss;
       this.schedulersSd = m.schedulers_sd;
       this.schedulersAnima = m.schedulers_anima;
       this.schedulersFlux = m.schedulers_flux;
       this.schedulersKrea2 = m.schedulers_krea2;
+      this.schedulersMoss = m.schedulers_moss;
+      this.mossUncondSkip = m.moss_uncond_skip || [22];
       this.samplerGroups = m.sampler_groups || {};
       this.schedulerGroups = m.scheduler_groups || {};
       this.fileKinds = m.file_kinds || { checkpoints: {}, dits: {}, vaes: {}, tes: {} };
@@ -903,9 +931,9 @@ document.addEventListener('alpine:init', () => {
       this.loadFormDirty = true;
       this.syncSampler();
       this.syncScheduler();
-      // FLUX and Krea 2 always stream their DiT; the others take the backend's
-      // VRAM-based default.
-      this.perf.offload = (type === 'FLUX' || type === 'Krea2') ? 'stream' : this.recommendedOffload;
+      // FLUX, Krea 2 and MOSS-Image always stream their DiT; the others take the
+      // backend's VRAM-based default.
+      this.perf.offload = (type === 'FLUX' || type === 'Krea2' || type === 'MOSS') ? 'stream' : this.recommendedOffload;
       // channels_last only helps conv backbones (SD/SDXL UNet + VAE).
       this.perf.channelsLast = (type === 'SD/SDXL');
       if (type === 'Anima' && !this.animaApplied) {
@@ -931,6 +959,35 @@ document.addEventListener('alpine:init', () => {
           this.applyKrea2Defaults();
         }
       }
+      if (type === 'MOSS') {
+        if (!this.mossApplied) {
+          this.mossApplied = true;
+          this.applyMossDefaults();
+        }
+      }
+    },
+
+    // The reference's settings: euler, 50 steps, CFG 3, its own schedule at
+    // shift 5, and an empty negative prompt (the encoded empty template).
+    applyMossDefaults() {
+      this.form.sampler = 'euler';
+      this.form.scheduler = 'moss';
+      this.form.steps = 50;
+      this.form.cfg = 3.0;
+      this.form.shift = 5.0;
+      this.form.neg = '';
+      this.form.uncondSkip = this.mossUncondSkip.join(', ');
+      this.syncSampler();
+      this.syncScheduler();
+    },
+
+    // The skip-blocks field as block indices ('' = none), or null when it isn't
+    // a comma list of non-negative integers.
+    parseUncondSkip() {
+      const text = String(this.form.uncondSkip ?? '').trim();
+      if (!text) return [];
+      const parts = text.split(/[\s,]+/).filter(Boolean);
+      return parts.every(t => /^\d+$/.test(t)) ? parts.map(Number) : null;
     },
 
     inferKrea2Variant(dit) {
@@ -979,7 +1036,7 @@ document.addEventListener('alpine:init', () => {
           dit: this.dit, vae: this.vae, te: this.te, clip: this.clip,
           offload: this.perf.offload,
           compile: this.perf.compile,
-          cuda_graphs: this.perf.cudaGraphs && this.modelType !== 'Krea2',
+          cuda_graphs: this.perf.cudaGraphs && this.modelType !== 'Krea2' && this.modelType !== 'MOSS',
           channels_last: this.perf.channelsLast,
           tf32: this.perf.tf32,
           fp16_accumulation: this.perf.fp16Acc,
@@ -988,7 +1045,7 @@ document.addEventListener('alpine:init', () => {
           attention: this.modelType !== 'SD/SDXL' && this.perf.int8Attn ? 'int8_turing'
             : this.perf.fa2Attn ? 'fa2_turing' : 'sdpa',
           fused_glue: this.perf.fusedGlue && this.modelType === 'Anima',
-          int8: this.perf.int8 && (this.modelType === 'Anima' || this.modelType === 'Krea2'),
+          int8: this.perf.int8 && ['Anima', 'Krea2', 'MOSS'].includes(this.modelType),
           variant: this.modelType === 'Krea2' ? this.krea2Variant : null,
         };
         // Queued like any job; the server broadcasts the new state everywhere.
@@ -1342,6 +1399,11 @@ document.addEventListener('alpine:init', () => {
     async generate() {
       // A load in flight is fine: the job queues behind it.
       if (!this.modelLoaded && !this.loadingModel) { this.flash('Load a model first'); return; }
+      let uncondSkip = null;
+      if (this.isMoss) {
+        uncondSkip = this.parseUncondSkip();
+        if (uncondSkip === null) { this.flash('Uncond skip blocks: use block numbers like 22 or 22, 30'); return; }
+      }
       if (this.mode === 'i2i' && !this.inputImage) { this.flash('Provide an input image'); return; }
       if (this.mode === 'inpaint') {
         if (!this.inputImage) { this.flash('Provide an input image'); return; }
@@ -1384,6 +1446,7 @@ document.addEventListener('alpine:init', () => {
           teacache_rule: this.form.teacacheRule,
           teacache_sigma_floor: this.form.teacacheFloor,
           deepcache: this.form.deepcacheOn ? this.form.deepcache : 1,
+          uncond_skip_layers: uncondSkip,
           input_image: this.mode !== 't2i' ? this.inputImage : null,
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
           preview: this.preview,
@@ -2058,7 +2121,8 @@ document.addEventListener('alpine:init', () => {
       this.galleryLimit = 60;
       this.galleryQuery = '';
       this.galleryFilters = emptyGalleryFilters();
-      this.gallerySearching = false;
+      // The first open after a restart builds the backend index.
+      this.gallerySearching = true;
       if (this.galleryFiltersOpen) this.loadGalleryFacets();
       const token = ++this._galleryToken;
       try {
@@ -2068,6 +2132,8 @@ document.addEventListener('alpine:init', () => {
         this.buildGalleryGroups();
       } catch (e) {
         /* keep the previous list on a transient error */
+      } finally {
+        if (token === this._galleryToken) this.gallerySearching = false;
       }
     },
 
@@ -2342,7 +2408,7 @@ document.addEventListener('alpine:init', () => {
                     'seed', 'shift', 'strength', 'width', 'height',
                     'teacacheOn', 'teacache', 'teacacheCalibrated', 'teacacheForecast',
                     'teacacheRule', 'teacacheFloor',
-                    'deepcacheOn', 'deepcache'];
+                    'deepcacheOn', 'deepcache', 'uncondSkip'];
       for (const k of keys) if (f[k] !== undefined) this.form[k] = f[k];
       // Metadata from another family's image may name a sampler the active
       // family can't run.
@@ -2394,6 +2460,39 @@ document.addEventListener('alpine:init', () => {
       } catch (e) {
         this.flash('Could not parse: ' + e);
       }
+    },
+
+    // Rewrite the prompt with Krea 2's text encoder (a queued job). Waits on
+    // its own id so a running generation keeps the progress bar.
+    async enhancePrompt() {
+      if (!this.form.prompt.trim()) { this.flash('Write a prompt to enhance first'); return; }
+      this.enhancing = true;
+      try {
+        const original = this.form.prompt;
+        const r = await fetchJSON('/api/enhance_prompt', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: original }),
+        });
+        const ev = await new Promise((resolve) => { this._jobWaiters[r.job] = resolve; });
+        if (ev.type === 'done') {
+          this.promptBeforeEnhance = original;
+          this.enhancedPrompt = ev.prompt;
+          this.form.prompt = ev.prompt;
+          this.resizeTextareas();
+        } else if (ev.type === 'error') {
+          this.flash('Enhance failed: ' + ev.message);
+        }
+      } catch (e) {
+        this.flash('Enhance failed: ' + e.message);
+      } finally {
+        this.enhancing = false;
+      }
+    },
+
+    undoEnhance() {
+      this.form.prompt = this.promptBeforeEnhance;
+      this.promptBeforeEnhance = this.enhancedPrompt = null;
+      this.resizeTextareas();
     },
 
     // Arrow-key navigation among a group's sibling <button>s. Radio groups

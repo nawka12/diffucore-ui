@@ -1147,6 +1147,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 }
 .detail-model-head { display: flex; align-items: center; justify-content: space-between; }
 .field > span.prompt-head { display: flex; align-items: center; justify-content: space-between; }
+.prompt-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .axis { display: flex; flex-direction: column; gap: 6px; }
 .axis-label {
   font-size: 11px;

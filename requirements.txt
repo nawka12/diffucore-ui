@@ -12,3 +12,4 @@ tqdm
 ultralytics>=8.1   # YOLO detection for the detailer (lazy-imported)
 spandrel>=0.3      # ESRGAN-family base for the tiled upscaler (optional, guarded import)
 timm>=0.9          # WD EVA02 tagger for AI gallery NSFW rating (optional, guarded import)
+nvidia-cutlass==4.2.0.0  # C++ headers for the Turing int8 GEMM kernel (optional, JIT-built at load)

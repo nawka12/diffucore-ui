@@ -141,7 +141,7 @@
         <label class="chip" :class="{on: perf.compile}">
           <input type="checkbox" x-model="perf.compile" @change="if(!perf.compile) perf.cudaGraphs=false; if(perf.compile) { perf.fa2Attn=false; perf.int8Attn=false }"> torch.compile
         </label>
-        <label class="chip" :class="{on: perf.cudaGraphs, disabled: !perf.compile}" x-show="modelType!=='Krea2'">
+        <label class="chip" :class="{on: perf.cudaGraphs, disabled: !perf.compile}" x-show="modelType!=='Krea2' && !isMoss">
           <input type="checkbox" x-model="perf.cudaGraphs" :disabled="!perf.compile"> CUDA Graphs
         </label>
         <label class="chip" :class="{on: perf.channelsLast}">
@@ -173,7 +173,7 @@
           <input type="checkbox" x-model="perf.fusedGlue"> fused glue
         </label>
         <label class="chip" :class="{on: perf.int8}"
-               x-show="int8WeightsAvailable && (modelType==='Anima' || modelType==='Krea2')"
+               x-show="int8WeightsAvailable && (modelType==='Anima' || modelType==='Krea2' || isMoss)"
                title="Quantize the DiT's attention and MLP layers to INT8 at load (weights and activations). About 1.13x faster per image on an RTX 2060 and 1.6 GB less VRAM; a different sample of the same quality, not identical to fp16. INT8 checkpoint files load as INT8 without this.">
           <input type="checkbox" x-model="perf.int8"> int8
         </label>
@@ -205,12 +205,21 @@
           <button role="radio" :aria-checked="mode==='inpaint'" :tabindex="mode==='inpaint' ? 0 : -1" :class="{active: mode==='inpaint'}" @click="mode='inpaint'">inpaint</button>
         </div>
 
-        <label class="field lora-ac-wrap" @click.outside="loraAC.open=false">
+        <label class="field lora-ac-wrap" for="prompt-input" @click.outside="loraAC.open=false">
           <span class="prompt-head">Prompt
-            <button type="button" class="btn small" @click="importFromPrompt()"
-                    title="Read AUTO1111 generation parameters pasted into the prompt box">Import params</button>
+            <span class="prompt-actions">
+              <button type="button" class="btn small" x-show="enhancedPrompt !== null && form.prompt === enhancedPrompt"
+                      @click="undoEnhance()" title="Restore the prompt from before Enhance">Undo enhance</button>
+              <button type="button" class="btn small" x-show="(isKrea2 || modelType==='Anima') && modelLoaded"
+                      :disabled="enhancing" @click="enhancePrompt()"
+                      :title="isKrea2 ? 'Rewrite the prompt into a detailed description with Krea 2\'s Qwen3-VL text encoder (LoRA tags are kept)'
+                                      : 'Add a few descriptive sentences after your prompt, which stays as typed (enhancer model in Settings)'"
+                      x-text="enhancing ? 'Enhancing…' : 'Enhance'"></button>
+              <button type="button" class="btn small" @click="importFromPrompt()"
+                      title="Read AUTO1111 generation parameters pasted into the prompt box">Import params</button>
+            </span>
           </span>
-          <textarea class="autosize" x-model="form.prompt" rows="3"
+          <textarea id="prompt-input" class="autosize" x-model="form.prompt" rows="3"
                     x-effect="autogrow($el, form.prompt)"
                     @input="autogrow($el); loraAutocomplete($el)"
                     @keydown="promptKeydown($event)"
@@ -395,7 +404,13 @@
               <input type="number" x-model.number="form.cfg" min="1" max="30" step="0.5"></div>
             <input type="range" x-model.number="form.cfg" min="1" max="30" step="0.5">
             <p class="sub" x-show="isKrea2">Krea's documented guidance g is g + 1 here (Krea 4.5 = 5.5). 1.0 skips the negative-prompt pass.</p>
+            <p class="sub" x-show="isMoss">MOSS-Image's own CFG (3) is used as is. 1.0 skips the negative-prompt pass.</p>
           </div>
+          <label class="field" x-show="isMoss"
+                 title="Transformer blocks (0-based) the negative-prompt pass skips on every step. The reference skips block 22. Leave empty to skip none.">
+            <span>Uncond skip blocks <small>(block numbers; empty = none)</small></span>
+            <input type="text" x-model="form.uncondSkip" inputmode="numeric" placeholder="22" autocomplete="off" spellcheck="false">
+          </label>
           <div class="slider" x-show="isFlowModel">
             <div class="slider-head"><span>Shift</span>
               <input type="number" x-model.number="form.shift" min="1" max="9" step="0.1" :disabled="!shiftHonored"></div>
@@ -913,7 +928,8 @@
            x-init="observeSentinel($el)">Loading more…</div>
       <p class="placeholder" x-show="gallery.length===0 && !gallerySearching"
          x-text="galleryQuery.trim() ? 'No images match your search.' : 'No outputs yet.'"></p>
-      <p class="placeholder" x-show="gallery.length===0 && gallerySearching">Searching…</p>
+      <p class="placeholder" x-show="gallery.length===0 && gallerySearching"
+         x-text="galleryQuery.trim() || galleryFilterCount ? 'Searching…' : 'Loading…'"></p>
     </section>
 
     <!-- ── METADATA ───────────────────────────────────────────── -->
@@ -1023,6 +1039,7 @@
             <button :class="{active: settingsTab==='sampler'}" @click="settingsTab='sampler'">Sampler &amp; scheduler</button>
             <button :class="{active: settingsTab==='vae'}" @click="settingsTab='vae'">VAE decode</button>
             <button :class="{active: settingsTab==='metadata'}" @click="settingsTab='metadata'">Metadata</button>
+            <button :class="{active: settingsTab==='enhance'}" @click="settingsTab='enhance'">Prompt enhance</button>
             <button :class="{active: settingsTab==='gallery'}" @click="settingsTab='gallery'">Gallery</button>
             <button :class="{active: settingsTab==='defaults'}" @click="settingsTab='defaults'">Generate defaults</button>
             <button :class="{active: settingsTab==='extensions'}" @click="settingsTab='extensions'">Extensions</button>
@@ -1121,7 +1138,7 @@
                  x-text="'CFG start must be below CFG end. Changes save once the pair is valid.'"></p>
               <p class="set-foot">Guidance interval: apply CFG only between these fractions of the sampling
                 run. Outside the band the negative-prompt pass is skipped, saving a full model pass per
-                skipped step. 0 / 1 = every step. Anima, Krea 2 and SD/SDXL (FLUX has no CFG pass).</p>
+                skipped step. 0 / 1 = every step. Anima, Krea 2, MOSS-Image and SD/SDXL (FLUX has no CFG pass).</p>
               <p class="set-foot">Per-channel gives each latent channel its own measured coherence gate.
                 Global keeps the original single-gate path and remains the default; per-channel also applies
                 to <code>cogent3_pump</code>, where the clearest review win was at 24 steps. Token-packed
@@ -1161,6 +1178,32 @@
               <p class="set-foot" x-show="settings.metadata_format==='swarmui'">SwarmUI's
                 <code>sui_image_params</code> JSON blob. Both formats load back into this app.</p>
               <p class="set-foot muted">Applies to new images only; existing images keep their format.</p>
+            </section>
+
+            <!-- Prompt enhance -->
+            <section class="settings-sec" x-show="settingsTab==='enhance'">
+              <div class="set-head">
+                <h3>Prompt enhance</h3>
+              </div>
+              <p class="set-purpose">The Enhance button next to the prompt. Krea 2 rewrites the prompt with its own
+                Qwen3-VL text encoder. Anima keeps your prompt as typed and adds a few descriptive sentences after
+                it, written by the model below.</p>
+              <label class="field"><span>Anima enhancer model</span>
+                <select x-model="settings.enhancer_model" @change="saveSettings()">
+                  <template x-for="name in enhancerModels" :key="name">
+                    <option :value="name" x-text="name" :selected="name === settings.enhancer_model"></option>
+                  </template>
+                </select></label>
+              <p class="set-foot">Any Qwen3 or Qwen3-VL file in <code>text-encoders</code>. Qwen3-VL-4B
+                (<code>qwen3vl_4b_bf16</code>, Krea 2's encoder from Comfy-Org) writes the best descriptions;
+                Anima's own <code>qwen_3_06b_base</code> is about 10x faster but sometimes contradicts the tags.</p>
+              <label class="chip" :class="{on: settings.enhancer_int8}">
+                <input type="checkbox" x-model="settings.enhancer_int8" @change="saveSettings()">
+                INT8
+              </label>
+              <p class="set-foot">Runs the enhancer's layers in INT8: Qwen3-VL-4B needs 4.4 GB of VRAM instead of
+                7.7 GB, with near-identical text, and is about a second slower per click. For 8 GB cards.
+                Needs an RTX 20-series or newer with Triton; ignored elsewhere.</p>
             </section>
 
             <!-- Gallery safety -->

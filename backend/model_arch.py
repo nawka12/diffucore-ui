@@ -35,7 +35,7 @@ def _shapes(path: Path) -> Optional[Dict[str, Tuple[int, ...]]]:
 
 
 def model_arch(shapes: Shapes) -> Optional[str]:
-    """"sd15" / "sdxl" / "anima" / "krea2" / "flux1" / "flux2", or None."""
+    """"sd15" / "sdxl" / "anima" / "krea2" / "moss_image" / "flux1" / "flux2", or None."""
     try:
         return detect_architecture(shapes).architecture
     except (ValueError, NotImplementedError):
@@ -51,7 +51,8 @@ def model_arch(shapes: Shapes) -> Optional[str]:
 
 def vae_kind(shapes: Shapes) -> Optional[str]:
     """"qwen_image" (Anima / Krea 2), "qwen2d" (Anzhc's 2-D Qwen-Image VAE),
-    "flux1", "flux2", or None."""
+    "flux1", "flux2", "flux2_small" (MOSS-Image's narrower, diffusers-keyed
+    FLUX.2 decoder), or None."""
     if any(len(s) == 5 for s in shapes.values()):
         return "qwen_image"  # Wan-style 3-D causal convs
     conv_in = shapes.get("decoder.conv_in.weight")
@@ -61,15 +62,19 @@ def vae_kind(shapes: Shapes) -> Optional[str]:
         return "qwen2d"
     if "decoder.mid.attn_1.q.weight" in shapes:
         return {16: "flux1", 32: "flux2"}.get(conv_in[1])
+    if "decoder.mid_block.attentions.0.to_q.weight" in shapes and conv_in[1] == 32:
+        return "flux2_small" if conv_in[0] < 512 else "flux2"
     return None
 
 
 def te_kind(shapes: Shapes) -> Optional[str]:
-    """"qwen3" (Anima), "qwen35" (Anima's experimental swap), "qwen3vl" (Krea 2),
-    "t5" / "clip_l" (FLUX.1), "flux2_lm" (FLUX.2's Mistral or Qwen3), or None."""
+    """"qwen3" (Anima), "qwen35" (Anima's experimental swap), "qwen35_9b"
+    (MOSS-Image's Qwen3.5-9B, hidden 4096), "qwen3vl" (Krea 2), "t5" / "clip_l"
+    (FLUX.1), "flux2_lm" (FLUX.2's Mistral or Qwen3), or None."""
     keys = list(shapes)
     if any("linear_attn.A_log" in k for k in keys):
-        return "qwen35"
+        emb = next((shapes[k] for k in keys if k.endswith("embed_tokens.weight")), None)
+        return "qwen35_9b" if emb is not None and len(emb) == 2 and emb[1] == 4096 else "qwen35"
     if any(k.endswith("encoder.block.0.layer.0.SelfAttention.q.weight") for k in keys):
         return "t5"
     if any(k.endswith("text_model.embeddings.token_embedding.weight") for k in keys):

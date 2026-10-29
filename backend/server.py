@@ -32,13 +32,13 @@ import uvicorn
 from fastapi import FastAPI, UploadFile, File, Request, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
-from engine import (ENGINE, SAMPLERS_SD, SAMPLERS_ANIMA, SAMPLERS_FLUX, SAMPLERS_KREA2,
-                    SCHEDULERS_SD, SCHEDULERS_ANIMA, SCHEDULERS_FLUX, SCHEDULERS_KREA2,
-                    SAMPLER_GROUPS, SCHEDULER_GROUPS)
+from engine import (ENGINE, SAMPLERS_SD, SAMPLERS_ANIMA, SAMPLERS_FLUX, SAMPLERS_KREA2, SAMPLERS_MOSS,
+                    SCHEDULERS_SD, SCHEDULERS_ANIMA, SCHEDULERS_FLUX, SCHEDULERS_KREA2, SCHEDULERS_MOSS,
+                    SAMPLER_GROUPS, SCHEDULER_GROUPS, MOSS_UNCOND_SKIP)
 from utils import (
     OUTPUTS_DIR, MODELS_DIR, CHECKPOINTS_DIR, DIFFUSION_DIR, VAE_DIR, TE_DIR,
     detector_path, model_name_ok,
@@ -293,9 +293,9 @@ class LoadPayload(BaseModel):
     tf32: bool = False                  # SD/SDXL only (fp32 VAE path; Ampere+)
     fp16_accumulation: bool = False     # fp16-accumulate matmuls; all families
     vae_fp16: bool = False              # non-finite output falls back to fp32
-    attention: str = "sdpa"             # "sdpa" | "fa2_turing" (sm75; all families) | "int8_turing" (sm75; Anima/FLUX/Krea 2)
+    attention: str = "sdpa"             # "sdpa" | "fa2_turing" (sm75; all families) | "int8_turing" (sm75; Anima/FLUX/Krea 2/MOSS)
     fused_glue: bool = False            # Anima only; Triton-fused block glue
-    int8: bool = False                  # Anima/Krea 2; quantize DiT linears to INT8 at load
+    int8: bool = False                  # Anima/Krea 2/MOSS; quantize DiT linears to INT8 at load
     variant: Optional[Literal["raw", "turbo"]] = None   # Krea 2 only; None = infer from the DiT filename
 
 
@@ -324,6 +324,9 @@ class GeneratePayload(BaseModel):
     teacache_rule: Literal["drift", "easy"] = "drift"   # input drift | EasyCache output change
     teacache_sigma_floor: float = Field(0.0, ge=0.0, le=1.0)   # never skip below this σ (0 = off)
     deepcache: int = Field(1, ge=1, le=64)                # reuse interval (1 = off; SD/SDXL UNet only)
+    # MOSS-Image: blocks the uncond (negative) forward skips. None = the
+    # reference's (22,), [] = skip none.
+    uncond_skip_layers: Optional[List[int]] = Field(None, max_length=64)
     input_image: Optional[str] = None   # base64 / data-URL
     mask_image: Optional[str] = None
     preview: bool = True
@@ -350,6 +353,13 @@ class GeneratePayload(BaseModel):
     upscale_prompt: str = ""
     upscale_teacache: float = Field(0.0, ge=0.0, le=1.0)   # refine-pass TeaCache (0 = off)
     upscale_base: str = ""               # ESRGAN model in models/upscalers/ (blank = Lanczos)
+
+    @field_validator("uncond_skip_layers")
+    @classmethod
+    def _skip_layers_are_indices(cls, v):
+        if v is not None and any(i < 0 for i in v):
+            raise ValueError("uncond_skip_layers must be block indices >= 0")
+        return v
 
     @model_validator(mode="after")
     def _upscale_overlap_fits(self):
@@ -475,6 +485,10 @@ class Settings(BaseModel):
     nsfw_blur: bool = True
     # Lowest rating that gets blurred. No "XXX": the AI rater never outputs it.
     blur_min_rating: Literal["PG13", "R", "X"] = "R"
+    # Prompt enhance: the LM Anima's Enhance runs (Krea 2 uses its own text
+    # encoder), and INT8 linears for either (about half the VRAM, a bit slower).
+    enhancer_model: str = "qwen3vl_4b_bf16.safetensors"
+    enhancer_int8: bool = False
 
 
 class XYZPayload(BaseModel):
@@ -509,6 +523,10 @@ class CancelPayload(BaseModel):
 
 class ParseTextPayload(BaseModel):
     text: str = ""
+
+
+class EnhancePromptPayload(BaseModel):
+    prompt: str = ""
 
 
 # ── helpers ─────────────────────────────────────────────────────────
@@ -610,9 +628,9 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
     if sampler in ("cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate"):
         knobs["gate_reduce"] = SETTINGS["gate_reduce"]
 
-    # Anima and Krea 2. Inject just the knobs the sampler/scheduler consumes, so
-    # the metadata carries no unused keys.
-    if ENGINE.loaded_family in ("anima", "krea2"):
+    # Anima, Krea 2 and MOSS-Image. Inject just the knobs the sampler/scheduler
+    # consumes, so the metadata carries no unused keys.
+    if ENGINE.loaded_family in ("anima", "krea2", "moss_image"):
         if sampler in ("secant", "secant_anneal"):
             knobs["curvature"] = float(SETTINGS["curvature"])
         if sampler in ("secant_anneal", "euler_ancestral_anneal", "cogent", "cogent3", "cogent3_pump",
@@ -647,9 +665,15 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
     # Extensions may mutate the payload in place.
     EXTENSIONS.run_hook("pre_generate", payload=p)
 
-    if ENGINE.loaded_family == "krea2":
+    if ENGINE.loaded_family in ("krea2", "moss_image"):
         # No cache support; keep it out of the metadata.
         p.teacache, p.deepcache, p.upscale_teacache = 0.0, 1, 0.0
+    if ENGINE.loaded_family == "moss_image":
+        # The pipeline coerces an unknown scheduler to "moss"; record that one.
+        if p.scheduler not in SCHEDULERS_MOSS:
+            p.scheduler = "moss"
+        if p.uncond_skip_layers is None:
+            p.uncond_skip_layers = list(MOSS_UNCOND_SKIP)
 
     clean_prompt, prompt_loras = ENGINE.parse_lora_prompt(p.prompt)
     clean_neg, neg_loras = ENGINE.parse_lora_prompt(p.neg)
@@ -685,6 +709,8 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             width=int(p.width), height=int(p.height),
             strength=float(p.strength), **common,
         )
+        if ENGINE.loaded_family == "moss_image":
+            gen_kwargs["uncond_skip_layers"] = list(p.uncond_skip_layers)
         gen_fn = ENGINE.generate_i2i
     elif p.mode == "inpaint":
         if not p.input_image or not p.mask_image:
@@ -695,6 +721,8 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             width=int(p.width), height=int(p.height),
             strength=float(p.strength), **common,
         )
+        if ENGINE.loaded_family == "moss_image":
+            gen_kwargs["uncond_skip_layers"] = list(p.uncond_skip_layers)
         gen_fn = ENGINE.generate_inpaint
     else:  # t2i
         gen_kwargs = dict(
@@ -702,6 +730,8 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             shift=float(p.shift), **common,
         )
         gen_fn = ENGINE.generate_t2i
+        if ENGINE.loaded_family == "moss_image":
+            gen_kwargs["uncond_skip_layers"] = list(p.uncond_skip_layers)
 
     t0 = time.perf_counter()
     # Reuse the last base when only the post passes changed. Seed -1 asks for
@@ -845,7 +875,7 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
     axis_types = (p.x_type, p.y_type, p.z_type)
     if "Text Encoder" in axis_types and ENGINE.loaded_family not in ("anima", "krea2"):
         raise RuntimeError("The Text Encoder axis needs an Anima or Krea 2 model")
-    if ENGINE.loaded_family == "krea2":
+    if ENGINE.loaded_family in ("krea2", "moss_image"):
         p.teacache = 0.0    # no TeaCache support; keep it out of the metadata
     base_kwargs = dict(
         prompt=p.prompt, negative_prompt=p.neg,
@@ -930,7 +960,7 @@ class Job:
     def __init__(self, kind: str, label: str, run: Callable[["Job"], dict],
                  *, priority: int = 0):
         self.id = next(_job_ids)
-        self.kind = kind            # generate | xyz | calibrate | load | install | update | tag
+        self.kind = kind            # generate | xyz | calibrate | load | install | update | tag | enhance
         self.label = label
         self.run = run              # run(job) -> result dict; may raise _Cancelled
         self.status = "queued"      # queued | running | done | error | cancelled
@@ -1218,7 +1248,7 @@ EXTENSIONS = ExtensionLoader(
 
 
 # Job kinds that set their own prompt-tag LoRAs, or never sample.
-_KEEPS_TAG_LORAS = {"generate", "xyz", "tag"}
+_KEEPS_TAG_LORAS = {"generate", "xyz", "tag", "enhance"}
 
 
 def _drop_tag_loras_for(job: Job) -> None:
@@ -1253,8 +1283,10 @@ def _worker() -> None:
         # Read the active mode, not recommended_offload(); FLUX streams on any card.
         # Krea 2's streaming leaves a VRAM reserve that covers it, and a reload
         # per image is slow next to its file-backed weights in the page cache.
+        # MOSS-Image's INT8 DiT stays resident, so only the 1024^2 peak matters.
         if (job.kind != "tag" and tagger_mod.TAGGER.loaded
-                and ENGINE.active_offload == "stream" and ENGINE.loaded_family != "krea2"):
+                and ENGINE.active_offload == "stream"
+                and ENGINE.loaded_family not in ("krea2", "moss_image")):
             tagger_mod.TAGGER.unload()
         try:
             _drop_tag_loras_for(job)
@@ -1507,10 +1539,13 @@ def api_models():
         "samplers_anima": SAMPLERS_ANIMA,
         "samplers_flux": SAMPLERS_FLUX,
         "samplers_krea2": SAMPLERS_KREA2,
+        "samplers_moss": SAMPLERS_MOSS,
         "schedulers_sd": SCHEDULERS_SD,
         "schedulers_anima": SCHEDULERS_ANIMA,
         "schedulers_flux": SCHEDULERS_FLUX,
         "schedulers_krea2": SCHEDULERS_KREA2,
+        "schedulers_moss": SCHEDULERS_MOSS,
+        "moss_uncond_skip": list(MOSS_UNCOND_SKIP),
         "sampler_groups": SAMPLER_GROUPS,
         "scheduler_groups": SCHEDULER_GROUPS,
         "xyz_param_types": XYZ_PARAM_TYPES,
@@ -1525,7 +1560,7 @@ def api_models():
         "int8_available": ENGINE.int8_attention_available(),
         # Gates the "fused glue" chip (Triton + CUDA; Anima only).
         "fused_glue_available": ENGINE.fused_glue_available(),
-        # Gates the "int8" chip (CUDA sm75+ and Triton; Anima and Krea 2).
+        # Gates the "int8" chip (CUDA sm75+ and Triton; Anima, Krea 2 and MOSS-Image).
         "int8_weights_available": ENGINE.int8_weights_available(),
         "ui_id": md.UI_ID,
         "diff_id": md.DIFF_ID,
@@ -1581,6 +1616,18 @@ def _validate_load(p: LoadPayload) -> Optional[str]:
             if err:
                 return err
         return None
+    if p.model_type == "MOSS":
+        if p.cuda_graphs or p.fused_glue:
+            return "CUDA Graphs and fused glue: not supported for MOSS-Image yet"
+        for label, name, d in (("DiT", p.dit, DIFFUSION_DIR),
+                               ("VAE", p.vae, VAE_DIR),
+                               ("Text encoder", p.te, TE_DIR)):
+            if not name or name.startswith("("):
+                return "Select all three MOSS-Image files"
+            err = _missing(label, name, d)
+            if err:
+                return err
+        return None
     if p.model_type == "FLUX":
         if p.checkpoint and not p.checkpoint.startswith("("):
             return _missing("Checkpoint", p.checkpoint, CHECKPOINTS_DIR)
@@ -1604,12 +1651,13 @@ def _validate_load(p: LoadPayload) -> Optional[str]:
 
 
 def _do_load_impl(p: LoadPayload) -> str:
-    # Default offload: stream for FLUX and Krea 2 (their 13-26 GB DiTs OOM under
-    # full) and on low-VRAM cards, full otherwise.
+    # Default offload: stream for FLUX, Krea 2 and MOSS-Image (their 5-26 GB DiTs
+    # plus a 9-20 GB text encoder OOM under full) and on low-VRAM cards, full
+    # otherwise.
     _to_bundle = {"none": False, "full": True,
                   "encoders": "encoders", "stream": "stream"}
     if p.offload is None:
-        stream = p.model_type in ("FLUX", "Krea2") or ENGINE.recommended_offload() == "stream"
+        stream = p.model_type in ("FLUX", "Krea2", "MOSS") or ENGINE.recommended_offload() == "stream"
         offload = "stream" if stream else True
     else:
         offload = _to_bundle.get(p.offload, True)
@@ -1638,6 +1686,19 @@ def _do_load_impl(p: LoadPayload) -> str:
                 return "Select all three Krea 2 files"
         return ENGINE.load_krea2(
             p.dit, p.vae, p.te, variant=p.variant,
+            offload=offload, vae_tile=vae_tile_pref,
+            compile=p.compile,
+            fp16_accumulation=p.fp16_accumulation,
+            attention=p.attention,
+            vae_fp16=p.vae_fp16,
+            int8=p.int8,
+        )
+    if p.model_type == "MOSS":
+        for name in (p.dit, p.vae, p.te):
+            if not name or name.startswith("("):
+                return "Select all three MOSS-Image files"
+        return ENGINE.load_moss(
+            p.dit, p.vae, p.te,
             offload=offload, vae_tile=vae_tile_pref,
             compile=p.compile,
             fp16_accumulation=p.fp16_accumulation,
@@ -1887,6 +1948,25 @@ async def api_calibrate_oss(p: CalibratePayload):
         on_progress, _ = _make_callbacks(job)
         return _run_calibrate(p, on_progress)
     job = Job("calibrate", "OSS calibrate", run)
+    _enqueue(job)
+    return {"job": job.id}
+
+
+@app.post("/api/enhance_prompt")
+async def api_enhance_prompt(p: EnhancePromptPayload):
+    """Rewrite the prompt (Krea 2: its own text encoder; Anima: the Settings
+    enhancer model). Runs ahead of queued generations (behind a load):
+    someone is waiting on it to edit."""
+    if ENGINE.loaded_family not in ("krea2", "anima"):
+        raise HTTPException(status_code=400, detail="Prompt enhance needs a loaded Krea 2 or Anima model")
+    if not p.prompt.strip():
+        raise HTTPException(status_code=400, detail="Write a prompt to enhance first")
+    def run(job: Job) -> dict:
+        on_progress, _ = _make_callbacks(job)
+        return {"prompt": ENGINE.enhance_prompt(
+            p.prompt, progress_callback=on_progress,
+            enhancer_model=SETTINGS["enhancer_model"], int8=SETTINGS["enhancer_int8"])}
+    job = Job("enhance", "enhance prompt", run, priority=5)
     _enqueue(job)
     return {"job": job.id}
 
@@ -2162,6 +2242,9 @@ def api_gallery_facets():
 _GALLERY_INDEX: Optional[list] = None
 _GALLERY_INDEX_KEY: float = 0.0
 _GALLERY_INDEX_LOCK = threading.Lock()
+# Each PNG's raw ``parameters`` chunk keyed by its mtime+size, so a rebuild
+# (every app start) only opens new or changed files: opening all ~5k took ~6 s.
+_GALLERY_CACHE_PATH = _ROOT / ".cache" / "gallery_index.json"
 
 
 def _outputs_dir_mtime() -> float:
@@ -2221,6 +2304,18 @@ def _gallery_index_add(path: Path, params: str) -> None:
         _GALLERY_INDEX_KEY = _outputs_dir_mtime()
 
 
+def _gallery_index_remove(rel: str) -> None:
+    """Drop a deleted output from the cached index instead of forcing a rebuild.
+    No-op while the index is cold."""
+    global _GALLERY_INDEX, _GALLERY_INDEX_KEY
+    with _GALLERY_INDEX_LOCK:
+        if _GALLERY_INDEX is None:
+            return
+        # Rebind rather than mutate: a search may be iterating the old list.
+        _GALLERY_INDEX = [e for e in _GALLERY_INDEX if e["path"] != rel]
+        _GALLERY_INDEX_KEY = _outputs_dir_mtime()
+
+
 def _gallery_index_patch_ratings(ratings: dict) -> None:
     """Update the rating fields of already-indexed rows, keyed by relative path.
     Unknown rows are skipped; the next build picks them up.
@@ -2242,10 +2337,21 @@ def _gallery_index() -> list:
     with _GALLERY_INDEX_LOCK:
         if _GALLERY_INDEX is not None and newest <= _GALLERY_INDEX_KEY:
             return _GALLERY_INDEX
+        try:
+            cached = json.loads(_GALLERY_CACHE_PATH.read_text())
+        except (OSError, ValueError):
+            cached = {}
+        fresh: dict = {}
         index: list = []
         for f in scan_outputs():
-            raw = md.read_png_metadata(str(f))
+            rel = f.relative_to(OUTPUTS_DIR).as_posix()
+            key = _image_key(f)
+            hit = cached.get(rel)
+            raw = hit["raw"] if hit and hit["key"] == key else md.read_png_metadata(str(f))
+            fresh[rel] = {"key": key, "raw": raw}
             index.append(_index_entry(f, md.parse_metadata(raw) if raw else {}))
+        if fresh != cached:
+            _atomic_write_text(_GALLERY_CACHE_PATH, json.dumps(fresh))
         _GALLERY_INDEX = index
         _GALLERY_INDEX_KEY = newest
         return index
@@ -2315,7 +2421,7 @@ def api_gallery_delete(path: str):
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Could not delete: {e}")
     _purge_thumb_cache(target)
-    _invalidate_gallery_index()
+    _gallery_index_remove(target.relative_to(outputs_root).as_posix())
     invalidate_outputs_cache()
     try:
         _purge_trash()

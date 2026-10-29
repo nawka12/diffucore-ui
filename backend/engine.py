@@ -67,11 +67,15 @@ from diffucore import (
     load_checkpoint,
     load_flux_checkpoint,
     load_krea2_checkpoint,
+    load_moss_checkpoint,
+    load_prompt_enhancer,
     ImageToImage,
     Inpaint,
     TextToImage,
 )
 from diffucore.models._int8 import Int8Linear
+from diffucore.pipelines._flux import _flux2_unpatchify_latents
+from diffucore.pipelines._moss import MOSS_UNCOND_SKIP
 from diffucore.loading import read_header
 from diffucore.runtime import ConditioningCache, DevicePolicy
 
@@ -80,9 +84,9 @@ from utils import checkpoint_path, lora_path, diffusion_model_path, vae_path, te
 
 LORA_PROMPT_RE = re.compile(r"<lora:([^:]+):([^>]+)>")
 
-# Flow families (Anima, FLUX, Krea 2) drive everything except "ddpm" (VP/VE-only).
+# Flow families (Anima, FLUX, Krea 2, MOSS-Image) drive everything except "ddpm" (VP/VE-only).
 # Keep these lists in sync with the pipelines' _ANIMA_SAMPLERS / _FLUX_SAMPLERS /
-# _KREA2_SAMPLERS and _KREA2_SCHEDULERS.
+# _KREA2_SAMPLERS and _KREA2_SCHEDULERS, _MOSS_SAMPLERS and _MOSS_SCHEDULERS.
 # GUIDE.md describes each sampler and scheduler.
 SAMPLERS_SD = [
     "euler",
@@ -136,6 +140,8 @@ SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal"]
 SAMPLERS_FLUX = [s for s in SAMPLERS_FLOW if s not in _SAMPLERS_4D_ONLY]
 # Krea 2 samples the same 4-D latents as Anima.
 SAMPLERS_KREA2 = SAMPLERS_ANIMA
+# MOSS-Image too: a 4-D [B, 128, H/16, W/16] latent.
+SAMPLERS_MOSS = SAMPLERS_ANIMA
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
                  "align_your_steps", "sgm_uniform", "simple", "normal",
@@ -155,6 +161,12 @@ SCHEDULERS_KREA2 = ["krea2", "flow", "flow_dyn", "sgm_uniform", "simple", "norma
                     "infinity", "infinity_htds", "kl_optimal", "linear_quadratic",
                     "smoothstep", "beta", "beta_mix", "pump_dual", "pump_taper",
                     "secant_tilt", "relay_tilt"]
+# "moss" is the checkpoint's own grid-snapped schedule (fixed shift 5, ignores the
+# shift slider); "flow_dyn" derives its own shift, the rest take the slider.
+SCHEDULERS_MOSS = ["moss", "flow", "flow_dyn", "sgm_uniform", "simple", "normal",
+                   "infinity", "infinity_htds", "kl_optimal", "linear_quadratic",
+                   "smoothstep", "beta", "beta_mix", "pump_dual", "pump_taper",
+                   "secant_tilt", "relay_tilt"]
 
 # Sections of the UI's sampler / scheduler dropdowns; a test keeps every name above in one.
 SAMPLER_GROUPS = {
@@ -171,7 +183,7 @@ SAMPLER_GROUPS = {
                   "secant_anneal", "euler_ancestral_anneal"],
 }
 SCHEDULER_GROUPS = {
-    "Model default": ["flow", "flow_dyn", "flux", "krea2", "oss"],
+    "Model default": ["flow", "flow_dyn", "flux", "krea2", "moss", "oss"],
     "Classic": ["karras", "exponential", "polyexponential", "normal", "simple",
                 "sgm_uniform", "ddim_uniform", "kl_optimal", "align_your_steps",
                 "linear_quadratic", "beta"],
@@ -252,6 +264,7 @@ MODEL_FAMILY_FLUX1 = "flux1"
 MODEL_FAMILY_FLUX2 = "flux2"
 _FLUX_FAMILIES = (MODEL_FAMILY_FLUX1, MODEL_FAMILY_FLUX2)
 MODEL_FAMILY_KREA2 = "krea2"
+MODEL_FAMILY_MOSS = "moss_image"
 
 # Latent→RGB preview factors from ComfyUI's comfy/latent_formats.py, as
 # (factors[C][3], bias[3] | None). Anima uses the Wan2.1 latent format.
@@ -280,6 +293,27 @@ _PREVIEW_RGB = {
 }
 # Krea 2 shares Anima's latent space (same Qwen-Image VAE statistics).
 _PREVIEW_RGB[MODEL_FAMILY_KREA2] = _PREVIEW_RGB[MODEL_FAMILY_ANIMA]
+# MOSS-Image samples in FLUX.2's patchified 128-ch space; ComfyUI's Flux2 factors
+# are per unpatchified channel (32), so _latent_to_preview unpatchifies first.
+_PREVIEW_RGB[MODEL_FAMILY_MOSS] = (
+    [[0.0058, 0.0113, 0.0073], [0.0495, 0.0443, 0.0836],
+     [-0.0099, 0.0096, 0.0644], [0.2144, 0.3009, 0.3652],
+     [0.0166, -0.0039, -0.0054], [0.0157, 0.0103, -0.0160],
+     [-0.0398, 0.0902, -0.0235], [-0.0052, 0.0095, 0.0109],
+     [-0.3527, -0.2712, -0.1666], [-0.0301, -0.0356, -0.0180],
+     [-0.0107, 0.0078, 0.0013], [0.0746, 0.0090, -0.0941],
+     [0.0156, 0.0169, 0.0070], [-0.0034, -0.0040, -0.0114],
+     [0.0032, 0.0181, 0.0080], [-0.0939, -0.0008, 0.0186],
+     [0.0018, 0.0043, 0.0104], [0.0284, 0.0056, -0.0127],
+     [-0.0024, -0.0022, -0.0030], [0.1207, -0.0026, 0.0065],
+     [0.0128, 0.0101, 0.0142], [0.0137, -0.0072, -0.0007],
+     [0.0095, 0.0092, -0.0059], [0.0000, -0.0077, -0.0049],
+     [-0.0465, -0.0204, -0.0312], [0.0095, 0.0012, -0.0066],
+     [0.0290, -0.0034, 0.0025], [0.0220, 0.0169, -0.0048],
+     [-0.0332, -0.0457, -0.0468], [-0.0085, 0.0389, 0.0609],
+     [-0.0076, 0.0003, -0.0043], [-0.0111, -0.0460, -0.0614]],
+    [-0.0329, -0.0718, -0.0851],
+)
 
 
 def _bundle_to(bundle, device) -> None:
@@ -438,6 +472,8 @@ class Engine:
             return SCHEDULERS_FLUX
         if self._loaded and self._loaded.family == MODEL_FAMILY_KREA2:
             return SCHEDULERS_KREA2
+        if self._loaded and self._loaded.family == MODEL_FAMILY_MOSS:
+            return SCHEDULERS_MOSS
         return SCHEDULERS_SD
 
     def status_text(self) -> str:
@@ -660,7 +696,7 @@ class Engine:
         if te_name is not None and lm.family not in (MODEL_FAMILY_ANIMA, MODEL_FAMILY_KREA2):
             raise ValueError("The Text Encoder axis needs an Anima or Krea 2 model")
         if name is None:
-            # Split-file labels are "Anima(<dit>)" / "Krea2(<dit>)".
+            # Split-file labels are "Anima(<dit>)" / "Krea2(<dit>)" / "MOSS(<dit>)".
             name = lm.name.split("(", 1)[1][:-1] if "(" in lm.name else lm.name
         if lm and lm.family == MODEL_FAMILY_ANIMA:
             return self.load_anima(
@@ -677,6 +713,16 @@ class Engine:
             # The variant is re-read from each DiT's filename.
             return self.load_krea2(
                 name, lm.vae_name, te_name or lm.te_name,
+                offload=self._offload, vae_tile=self._vae_tile,
+                compile=self._compile,
+                fp16_accumulation=self._fp16_accumulation,
+                attention=self._attention,
+                vae_fp16=self._vae_fp16,
+                int8=self._int8,
+            )
+        if lm and lm.family == MODEL_FAMILY_MOSS:
+            return self.load_moss(
+                name, lm.vae_name, lm.te_name,
                 offload=self._offload, vae_tile=self._vae_tile,
                 compile=self._compile,
                 fp16_accumulation=self._fp16_accumulation,
@@ -952,7 +998,80 @@ class Engine:
         return (f"Loaded Krea 2 {model.spec.variant} in {elapsed:.1f}s{flags}{note}  "
                 f"(DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})")
 
-    def _krea2_fit_offload(self, dit_path: Path, offload: bool | str, int8: bool) -> tuple[bool | str, bool]:
+    def load_moss(
+        self, dit_name: str, vae_name: str, te_name: str,
+        offload: bool | str = True, vae_tile: bool = True,
+        compile: bool = False,
+        fp16_accumulation: bool = False, attention: str = "sdpa",
+        vae_fp16: bool = False, int8: bool = False,
+    ) -> str:
+        """Load a split-file MOSS-Image model (Base and SFT are one network, so
+        there is no variant)."""
+        label = f"MOSS({dit_name})"
+        offload, forced_stream = self._krea2_fit_offload(
+            diffusion_model_path(dit_name), offload, int8, tag="MOSS")
+        if compile and offload is True:
+            offload = "encoders"
+        elif compile and offload == "stream":
+            compile = False
+            log.warning("compile disabled: incompatible with offload='stream' "
+                         "(backbone is block-streamed to fit VRAM)")
+        if (self._loaded and self._loaded.name == label
+                and self._components_match(vae_name, te_name)
+                and self._settings_match(offload, vae_tile, compile,
+                                         False, False, False,
+                                         fp16_accumulation, attention, vae_fp16, False, int8)):
+            return f"Model already loaded: {label}"
+
+        self._unload()
+        self._offload = offload
+        self._vae_tile = vae_tile
+        self._compile = compile
+        self._cuda_graphs = False
+        self._channels_last = False
+        self._tf32 = False
+        self._fp16_accumulation = fp16_accumulation
+        self._attention = attention
+        self._vae_fp16 = vae_fp16
+        self._fused_glue = False
+        self._int8 = int8
+
+        dit_path = diffusion_model_path(dit_name)
+        vae_file = vae_path(vae_name)
+        te_file = te_path(te_name)
+        for p in (dit_path, vae_file, te_file):
+            if not p.exists():
+                raise FileNotFoundError(f"MOSS-Image file not found: {p}")
+
+        policy = DevicePolicy(
+            device=self.device, compute_dtype=self.dtype,
+            vae_dtype=self._vae_dtype(vae_fp16),
+            offload=offload, vae_tile=vae_tile,
+            compile=compile,
+            fp16_accumulation=fp16_accumulation, attention=attention,
+            int8=int8,
+            stream_prefetch=(offload == "stream"),
+        )
+
+        log.info("[load] MOSS: DiT=%s VAE=%s TE=%s offload=%s", dit_name, vae_name, te_name, offload)
+        t0 = time.time()
+        model = load_moss_checkpoint(
+            str(dit_path), str(te_file), str(vae_file), policy=policy,
+        )
+        elapsed = time.time() - t0
+
+        self._loaded = LoadedModel(
+            name=label, family=MODEL_FAMILY_MOSS, model=model, native_res=1024,
+            vae_name=vae_name, te_name=te_name,
+        )
+        self._attach_cond_cache()
+        flags = self._perf_flag_summary()
+        note = "  [offload switched to stream: the DiT doesn't fit in VRAM]" if forced_stream else ""
+        return (f"Loaded MOSS-Image in {elapsed:.1f}s{flags}{note}  "
+                f"(DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})")
+
+    def _krea2_fit_offload(self, dit_path: Path, offload: bool | str, int8: bool,
+                           tag: str = "Krea2") -> tuple[bool | str, bool]:
         """``(offload, forced)``: "stream" when the requested mode would keep a
         DiT resident that can't fit in VRAM (the 13.5 GB INT8 file on a 12 GB
         card), else the request unchanged. Resident size: the file's, halved
@@ -965,8 +1084,8 @@ class Engine:
         total = torch.cuda.get_device_properties(self.device).total_memory
         if need + 3 * 1024**3 <= total:
             return offload, False
-        log.warning("[load] Krea2: %.1f GB DiT can't stay resident in %.1f GB VRAM; offload=stream",
-                    need / 1024**3, total / 1024**3)
+        log.warning("[load] %s: %.1f GB DiT can't stay resident in %.1f GB VRAM; offload=stream",
+                    tag, need / 1024**3, total / 1024**3)
         return "stream", True
 
     def _perf_flag_summary(self) -> str:
@@ -1058,11 +1177,11 @@ class Engine:
     def _cacheable_for_stash(self) -> bool:
         """Only fully resident, non-FLUX models can be parked: offloaded models
         sit behind a staging proxy that ``.to()`` would break, CUDA graphs keep
-        the old weight addresses, and FLUX / Krea 2 are too large for a second
-        copy."""
+        the old weight addresses, and FLUX / Krea 2 / MOSS-Image are too large for a
+        second copy."""
         if self._loaded is None or self._offload is not False or self._cuda_graphs:
             return False
-        if self._loaded.family in (*_FLUX_FAMILIES, MODEL_FAMILY_KREA2):
+        if self._loaded.family in (*_FLUX_FAMILIES, MODEL_FAMILY_KREA2, MODEL_FAMILY_MOSS):
             return False
         return True
 
@@ -1145,7 +1264,7 @@ class Engine:
 
     @staticmethod
     def _native_res(family: str) -> int:
-        if family in (MODEL_FAMILY_SDXL, MODEL_FAMILY_ANIMA, MODEL_FAMILY_KREA2, *_FLUX_FAMILIES):
+        if family in (MODEL_FAMILY_SDXL, MODEL_FAMILY_ANIMA, MODEL_FAMILY_KREA2, MODEL_FAMILY_MOSS, *_FLUX_FAMILIES):
             return 1024
         return 512
 
@@ -1201,6 +1320,45 @@ class Engine:
         if not self._loaded:
             return False
         return oss_cache_path(self._loaded.name, steps, width, height, shift).exists()
+
+    def enhance_prompt(
+        self, prompt: str, seed: int | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+        enhancer_model: str = "", int8: bool = False,
+    ) -> str:
+        """Rewrite ``prompt`` with a Qwen3 / Qwen3-VL LM. Krea 2 runs its own
+        text encoder (Qwen3-VL-4B Instruct) into one descriptive paragraph;
+        Anima runs ``enhancer_model`` (a text-encoders file) as a few-shot
+        completion that keeps the prompt verbatim and adds sentences after it.
+        ``<lora:…>`` tags are set aside and re-appended."""
+        family = self.loaded_family
+        if family not in (MODEL_FAMILY_KREA2, MODEL_FAMILY_ANIMA):
+            raise RuntimeError("Prompt enhance needs a loaded Krea 2 or Anima model")
+        tags = [m.group(0) for m in LORA_PROMPT_RE.finditer(prompt)]
+        text = " ".join(LORA_PROMPT_RE.sub(" ", prompt).split())
+        if not text:
+            raise ValueError("Write a prompt to enhance first")
+        if family == MODEL_FAMILY_KREA2:
+            path = te_path(self._loaded.te_name)
+        else:
+            if not enhancer_model:
+                raise ValueError("Pick an enhancer model in Settings > Prompt enhance")
+            path = te_path(enhancer_model)
+            if not path.exists():
+                raise FileNotFoundError(f"Enhancer model not found: {path} (Settings > Prompt enhance)")
+        model = self._loaded.model
+        policy = model.policy or DevicePolicy(device=self.device, compute_dtype=self.dtype)
+        # CUDA Graphs bake the backbone's addresses in, so it never moves.
+        room = [m for m in (model.backbone, model.vae, model.text_encoder, model.text_encoder_2)
+                if m is not None and not (m is model.backbone and self._cuda_graphs)]
+        enhancer = load_prompt_enhancer(str(path), policy, int8=int8)
+        run = enhancer.enhance if family == MODEL_FAMILY_KREA2 else enhancer.expand
+        try:
+            out = run(text, seed=seed, progress_callback=progress_callback, make_room=room)
+        finally:
+            del enhancer, run
+            self._reclaim_memory()
+        return " ".join([out, *tags])
 
     def calibrate_oss(
         self, *, prompt: str, negative_prompt: str = "",
@@ -1319,6 +1477,8 @@ class Engine:
         x = latent
         if x.ndim == 5:                 # (B, C, 1, H, W) → (B, C, H, W)
             x = x[:, :, 0]
+        if self._loaded.family == MODEL_FAMILY_MOSS:
+            x = _flux2_unpatchify_latents(x)
         x = x[0].float()                # [C, H, W]
         w = torch.tensor(factors, device=x.device, dtype=x.dtype).t()  # [3, C]
         b = torch.tensor(bias, device=x.device, dtype=x.dtype) if bias else None
@@ -1348,13 +1508,17 @@ class Engine:
     # ── Anima resolution snapping ───────────────────────────────────
     # Anima was trained on the SDXL ÷64 grid; ÷16-only sizes (848×1200 → 53×75
     # tokens) misregister in img2img/inpaint. Generate on the ÷64 grid and map
-    # the result back.
+    # the result back. MOSS-Image only needs its 16 px token grid (the UI rounds
+    # loaded images to ÷8).
     def _anima_gen_size(self, width, height) -> Tuple[int | None, int | None, bool]:
         """Generation size to run at, plus whether it was snapped. Snaps up, so
         mapping back is a downscale."""
-        if (self._loaded and self._loaded.family == MODEL_FAMILY_ANIMA
-                and width is not None and height is not None):
-            snap = lambda n: max(512, ((n + 63) // 64) * 64)
+        family = self._loaded.family if self._loaded else None
+        if family in (MODEL_FAMILY_ANIMA, MODEL_FAMILY_MOSS) and width is not None and height is not None:
+            if family == MODEL_FAMILY_ANIMA:
+                snap = lambda n: max(512, ((n + 63) // 64) * 64)
+            else:
+                snap = lambda n: ((n + 15) // 16) * 16
             gen_w, gen_h = snap(width), snap(height)
             return gen_w, gen_h, (gen_w, gen_h) != (width, height)
         return width, height, False
@@ -1399,6 +1563,7 @@ class Engine:
         teacache_uncond_scale: float = 1.0,
         teacache_sigma_floor: float = 0.0,
         deepcache_interval: int = 1,
+        uncond_skip_layers: "list[int] | None" = None,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -1437,10 +1602,12 @@ class Engine:
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
         )
-        if self._loaded.family in (MODEL_FAMILY_ANIMA, MODEL_FAMILY_KREA2, *_FLUX_FAMILIES):
+        if self._loaded.family in (MODEL_FAMILY_ANIMA, MODEL_FAMILY_KREA2, MODEL_FAMILY_MOSS, *_FLUX_FAMILIES):
             kwargs["shift"] = shift
         if self._loaded.family == MODEL_FAMILY_ANIMA and scheduler == "oss":
             kwargs["oss_sigmas"] = self._load_oss_sigmas(steps, width, height, shift)
+        if self._loaded.family == MODEL_FAMILY_MOSS:
+            kwargs["uncond_skip_layers"] = uncond_skip_layers
         try:
             image, pipeline_info = gen(**kwargs)
         finally:
@@ -1479,6 +1646,7 @@ class Engine:
         teacache_uncond_scale: float = 1.0,
         teacache_sigma_floor: float = 0.0,
         deepcache_interval: int = 1,
+        uncond_skip_layers: "list[int] | None" = None,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -1521,6 +1689,8 @@ class Engine:
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
         )
+        if self._loaded.family == MODEL_FAMILY_MOSS:
+            gen_kwargs["uncond_skip_layers"] = uncond_skip_layers
         try:
             image, pipeline_info = gen(**gen_kwargs)
         finally:
@@ -1563,6 +1733,7 @@ class Engine:
         teacache_uncond_scale: float = 1.0,
         teacache_sigma_floor: float = 0.0,
         deepcache_interval: int = 1,
+        uncond_skip_layers: "list[int] | None" = None,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -1606,6 +1777,8 @@ class Engine:
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
         )
+        if self._loaded.family == MODEL_FAMILY_MOSS:
+            gen_kwargs["uncond_skip_layers"] = uncond_skip_layers
         try:
             image, pipeline_info = gen(**gen_kwargs)
         finally:
