@@ -6,7 +6,7 @@
 ![python](https://img.shields.io/badge/python-3.10--3.13-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 
-![The Generate workspace: model bar with per-load speed flags on top, prompt and sampler controls on the left, the result on the right](docs/images/generate.png)
+![The Generate workspace: model bar with per-load speed flags on top, prompt and sampler controls on the left, the result on the right](docs/images/generate-workspace.png)
 
 <sub>Anima on an RTX 2060 12 GB: 1024×1536, 32 steps, 36.0 s with the fp16, int8
 and fused-glue speed flags on. The tabs after Metadata come from optional
