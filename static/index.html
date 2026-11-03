@@ -411,6 +411,26 @@
             <span>Uncond skip blocks <small>(block numbers; empty = none)</small></span>
             <input type="text" x-model="form.uncondSkip" inputmode="numeric" placeholder="22" autocomplete="off" spellcheck="false">
           </label>
+          <div class="slider" x-show="slgAvailable">
+            <div class="slider-head"><span>SLG scale</span>
+              <input type="number" x-model.number="form.slgScale" min="0" max="10" step="0.1"></div>
+            <input type="range" x-model.number="form.slgScale" min="0" max="10" step="0.1">
+            <p class="sub">Skip Layer Guidance. 0 = off. Adds a model pass per step in the window.
+              <span x-show="isMoss">The reference has no tuned value.</span>
+              <span x-show="modelType==='Anima'">Try block 14 at scale 1.5. Blocks 22 and 26 damaged the image at scale 3.</span></p>
+          </div>
+          <label class="field" x-show="slgAvailable && form.slgScale > 0"
+                 title="Transformer blocks (0-based) the extra positive-prompt pass skips. MOSS-Image's 24 is its authors' usage example, not a tuned setting. Anima's 14 was preferred in a small blind test.">
+            <span>SLG blocks <small>(block numbers; empty = off)</small></span>
+            <input type="text" x-model="form.slgLayers" inputmode="numeric" :placeholder="isMoss ? '24' : '14'" autocomplete="off" spellcheck="false">
+          </label>
+          <div class="detail-grid" x-show="slgAvailable" style="margin-bottom: 12px"
+               title="Fractions of the sampling run where SLG (and MOSS-Image's uncond skip) is active. Outside it the run uses normal CFG. 0 / 1 = every step.">
+            <label class="field"><span>Skip window start</span>
+              <input type="number" x-model.number="form.slgStart" min="0" max="1" step="0.05"></label>
+            <label class="field"><span>Skip window stop</span>
+              <input type="number" x-model.number="form.slgStop" min="0" max="1" step="0.05"></label>
+          </div>
           <div class="slider" x-show="isFlowModel">
             <div class="slider-head"><span>Shift</span>
               <input type="number" x-model.number="form.shift" min="1" max="9" step="0.1" :disabled="!shiftHonored"></div>

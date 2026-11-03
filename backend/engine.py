@@ -1564,6 +1564,10 @@ class Engine:
         teacache_sigma_floor: float = 0.0,
         deepcache_interval: int = 1,
         uncond_skip_layers: "list[int] | None" = None,
+        slg_layers: "list[int] | None" = None,
+        slg_scale: float = 0.0,
+        slg_start: float = 0.0,
+        slg_stop: float = 1.0,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -1608,6 +1612,8 @@ class Engine:
             kwargs["oss_sigmas"] = self._load_oss_sigmas(steps, width, height, shift)
         if self._loaded.family == MODEL_FAMILY_MOSS:
             kwargs["uncond_skip_layers"] = uncond_skip_layers
+        if self._loaded.family in (MODEL_FAMILY_MOSS, MODEL_FAMILY_ANIMA):
+            kwargs.update(slg_layers=slg_layers, slg_scale=slg_scale, slg_start=slg_start, slg_stop=slg_stop)
         try:
             image, pipeline_info = gen(**kwargs)
         finally:
@@ -1647,6 +1653,10 @@ class Engine:
         teacache_sigma_floor: float = 0.0,
         deepcache_interval: int = 1,
         uncond_skip_layers: "list[int] | None" = None,
+        slg_layers: "list[int] | None" = None,
+        slg_scale: float = 0.0,
+        slg_start: float = 0.0,
+        slg_stop: float = 1.0,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -1691,6 +1701,8 @@ class Engine:
         )
         if self._loaded.family == MODEL_FAMILY_MOSS:
             gen_kwargs["uncond_skip_layers"] = uncond_skip_layers
+        if self._loaded.family in (MODEL_FAMILY_MOSS, MODEL_FAMILY_ANIMA):
+            gen_kwargs.update(slg_layers=slg_layers, slg_scale=slg_scale, slg_start=slg_start, slg_stop=slg_stop)
         try:
             image, pipeline_info = gen(**gen_kwargs)
         finally:
@@ -1734,6 +1746,10 @@ class Engine:
         teacache_sigma_floor: float = 0.0,
         deepcache_interval: int = 1,
         uncond_skip_layers: "list[int] | None" = None,
+        slg_layers: "list[int] | None" = None,
+        slg_scale: float = 0.0,
+        slg_start: float = 0.0,
+        slg_stop: float = 1.0,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -1779,6 +1795,8 @@ class Engine:
         )
         if self._loaded.family == MODEL_FAMILY_MOSS:
             gen_kwargs["uncond_skip_layers"] = uncond_skip_layers
+        if self._loaded.family in (MODEL_FAMILY_MOSS, MODEL_FAMILY_ANIMA):
+            gen_kwargs.update(slg_layers=slg_layers, slg_scale=slg_scale, slg_start=slg_start, slg_stop=slg_stop)
         try:
             image, pipeline_info = gen(**gen_kwargs)
         finally:

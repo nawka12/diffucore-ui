@@ -327,6 +327,13 @@ class GeneratePayload(BaseModel):
     # MOSS-Image: blocks the uncond (negative) forward skips. None = the
     # reference's (22,), [] = skip none.
     uncond_skip_layers: Optional[List[int]] = Field(None, max_length=64)
+    # Skip Layer Guidance (MOSS-Image, Anima): a third forward per step, the
+    # positive prompt with slg_layers skipped. slg_scale 0 = off. On MOSS-Image the
+    # [start, stop) step window also bounds the uncond skip, as in the reference.
+    slg_layers: List[int] = Field([], max_length=64)
+    slg_scale: float = Field(0.0, ge=0.0, le=30.0)
+    slg_start: float = Field(0.0, ge=0.0, le=1.0)
+    slg_stop: float = Field(1.0, ge=0.0, le=1.0)
     input_image: Optional[str] = None   # base64 / data-URL
     mask_image: Optional[str] = None
     preview: bool = True
@@ -354,12 +361,18 @@ class GeneratePayload(BaseModel):
     upscale_teacache: float = Field(0.0, ge=0.0, le=1.0)   # refine-pass TeaCache (0 = off)
     upscale_base: str = ""               # ESRGAN model in models/upscalers/ (blank = Lanczos)
 
-    @field_validator("uncond_skip_layers")
+    @field_validator("uncond_skip_layers", "slg_layers")
     @classmethod
-    def _skip_layers_are_indices(cls, v):
+    def _skip_layers_are_indices(cls, v, info):
         if v is not None and any(i < 0 for i in v):
-            raise ValueError("uncond_skip_layers must be block indices >= 0")
+            raise ValueError(f"{info.field_name} must be block indices >= 0")
         return v
+
+    @model_validator(mode="after")
+    def _slg_window_is_ordered(self):
+        if self.slg_start > self.slg_stop:
+            raise ValueError("slg_start must not exceed slg_stop")
+        return self
 
     @model_validator(mode="after")
     def _upscale_overlap_fits(self):
@@ -657,6 +670,22 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
     return knobs
 
 
+def _skip_kwargs(p: GeneratePayload) -> dict:
+    """The family's skip options. SLG keys appear only when they change the
+    sampling, so an off run keeps its metadata and base-image fingerprint. The
+    window also matters to MOSS-Image's uncond skip with SLG off; Anima has none."""
+    moss = ENGINE.loaded_family == "moss_image"
+    if not moss and ENGINE.loaded_family != "anima":
+        return {}
+    kwargs: dict = {"uncond_skip_layers": list(p.uncond_skip_layers)} if moss else {}
+    slg_on = p.slg_scale > 0 and bool(p.slg_layers)
+    if slg_on:
+        kwargs.update(slg_layers=list(p.slg_layers), slg_scale=float(p.slg_scale))
+    if (moss or slg_on) and (p.slg_start, p.slg_stop) != (0.0, 1.0):
+        kwargs.update(slg_start=float(p.slg_start), slg_stop=float(p.slg_stop))
+    return kwargs
+
+
 def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
                     on_preview: Optional[Callable] = None) -> dict:
     if not ENGINE.loaded_name:
@@ -709,8 +738,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             width=int(p.width), height=int(p.height),
             strength=float(p.strength), **common,
         )
-        if ENGINE.loaded_family == "moss_image":
-            gen_kwargs["uncond_skip_layers"] = list(p.uncond_skip_layers)
+        gen_kwargs.update(_skip_kwargs(p))
         gen_fn = ENGINE.generate_i2i
     elif p.mode == "inpaint":
         if not p.input_image or not p.mask_image:
@@ -721,8 +749,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             width=int(p.width), height=int(p.height),
             strength=float(p.strength), **common,
         )
-        if ENGINE.loaded_family == "moss_image":
-            gen_kwargs["uncond_skip_layers"] = list(p.uncond_skip_layers)
+        gen_kwargs.update(_skip_kwargs(p))
         gen_fn = ENGINE.generate_inpaint
     else:  # t2i
         gen_kwargs = dict(
@@ -730,8 +757,7 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
             shift=float(p.shift), **common,
         )
         gen_fn = ENGINE.generate_t2i
-        if ENGINE.loaded_family == "moss_image":
-            gen_kwargs["uncond_skip_layers"] = list(p.uncond_skip_layers)
+        gen_kwargs.update(_skip_kwargs(p))
 
     t0 = time.perf_counter()
     # Reuse the last base when only the post passes changed. Seed -1 asks for
@@ -1762,6 +1788,18 @@ async def api_load(p: LoadPayload):
     return {"job": job.id}
 
 
+def _slg_conflict(p: GeneratePayload) -> Optional[str]:
+    """Submit-time guard for Anima SLG, whose pipeline rejects the same pairs."""
+    if ENGINE.loaded_family != "anima" or p.slg_scale <= 0 or not p.slg_layers:
+        return None
+    if p.teacache > 0:
+        return "SLG is incompatible with TeaCache. Set the SLG scale to 0 or disable TeaCache."
+    if ENGINE.cuda_graphs_enabled:
+        return ("SLG is incompatible with CUDA Graphs. Set the SLG scale to 0 or reload "
+                "the model without the CUDA Graphs flag.")
+    return None
+
+
 def _teacache_cuda_graphs_conflict(*thresholds: float) -> Optional[str]:
     """Submit-time guard: TeaCache can't run on a CUDA-Graphs Anima backbone.
     The engine re-checks at run time (the model can change while queued)."""
@@ -1775,7 +1813,7 @@ def _teacache_cuda_graphs_conflict(*thresholds: float) -> Optional[str]:
 @app.post("/api/generate")
 async def api_generate(p: GeneratePayload):
     err = _teacache_cuda_graphs_conflict(
-        p.teacache, p.upscale_teacache if p.upscale_enabled else 0.0)
+        p.teacache, p.upscale_teacache if p.upscale_enabled else 0.0) or _slg_conflict(p)
     if err:
         raise HTTPException(status_code=400, detail=err)
     def run(job: Job) -> dict:

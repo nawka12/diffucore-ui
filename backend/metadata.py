@@ -205,6 +205,12 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
         fields.append(f"Krea2 variant: {variant}")
     if "uncond_skip_layers" in gen_kwargs:
         fields.append(f"Uncond skip layers: {_quote(_skip_layers_text(gen_kwargs['uncond_skip_layers']))}")
+    if "slg_layers" in gen_kwargs:
+        fields.append(f"SLG layers: {_quote(_skip_layers_text(gen_kwargs['slg_layers']))}")
+        fields.append(f"SLG scale: {gen_kwargs['slg_scale']}")
+    if "slg_start" in gen_kwargs:
+        fields.append(f"SLG start: {gen_kwargs['slg_start']}")
+        fields.append(f"SLG stop: {gen_kwargs['slg_stop']}")
     if lora_hashes:
         # Forge always quotes this map, even with one entry, and Civitai expects it.
         fields.append(f"Lora hashes: {json.dumps(', '.join(lora_hashes), ensure_ascii=False)}")
@@ -306,6 +312,12 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
         extra["krea2_variant"] = variant
     if "uncond_skip_layers" in gen_kwargs:
         extra["uncond_skip_layers"] = _skip_layers_text(gen_kwargs["uncond_skip_layers"])
+    if "slg_layers" in gen_kwargs:
+        extra["slg_layers"] = _skip_layers_text(gen_kwargs["slg_layers"])
+        extra["slg_scale"] = gen_kwargs["slg_scale"]
+    if "slg_start" in gen_kwargs:
+        extra["slg_start"] = gen_kwargs["slg_start"]
+        extra["slg_stop"] = gen_kwargs["slg_stop"]
     if "strength" in gen_kwargs:
         extra["denoising_strength"] = gen_kwargs["strength"]
     if "shift" in gen_kwargs:
@@ -609,6 +621,12 @@ def workspace_fields(meta: dict) -> dict:
         ids = [t.strip() for t in str(skip).split(",") if t.strip() and t.strip() != "none"]
         if all(t.isdigit() for t in ids):
             out["uncondSkip"] = ", ".join(ids)
+    # Missing SLG keys mean it was off, so restoring an image reproduces it.
+    out["slgScale"] = float(meta.get("slg_scale", 0.0))
+    out["slgStart"] = float(meta.get("slg_start", 0.0))
+    out["slgStop"] = float(meta.get("slg_stop", 1.0))
+    if "slg_layers" in meta:
+        out["slgLayers"] = str(meta["slg_layers"])
     detailer = extract_detailer(meta)
     if detailer:
         out["detailer"] = detailer

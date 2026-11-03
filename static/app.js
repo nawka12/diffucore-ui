@@ -244,6 +244,7 @@ document.addEventListener('alpine:init', () => {
       teacacheRule: 'drift', teacacheFloor: 0,
       deepcacheOn: false, deepcache: 2,
       uncondSkip: '22',   // MOSS-Image only: blocks the negative-prompt pass skips
+      slgScale: 0, slgLayers: '24', slgStart: 0, slgStop: 1,   // MOSS-Image and Anima: Skip Layer Guidance
     },
     // >1 submits N jobs: seed+i with a pinned seed, a fresh random with -1.
     batchCount: 1,
@@ -482,6 +483,7 @@ document.addEventListener('alpine:init', () => {
     },
     get isKrea2() { return this.modelType === 'Krea2'; },
     get isMoss() { return this.modelType === 'MOSS'; },
+    get slgAvailable() { return this.isMoss || this.modelType === 'Anima'; },
     // Qwen3 / Qwen3-VL text-encoder files the Anima Enhance can run (no Qwen3.5).
     get enhancerModels() {
       return this.tes.filter(n => ['qwen3vl', 'qwen3'].includes(this.fileKinds.tes[n]));
@@ -936,6 +938,10 @@ document.addEventListener('alpine:init', () => {
       this.perf.offload = (type === 'FLUX' || type === 'Krea2' || type === 'MOSS') ? 'stream' : this.recommendedOffload;
       // channels_last only helps conv backbones (SD/SDXL UNet + VAE).
       this.perf.channelsLast = (type === 'SD/SDXL');
+      // Block numbers don't carry between families: swap the other's default,
+      // keep anything typed.
+      if (type === 'Anima' && this.form.slgLayers === '24') this.form.slgLayers = '14';
+      if (type === 'MOSS' && this.form.slgLayers === '14') this.form.slgLayers = '24';
       if (type === 'Anima' && !this.animaApplied) {
         this.animaApplied = true;
         this.form.sampler = 'er_sde';
@@ -977,14 +983,17 @@ document.addEventListener('alpine:init', () => {
       this.form.shift = 5.0;
       this.form.neg = '';
       this.form.uncondSkip = this.mossUncondSkip.join(', ');
+      this.form.slgScale = 0;
+      this.form.slgStart = 0;
+      this.form.slgStop = 1;
       this.syncSampler();
       this.syncScheduler();
     },
 
-    // The skip-blocks field as block indices ('' = none), or null when it isn't
-    // a comma list of non-negative integers.
-    parseUncondSkip() {
-      const text = String(this.form.uncondSkip ?? '').trim();
+    // A skip-blocks field as block indices ('' = none), or null when it isn't a
+    // comma list of non-negative integers.
+    parseSkipBlocks(value) {
+      const text = String(value ?? '').trim();
       if (!text) return [];
       const parts = text.split(/[\s,]+/).filter(Boolean);
       return parts.every(t => /^\d+$/.test(t)) ? parts.map(Number) : null;
@@ -1400,9 +1409,19 @@ document.addEventListener('alpine:init', () => {
       // A load in flight is fine: the job queues behind it.
       if (!this.modelLoaded && !this.loadingModel) { this.flash('Load a model first'); return; }
       let uncondSkip = null;
+      let slgLayers = [];
       if (this.isMoss) {
-        uncondSkip = this.parseUncondSkip();
+        uncondSkip = this.parseSkipBlocks(this.form.uncondSkip);
         if (uncondSkip === null) { this.flash('Uncond skip blocks: use block numbers like 22 or 22, 30'); return; }
+      }
+      if (this.slgAvailable) {
+        slgLayers = this.parseSkipBlocks(this.form.slgLayers);
+        if (slgLayers === null) { this.flash('SLG blocks: use block numbers like 24 or 24, 30'); return; }
+        if (this.form.slgStart > this.form.slgStop) { this.flash('Skip window: start must not exceed stop'); return; }
+        if (this.modelType === 'Anima' && this.form.teacacheOn && this.form.slgScale > 0 && slgLayers.length) {
+          this.flash('SLG is incompatible with TeaCache: set the SLG scale to 0 or disable TeaCache');
+          return;
+        }
       }
       if (this.mode === 'i2i' && !this.inputImage) { this.flash('Provide an input image'); return; }
       if (this.mode === 'inpaint') {
@@ -1447,6 +1466,8 @@ document.addEventListener('alpine:init', () => {
           teacache_sigma_floor: this.form.teacacheFloor,
           deepcache: this.form.deepcacheOn ? this.form.deepcache : 1,
           uncond_skip_layers: uncondSkip,
+          slg_layers: slgLayers, slg_scale: this.form.slgScale,
+          slg_start: this.form.slgStart, slg_stop: this.form.slgStop,
           input_image: this.mode !== 't2i' ? this.inputImage : null,
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
           preview: this.preview,
@@ -2408,7 +2429,8 @@ document.addEventListener('alpine:init', () => {
                     'seed', 'shift', 'strength', 'width', 'height',
                     'teacacheOn', 'teacache', 'teacacheCalibrated', 'teacacheForecast',
                     'teacacheRule', 'teacacheFloor',
-                    'deepcacheOn', 'deepcache', 'uncondSkip'];
+                    'deepcacheOn', 'deepcache', 'uncondSkip',
+                    'slgScale', 'slgLayers', 'slgStart', 'slgStop'];
       for (const k of keys) if (f[k] !== undefined) this.form[k] = f[k];
       // Metadata from another family's image may name a sampler the active
       // family can't run.

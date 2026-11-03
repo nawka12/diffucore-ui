@@ -379,3 +379,167 @@ def test_models_endpoint_lists_moss_options():
 def test_enhance_endpoint_rejects_moss(moss_loaded):
     with TestClient(server.app) as c:
         assert c.post("/api/enhance_prompt", json={"prompt": "a fox"}).status_code == 400
+
+
+# ── Skip Layer Guidance ────────────────────────────────────────────
+
+_SLG = {"slg_layers": [24, 30], "slg_scale": 3.0, "slg_start": 0.1, "slg_stop": 0.6}
+
+
+def test_engine_sends_slg_to_every_moss_pipeline_and_no_other_family(monkeypatch):
+    seen = {}
+
+    class FakePipeline:
+        def __init__(self, model):
+            pass
+
+        def __call__(self, **kw):
+            seen.update(kw)
+            return "image", SimpleNamespace(vae_decode_mode="full")
+
+    for name in ("TextToImage", "ImageToImage", "Inpaint"):
+        monkeypatch.setattr(engine_mod, name, FakePipeline)
+    eng = Engine(device="cpu")
+    eng._loaded = _moss()
+    for call in (lambda: eng.generate_t2i("p", **_SLG), lambda: eng.generate_i2i("p", None, **_SLG),
+                 lambda: eng.generate_inpaint("p", None, None, **_SLG)):
+        seen.clear()
+        call()
+        assert {k: seen[k] for k in _SLG} == _SLG
+    eng._loaded = LoadedModel(name="Krea2(k.safetensors)", family="krea2", model=object(), native_res=1024)
+    seen.clear()
+    eng.generate_t2i("p", **_SLG)
+    assert not set(_SLG) & set(seen)
+
+
+@pytest.mark.parametrize("mode, extra", [("t2i", {}), ("i2i", {"input_image": "x"}),
+                                         ("inpaint", {"input_image": "x", "mask_image": "x"})])
+def test_run_generation_sends_slg_only_when_it_changes_the_sampling(moss_loaded, monkeypatch, mode, extra):
+    seen = {}
+
+    def fake(**kw):
+        seen.clear()
+        seen.update(kw)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(ENGINE, f"generate_{mode}", fake, raising=False)
+    monkeypatch.setattr(server, "_decode_image", lambda v: None)
+    monkeypatch.setattr(server, "_decode_mask", lambda v: None)
+
+    def run(**slg):
+        with pytest.raises(RuntimeError, match="stop"):
+            server._run_generation(server.GeneratePayload(prompt="a fox", mode=mode, **extra, **slg), lambda *a: None)
+        return {k: seen[k] for k in _SLG if k in seen}
+
+    assert run() == {}
+    assert run(slg_layers=[24]) == {}                 # scale 0 is off
+    assert run(slg_scale=3.0) == {}                   # no blocks is off
+    assert run(slg_layers=[24], slg_scale=3.0) == {"slg_layers": [24], "slg_scale": 3.0}
+    # The window also bounds the uncond skip, so it is sent with SLG off.
+    assert run(slg_start=0.1, slg_stop=0.6) == {"slg_start": 0.1, "slg_stop": 0.6}
+    assert run(**_SLG) == _SLG
+
+
+def test_slg_payload_is_validated():
+    p = server.GeneratePayload()
+    assert (p.slg_layers, p.slg_scale, p.slg_start, p.slg_stop) == ([], 0.0, 0.0, 1.0)
+    for bad in (dict(slg_layers=[-1]), dict(slg_layers=["a"]), dict(slg_layers=list(range(65))),
+                dict(slg_scale=-1.0), dict(slg_scale=float("nan")), dict(slg_start=-0.1), dict(slg_stop=1.1),
+                dict(slg_start=0.6, slg_stop=0.5)):
+        with pytest.raises(Exception):
+            server.GeneratePayload(**bad)
+
+
+@pytest.mark.parametrize("fmt", [md.format_metadata, md.format_swarmui_metadata])
+def test_metadata_records_and_restores_slg(fmt):
+    parsed = md.parse_metadata(fmt({**_GEN, "uncond_skip_layers": [22], **_SLG}, _Engine()))
+    fields = md.workspace_fields(parsed)
+    assert fields["slgLayers"] == "24, 30"
+    assert (fields["slgScale"], fields["slgStart"], fields["slgStop"]) == (3.0, 0.1, 0.6)
+
+
+def test_a1111_metadata_writes_the_slg_fields():
+    out = md.format_metadata({**_GEN, "uncond_skip_layers": [22], **_SLG}, _Engine())
+    assert 'SLG layers: "24, 30"' in out and "SLG scale: 3.0" in out
+    assert "SLG start: 0.1" in out and "SLG stop: 0.6" in out
+
+
+def test_a_moss_image_without_slg_restores_it_off():
+    out = md.format_metadata({**_GEN, "uncond_skip_layers": [22]}, _Engine())
+    assert "SLG" not in out
+    fields = md.workspace_fields(md.parse_metadata(out))
+    assert (fields["slgScale"], fields["slgStart"], fields["slgStop"]) == (0.0, 0.0, 1.0)
+    assert "slgLayers" not in fields
+
+
+def test_an_image_from_any_family_without_slg_restores_it_off():
+    fields = md.workspace_fields(md.parse_metadata(md.format_metadata(_GEN, _Engine())))
+    assert (fields["slgScale"], fields["slgStart"], fields["slgStop"]) == (0.0, 0.0, 1.0)
+    assert "uncondSkip" not in fields
+
+
+def _anima_loaded():
+    return LoadedModel(name="Anima(a.safetensors)", family="anima",
+                       model=SimpleNamespace(backbone=SimpleNamespace(blocks=[None] * 28)), native_res=1024)
+
+
+def test_engine_sends_slg_to_anima_but_not_the_moss_uncond_skip(monkeypatch):
+    seen = {}
+
+    class FakePipeline:
+        def __init__(self, model):
+            pass
+
+        def __call__(self, **kw):
+            seen.update(kw)
+            return "image", SimpleNamespace(vae_decode_mode="full")
+
+    for name in ("TextToImage", "ImageToImage", "Inpaint"):
+        monkeypatch.setattr(engine_mod, name, FakePipeline)
+    eng = Engine(device="cpu")
+    eng._loaded = _anima_loaded()
+    for call in (lambda: eng.generate_t2i("p", **_SLG), lambda: eng.generate_i2i("p", None, **_SLG),
+                 lambda: eng.generate_inpaint("p", None, None, **_SLG)):
+        seen.clear()
+        call()
+        assert {k: seen[k] for k in _SLG} == _SLG and "uncond_skip_layers" not in seen
+
+
+def test_anima_run_generation_sends_slg_only_when_on_and_no_uncond_skip(monkeypatch):
+    monkeypatch.setattr(ENGINE, "_loaded", _anima_loaded())
+    seen = {}
+
+    def fake(**kw):
+        seen.clear()
+        seen.update(kw)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(ENGINE, "generate_t2i", fake, raising=False)
+
+    def run(**slg):
+        with pytest.raises(RuntimeError, match="stop"):
+            server._run_generation(server.GeneratePayload(prompt="a fox", **slg), lambda *a: None)
+        assert "uncond_skip_layers" not in seen
+        return {k: seen[k] for k in _SLG if k in seen}
+
+    assert run() == {}
+    assert run(slg_layers=[8]) == {}
+    # Anima has no uncond skip, so a window alone changes nothing and is not recorded.
+    assert run(slg_start=0.1, slg_stop=0.6) == {}
+    assert run(slg_layers=[8], slg_scale=3.0) == {"slg_layers": [8], "slg_scale": 3.0}
+    assert run(**_SLG) == _SLG
+
+
+@pytest.mark.parametrize("family, graphs, teacache, conflict", [
+    ("anima", False, 0.3, "TeaCache"),
+    ("anima", True, 0.0, "CUDA Graphs"),
+    ("anima", False, 0.0, None),
+    ("moss_image", False, 0.3, None),
+])
+def test_slg_submit_guard(monkeypatch, family, graphs, teacache, conflict):
+    monkeypatch.setattr(ENGINE, "_loaded", LoadedModel(name="x", family=family, model=object(), native_res=1024))
+    monkeypatch.setattr(ENGINE, "_cuda_graphs", graphs)
+    on = server.GeneratePayload(prompt="p", teacache=teacache, slg_layers=[8], slg_scale=3.0)
+    err = server._slg_conflict(on)
+    assert (err is None) if conflict is None else (conflict in err)
+    assert server._slg_conflict(server.GeneratePayload(prompt="p", teacache=teacache, slg_layers=[8])) is None
