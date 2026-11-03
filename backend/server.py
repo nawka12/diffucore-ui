@@ -1797,6 +1797,9 @@ def _slg_conflict(p: GeneratePayload) -> Optional[str]:
     if ENGINE.cuda_graphs_enabled:
         return ("SLG is incompatible with CUDA Graphs. Set the SLG scale to 0 or reload "
                 "the model without the CUDA Graphs flag.")
+    if ENGINE.compile_enabled:
+        return ("SLG is incompatible with torch.compile. Set the SLG scale to 0 or reload "
+                "the model without the compile flag.")
     return None
 
 

@@ -389,6 +389,11 @@ class Engine:
         return self._cuda_graphs
 
     @property
+    def compile_enabled(self) -> bool:
+        """Whether the current load compiled the backbone."""
+        return self._compile
+
+    @property
     def active_offload(self) -> "bool | str":
         """The offload mode the current load actually runs with. Unlike
         :meth:`recommended_offload` it reflects the UI's choice and FLUX's

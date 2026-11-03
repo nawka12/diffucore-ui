@@ -530,15 +530,18 @@ def test_anima_run_generation_sends_slg_only_when_on_and_no_uncond_skip(monkeypa
     assert run(**_SLG) == _SLG
 
 
-@pytest.mark.parametrize("family, graphs, teacache, conflict", [
-    ("anima", False, 0.3, "TeaCache"),
-    ("anima", True, 0.0, "CUDA Graphs"),
-    ("anima", False, 0.0, None),
-    ("moss_image", False, 0.3, None),
+@pytest.mark.parametrize("family, graphs, compiled, teacache, conflict", [
+    ("anima", False, False, 0.3, "TeaCache"),
+    ("anima", True, True, 0.0, "CUDA Graphs"),
+    ("anima", False, True, 0.0, "torch.compile"),
+    ("anima", False, False, 0.0, None),
+    ("moss_image", False, False, 0.3, None),
+    ("moss_image", False, True, 0.0, None),
 ])
-def test_slg_submit_guard(monkeypatch, family, graphs, teacache, conflict):
+def test_slg_submit_guard(monkeypatch, family, graphs, compiled, teacache, conflict):
     monkeypatch.setattr(ENGINE, "_loaded", LoadedModel(name="x", family=family, model=object(), native_res=1024))
     monkeypatch.setattr(ENGINE, "_cuda_graphs", graphs)
+    monkeypatch.setattr(ENGINE, "_compile", compiled)
     on = server.GeneratePayload(prompt="p", teacache=teacache, slg_layers=[8], slg_scale=3.0)
     err = server._slg_conflict(on)
     assert (err is None) if conflict is None else (conflict in err)
