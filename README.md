@@ -2,7 +2,7 @@
 
 **A local web UI for AI image generation, running on its own inference engine.**
 
-![version](https://img.shields.io/badge/version-0.2.3-blue)
+![version](https://img.shields.io/badge/version-0.2.4-blue)
 ![python](https://img.shields.io/badge/python-3.10--3.13-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 
