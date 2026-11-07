@@ -6,11 +6,12 @@ network/share flags, architecture, and status.
 
 ## Highlights
 
-- **Five model families, one interface**: Stable Diffusion 1.5, SDXL,
+- **Seven model families, one interface**: Stable Diffusion 1.5, SDXL,
   **Anima** (a 2 B DiT built on Cosmos-Predict2, plus the 40-block
   Anima-2.9B), **FLUX** (FLUX.1 and
-  FLUX.2 Klein), and **Krea 2** (Raw and Turbo). All five do txt2img, img2img,
-  and inpaint; Anima, FLUX and Krea 2 use
+  FLUX.2 Klein), **Krea 2** (Raw and Turbo), **MOSS-Image**, and **Z-Image**
+  (Turbo and Base). All seven do txt2img, img2img,
+  and inpaint; the DiT families use
   soft, latent-mask inpaint (no dedicated inpaint model). Switch between them
   from the model bar.
 - **Unified Generate workspace**: one shared control panel with a
@@ -25,7 +26,7 @@ network/share flags, architecture, and status.
 - **Detailer**: an ADetailer-style toggle (and a standalone "Detail" action on
   any result or gallery image) that detects faces/hands with a YOLO model and
   inpaints each region at native resolution after generation. Works on
-  UNet (SD/SDXL) and DiT (Anima, FLUX) backbones.
+  UNet (SD/SDXL) and DiT (Anima, FLUX, Krea 2, MOSS-Image, Z-Image) backbones.
 - **Tiled upscaler**: an Ultimate-SD-Upscale-style toggle (and a standalone
   "Upscale" action on any result or gallery image) that enlarges 2×/4× by
   re-running low-denoise img2img over overlapping tiles and feather-blending them
@@ -208,9 +209,9 @@ no-op otherwise), so a newly added dependency won't surface as a runtime error.
 ```
 models/
 ├── checkpoints/             # SD/SDXL .safetensors or .ckpt (+ FLUX all-in-one)
-├── diffusion-models/        # Anima / FLUX / Krea 2 DiT .safetensors
-├── vae/                     # Anima / FLUX / Krea 2 VAE .safetensors
-├── text-encoders/           # Anima / FLUX / Krea 2 text encoders .safetensors
+├── diffusion-models/        # Anima / FLUX / Krea 2 / MOSS-Image / Z-Image DiT .safetensors
+├── vae/                     # Anima / FLUX / Krea 2 / MOSS-Image / Z-Image VAE .safetensors
+├── text-encoders/           # Anima / FLUX / Krea 2 / MOSS-Image / Z-Image text encoders .safetensors
 ├── loras/                   # LoRA adapters (.safetensors)
 ├── detailers/               # YOLO detection models for the detailer (.pt)
 └── upscalers/               # ESRGAN-family models for the upscaler base (.pth)
@@ -271,11 +272,11 @@ public.
 
 1. Pick a file in the **Model** dropdown. It lists everything in `checkpoints/`
    and `diffusion-models/`, sorted into sections by architecture (SDXL, SD 1.5,
-   Anima, Krea 2, FLUX.1, FLUX.2), which is read from the file's header, so
+   Anima, Krea 2, FLUX.1, FLUX.2, MOSS-Image, Z-Image), which is read from the file's header, so
    picking a file also picks the model type. Type to search. A file whose
    architecture isn't recognized (a `.ckpt`, say) gets a **Load as** dropdown
    instead.
-2. For a split model (Anima, Krea 2, or a FLUX DiT), check the VAE and text
+2. For a split model (Anima, Krea 2, MOSS-Image, Z-Image, or a FLUX DiT), check the VAE and text
    encoder dropdowns. Each lists the files that fit the picked model first, and
    switching models swaps in a fitting file when the current one is for another
    architecture. A FLUX all-in-one checkpoint needs nothing else; CLIP-L is for

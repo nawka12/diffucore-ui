@@ -12,8 +12,8 @@
 and fused-glue speed flags on. The tabs after Metadata come from optional
 extensions.</sub>
 
-Diffucore UI runs SD 1.5, SDXL, Anima, FLUX, Krea 2 and MOSS-Image from one
-browser tab: txt2img, img2img and inpaint in a single workspace, with a
+Diffucore UI runs SD 1.5, SDXL, Anima, FLUX, Krea 2, MOSS-Image and Z-Image
+from one browser tab: txt2img, img2img and inpaint in a single workspace, with a
 detailer, a tiled upscaler, X/Y/Z sweeps and a gallery that loads any past
 image's settings back in. Underneath is
 [Diffucore](https://github.com/nawka12/diffucore), an independent PyTorch
@@ -30,6 +30,7 @@ kernels, tuned to run well on consumer cards.
 | FLUX | FLUX.1 and FLUX.2 Klein |
 | Krea 2 | Raw and Turbo |
 | MOSS-Image | 5 B DiT with the Qwen3.5-9B text encoder and the FLUX.2 small VAE |
+| Z-Image | Turbo and Base: 6 B DiT with the Qwen3-4B text encoder and the FLUX.1 VAE; ComfyUI bf16 and INT8 files load as-is |
 
 Every family does txt2img, img2img and inpaint. The model picker detects the
 family from the file, so there is no mode to switch.
@@ -110,7 +111,7 @@ Then open `http://localhost:7860`, pick a model and press **Load**.
 ```
 models/
 ├── checkpoints/        # SD / SDXL .safetensors or .ckpt (+ FLUX all-in-one)
-├── diffusion-models/   # Anima / FLUX / Krea 2 / MOSS-Image DiT
+├── diffusion-models/   # Anima / FLUX / Krea 2 / MOSS-Image / Z-Image DiT
 ├── vae/                # VAEs for the DiT families
 ├── text-encoders/      # text encoders for the DiT families
 ├── loras/              # LoRA adapters
