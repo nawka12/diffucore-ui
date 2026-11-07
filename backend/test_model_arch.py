@@ -28,6 +28,8 @@ SDXL = {"model.diffusion_model.input_blocks.0.0.weight": (320, 4, 3, 3),
         "model.diffusion_model.input_blocks.4.1.transformer_blocks.0.attn2.to_k.weight": (640, 2048)}
 ANIMA = {"net.llm_adapter.blocks.0.cross_attn.q_proj.weight": (1024, 1024)}
 KREA2_DIFFUSERS = {"img_in.weight": (3072, 64), "text_fusion.projector.weight": (3072, 2560)}
+ZIMAGE_DIT = {"cap_pad_token": (1, 3840), "x_pad_token": (1, 3840), "x_embedder.weight": (3840, 64),
+              "cap_embedder.1.weight": (3840, 2560), "layers.0.adaLN_modulation.0.weight": (15360, 256)}
 MOSS_DIT = {"shared_block_modulation.weight": (18432, 3072), "video_head_modulation.weight": (6144, 3072),
             "video_embedder.weight": (3072, 128), "text_embedder.proj.weight": (3072, 4096)}
 FLUX1 = {"double_blocks.0.img_attn.qkv.weight": (9216, 3072), "img_in.weight": (3072, 64),
@@ -37,7 +39,7 @@ FLUX2 = {**FLUX1, "double_stream_modulation_img.lin.weight": (18432, 3072),
 
 
 @pytest.mark.parametrize("shapes, arch", [
-    (SDXL, "sdxl"), (ANIMA, "anima"), (KREA2_DIFFUSERS, "krea2"), (MOSS_DIT, "moss_image"),
+    (SDXL, "sdxl"), (ANIMA, "anima"), (KREA2_DIFFUSERS, "krea2"), (MOSS_DIT, "moss_image"), (ZIMAGE_DIT, "z_image"),
     (FLUX1, "flux1"), (FLUX2, "flux2"), ({"foo.weight": (1,)}, None),
 ])
 def test_model_arch(tmp_path, shapes, arch):
@@ -75,7 +77,10 @@ def test_vae_kind(tmp_path, shapes, kind):
       "model.language_model.layers.0.linear_attn.A_log": (32,)}, "qwen35_9b"),
     ({"model.language_model.embed_tokens.weight": (151936, 2560),
       "model.language_model.layers.0.self_attn.q_norm.weight": (128,)}, "qwen3vl"),
+    # Same width as Krea 2's Qwen3-VL-4B, but a plain Qwen3 (no language_model prefix).
     ({"model.embed_tokens.weight": (151936, 2560),
+      "model.layers.0.self_attn.q_norm.weight": (128,)}, "qwen3_4b"),
+    ({"model.embed_tokens.weight": (151936, 4096),
       "model.layers.0.self_attn.q_norm.weight": (128,)}, "flux2_lm"),
     ({"model.layers.0.self_attn.q_proj.weight": (4096, 5120)}, "flux2_lm"),
     ({"encoder.block.0.layer.0.SelfAttention.q.weight": (4096, 4096)}, "t5"),
@@ -104,6 +109,21 @@ def test_real_moss_files_are_recognised(folder, name, what, kind):
     assert ma.kinds(_MODELS / folder, [name], what) == {name: kind}
 
 
+@pytest.mark.parametrize("folder, name, what, kind", [
+    ("diffusion-models", "z_image_turbo_int8_convrot.safetensors", "model", "z_image"),
+    ("diffusion-models", "z_image_turbo_bf16.safetensors", "model", "z_image"),
+    ("diffusion-models", "z_image_int8_convrot.safetensors", "model", "z_image"),
+    ("text-encoders", "qwen_3_4b.safetensors", "te", "qwen3_4b"),
+    ("text-encoders", "qwen3vl_4b_bf16.safetensors", "te", "qwen3vl"),
+    ("vae", "ae.safetensors", "vae", "flux1"),
+])
+def test_real_zimage_files_are_recognised(folder, name, what, kind):
+    """Header-only reads of the real Z-Image downloads, when present."""
+    if not (_MODELS / folder / name).is_file():
+        pytest.skip(f"{folder}/{name} not downloaded")
+    assert ma.kinds(_MODELS / folder, [name], what) == {name: kind}
+
+
 def test_unreadable_files_are_unknown(tmp_path):
     (tmp_path / "old.ckpt").write_bytes(b"\x80\x02")
     (tmp_path / "broken.safetensors").write_bytes(b"\xff" * 16)
@@ -120,9 +140,9 @@ def test_rewritten_file_is_reclassified(tmp_path):
 
 @pytest.mark.parametrize("names, groups", [
     (engine.SAMPLERS_SD + engine.SAMPLERS_ANIMA + engine.SAMPLERS_FLUX + engine.SAMPLERS_KREA2
-     + engine.SAMPLERS_MOSS, engine.SAMPLER_GROUPS),
+     + engine.SAMPLERS_MOSS + engine.SAMPLERS_ZIMAGE, engine.SAMPLER_GROUPS),
     (engine.SCHEDULERS_SD + engine.SCHEDULERS_ANIMA + engine.SCHEDULERS_FLUX + engine.SCHEDULERS_KREA2
-     + engine.SCHEDULERS_MOSS, engine.SCHEDULER_GROUPS),
+     + engine.SCHEDULERS_MOSS + engine.SCHEDULERS_ZIMAGE, engine.SCHEDULER_GROUPS),
 ])
 def test_every_option_has_one_dropdown_section(names, groups):
     grouped = [n for members in groups.values() for n in members]

@@ -35,7 +35,7 @@ def _shapes(path: Path) -> Optional[Dict[str, Tuple[int, ...]]]:
 
 
 def model_arch(shapes: Shapes) -> Optional[str]:
-    """"sd15" / "sdxl" / "anima" / "krea2" / "moss_image" / "flux1" / "flux2", or None."""
+    """"sd15" / "sdxl" / "anima" / "krea2" / "moss_image" / "z_image" / "flux1" / "flux2", or None."""
     try:
         return detect_architecture(shapes).architecture
     except (ValueError, NotImplementedError):
@@ -51,7 +51,7 @@ def model_arch(shapes: Shapes) -> Optional[str]:
 
 def vae_kind(shapes: Shapes) -> Optional[str]:
     """"qwen_image" (Anima / Krea 2), "qwen2d" (Anzhc's 2-D Qwen-Image VAE),
-    "flux1", "flux2", "flux2_small" (MOSS-Image's narrower, diffusers-keyed
+    "flux1" (FLUX.1, Z-Image), "flux2", "flux2_small" (MOSS-Image's narrower, diffusers-keyed
     FLUX.2 decoder), or None."""
     if any(len(s) == 5 for s in shapes.values()):
         return "qwen_image"  # Wan-style 3-D causal convs
@@ -69,8 +69,11 @@ def vae_kind(shapes: Shapes) -> Optional[str]:
 
 def te_kind(shapes: Shapes) -> Optional[str]:
     """"qwen3" (Anima), "qwen35" (Anima's experimental swap), "qwen35_9b"
-    (MOSS-Image's Qwen3.5-9B, hidden 4096), "qwen3vl" (Krea 2), "t5" / "clip_l"
-    (FLUX.1), "flux2_lm" (FLUX.2's Mistral or Qwen3), or None."""
+    (MOSS-Image's Qwen3.5-9B, hidden 4096), "qwen3vl" (Krea 2), "qwen3_4b"
+    (plain Qwen3-4B, hidden 2560: Z-Image, FLUX.2 klein), "t5" / "clip_l" (FLUX.1),
+    "flux2_lm" (FLUX.2's Mistral or larger Qwen3), or None. Qwen3-VL-4B has the same
+    width as Qwen3-4B but nests its LM under ``language_model.``, which is how the
+    two are told apart."""
     keys = list(shapes)
     if any("linear_attn.A_log" in k for k in keys):
         emb = next((shapes[k] for k in keys if k.endswith("embed_tokens.weight")), None)
@@ -83,7 +86,8 @@ def te_kind(shapes: Shapes) -> Optional[str]:
         if any(k.startswith(("model.language_model.", "language_model.")) for k in keys):
             return "qwen3vl"
         emb = next((shapes[k] for k in keys if k.endswith("embed_tokens.weight")), None)
-        return "qwen3" if emb is not None and emb[1] == 1024 else "flux2_lm"
+        width = emb[1] if emb is not None and len(emb) == 2 else None
+        return {1024: "qwen3", 2560: "qwen3_4b"}.get(width, "flux2_lm")
     if any(k.endswith("layers.0.self_attn.q_proj.weight") for k in keys):
         return "flux2_lm"  # Mistral: no per-head q_norm
     return None

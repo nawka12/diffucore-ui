@@ -37,7 +37,9 @@ from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
 from engine import (ENGINE, SAMPLERS_SD, SAMPLERS_ANIMA, SAMPLERS_FLUX, SAMPLERS_KREA2, SAMPLERS_MOSS,
+                    SAMPLERS_ZIMAGE,
                     SCHEDULERS_SD, SCHEDULERS_ANIMA, SCHEDULERS_FLUX, SCHEDULERS_KREA2, SCHEDULERS_MOSS,
+                    SCHEDULERS_ZIMAGE,
                     SAMPLER_GROUPS, SCHEDULER_GROUPS, MOSS_UNCOND_SKIP)
 from utils import (
     OUTPUTS_DIR, MODELS_DIR, CHECKPOINTS_DIR, DIFFUSION_DIR, VAE_DIR, TE_DIR,
@@ -293,10 +295,11 @@ class LoadPayload(BaseModel):
     tf32: bool = False                  # SD/SDXL only (fp32 VAE path; Ampere+)
     fp16_accumulation: bool = False     # fp16-accumulate matmuls; all families
     vae_fp16: bool = False              # non-finite output falls back to fp32
-    attention: str = "sdpa"             # "sdpa" | "fa2_turing" (sm75; all families) | "int8_turing" (sm75; Anima/FLUX/Krea 2/MOSS)
+    attention: str = "sdpa"             # "sdpa" | "fa2_turing" (sm75; all families) | "int8_turing" (sm75; Anima/FLUX/Krea 2/MOSS/Z-Image)
     fused_glue: bool = False            # Anima only; Triton-fused block glue
-    int8: bool = False                  # Anima/Krea 2/MOSS; quantize DiT linears to INT8 at load
-    variant: Optional[Literal["raw", "turbo"]] = None   # Krea 2 only; None = infer from the DiT filename
+    int8: bool = False                  # Anima/Krea 2/MOSS/Z-Image; quantize DiT linears to INT8 at load
+    # Krea 2 ("raw" | "turbo") and Z-Image ("turbo" | "base"); None = infer from the DiT filename
+    variant: Optional[Literal["raw", "turbo", "base"]] = None
 
 
 class DetailerModel(BaseModel):
@@ -641,9 +644,9 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
     if sampler in ("cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate"):
         knobs["gate_reduce"] = SETTINGS["gate_reduce"]
 
-    # Anima, Krea 2 and MOSS-Image. Inject just the knobs the sampler/scheduler
+    # Anima, Krea 2, MOSS-Image and Z-Image. Inject just the knobs the sampler/scheduler
     # consumes, so the metadata carries no unused keys.
-    if ENGINE.loaded_family in ("anima", "krea2", "moss_image"):
+    if ENGINE.loaded_family in ("anima", "krea2", "moss_image", "z_image"):
         if sampler in ("secant", "secant_anneal"):
             knobs["curvature"] = float(SETTINGS["curvature"])
         if sampler in ("secant_anneal", "euler_ancestral_anneal", "cogent", "cogent3", "cogent3_pump",
@@ -694,9 +697,12 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
     # Extensions may mutate the payload in place.
     EXTENSIONS.run_hook("pre_generate", payload=p)
 
-    if ENGINE.loaded_family in ("krea2", "moss_image"):
+    if ENGINE.loaded_family in ("krea2", "moss_image", "z_image"):
         # No cache support; keep it out of the metadata.
         p.teacache, p.deepcache, p.upscale_teacache = 0.0, 1, 0.0
+    if ENGINE.loaded_family == "z_image" and p.scheduler not in SCHEDULERS_ZIMAGE:
+        # The pipeline coerces an unknown scheduler to "zimage"; record that one.
+        p.scheduler = "zimage"
     if ENGINE.loaded_family == "moss_image":
         # The pipeline coerces an unknown scheduler to "moss"; record that one.
         if p.scheduler not in SCHEDULERS_MOSS:
@@ -901,7 +907,7 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
     axis_types = (p.x_type, p.y_type, p.z_type)
     if "Text Encoder" in axis_types and ENGINE.loaded_family not in ("anima", "krea2"):
         raise RuntimeError("The Text Encoder axis needs an Anima or Krea 2 model")
-    if ENGINE.loaded_family in ("krea2", "moss_image"):
+    if ENGINE.loaded_family in ("krea2", "moss_image", "z_image"):
         p.teacache = 0.0    # no TeaCache support; keep it out of the metadata
     base_kwargs = dict(
         prompt=p.prompt, negative_prompt=p.neg,
@@ -1312,7 +1318,7 @@ def _worker() -> None:
         # MOSS-Image's INT8 DiT stays resident, so only the 1024^2 peak matters.
         if (job.kind != "tag" and tagger_mod.TAGGER.loaded
                 and ENGINE.active_offload == "stream"
-                and ENGINE.loaded_family not in ("krea2", "moss_image")):
+                and ENGINE.loaded_family not in ("krea2", "moss_image", "z_image")):
             tagger_mod.TAGGER.unload()
         try:
             _drop_tag_loras_for(job)
@@ -1566,11 +1572,13 @@ def api_models():
         "samplers_flux": SAMPLERS_FLUX,
         "samplers_krea2": SAMPLERS_KREA2,
         "samplers_moss": SAMPLERS_MOSS,
+        "samplers_zimage": SAMPLERS_ZIMAGE,
         "schedulers_sd": SCHEDULERS_SD,
         "schedulers_anima": SCHEDULERS_ANIMA,
         "schedulers_flux": SCHEDULERS_FLUX,
         "schedulers_krea2": SCHEDULERS_KREA2,
         "schedulers_moss": SCHEDULERS_MOSS,
+        "schedulers_zimage": SCHEDULERS_ZIMAGE,
         "moss_uncond_skip": list(MOSS_UNCOND_SKIP),
         "sampler_groups": SAMPLER_GROUPS,
         "scheduler_groups": SCHEDULER_GROUPS,
@@ -1586,7 +1594,7 @@ def api_models():
         "int8_available": ENGINE.int8_attention_available(),
         # Gates the "fused glue" chip (Triton + CUDA; Anima only).
         "fused_glue_available": ENGINE.fused_glue_available(),
-        # Gates the "int8" chip (CUDA sm75+ and Triton; Anima, Krea 2 and MOSS-Image).
+        # Gates the "int8" chip (CUDA sm75+ and Triton; Anima, Krea 2, MOSS-Image and Z-Image).
         "int8_weights_available": ENGINE.int8_weights_available(),
         "ui_id": md.UI_ID,
         "diff_id": md.DIFF_ID,
@@ -1633,6 +1641,8 @@ def _validate_load(p: LoadPayload) -> Optional[str]:
     if p.model_type == "Krea2":
         if p.cuda_graphs or p.fused_glue:
             return "CUDA Graphs and fused glue: not supported for Krea 2 yet"
+        if p.variant == "base":
+            return "Krea 2 variant must be raw or turbo"
         for label, name, d in (("DiT", p.dit, DIFFUSION_DIR),
                                ("VAE", p.vae, VAE_DIR),
                                ("Text encoder", p.te, TE_DIR)):
@@ -1650,6 +1660,20 @@ def _validate_load(p: LoadPayload) -> Optional[str]:
                                ("Text encoder", p.te, TE_DIR)):
             if not name or name.startswith("("):
                 return "Select all three MOSS-Image files"
+            err = _missing(label, name, d)
+            if err:
+                return err
+        return None
+    if p.model_type == "ZImage":
+        if p.cuda_graphs or p.fused_glue:
+            return "CUDA Graphs and fused glue: not supported for Z-Image yet"
+        if p.variant == "raw":
+            return "Z-Image variant must be turbo or base"
+        for label, name, d in (("DiT", p.dit, DIFFUSION_DIR),
+                               ("VAE", p.vae, VAE_DIR),
+                               ("Text encoder", p.te, TE_DIR)):
+            if not name or name.startswith("("):
+                return "Select all three Z-Image files"
             err = _missing(label, name, d)
             if err:
                 return err
@@ -1677,13 +1701,15 @@ def _validate_load(p: LoadPayload) -> Optional[str]:
 
 
 def _do_load_impl(p: LoadPayload) -> str:
-    # Default offload: stream for FLUX, Krea 2 and MOSS-Image (their 5-26 GB DiTs
-    # plus a 9-20 GB text encoder OOM under full) and on low-VRAM cards, full
-    # otherwise.
+    # Default offload: stream for FLUX, Krea 2, MOSS-Image and Z-Image (their 5-26 GB
+    # DiTs plus a 8-20 GB text encoder OOM under full) and on low-VRAM cards, full
+    # otherwise. Z-Image's INT8 DiT fits resident, but "encoders" is no faster per step and
+    # its text encoder streams without prefetch (+30-45 s per new prompt on a 2060), while
+    # "stream" keeps every block resident that fits.
     _to_bundle = {"none": False, "full": True,
                   "encoders": "encoders", "stream": "stream"}
     if p.offload is None:
-        stream = p.model_type in ("FLUX", "Krea2", "MOSS") or ENGINE.recommended_offload() == "stream"
+        stream = p.model_type in ("FLUX", "Krea2", "MOSS", "ZImage") or ENGINE.recommended_offload() == "stream"
         offload = "stream" if stream else True
     else:
         offload = _to_bundle.get(p.offload, True)
@@ -1725,6 +1751,19 @@ def _do_load_impl(p: LoadPayload) -> str:
                 return "Select all three MOSS-Image files"
         return ENGINE.load_moss(
             p.dit, p.vae, p.te,
+            offload=offload, vae_tile=vae_tile_pref,
+            compile=p.compile,
+            fp16_accumulation=p.fp16_accumulation,
+            attention=p.attention,
+            vae_fp16=p.vae_fp16,
+            int8=p.int8,
+        )
+    if p.model_type == "ZImage":
+        for name in (p.dit, p.vae, p.te):
+            if not name or name.startswith("("):
+                return "Select all three Z-Image files"
+        return ENGINE.load_zimage(
+            p.dit, p.vae, p.te, variant=p.variant,
             offload=offload, vae_tile=vae_tile_pref,
             compile=p.compile,
             fp16_accumulation=p.fp16_accumulation,
@@ -1829,7 +1868,7 @@ async def api_generate(p: GeneratePayload):
 
 @app.post("/api/upscale")
 async def api_upscale(p: UpscalePayload):
-    if ENGINE.loaded_family == "krea2":
+    if ENGINE.loaded_family in ("krea2", "z_image"):
         p.teacache = 0.0
     err = _teacache_cuda_graphs_conflict(p.teacache)
     if err:
@@ -1890,7 +1929,7 @@ async def api_upscale(p: UpscalePayload):
 
 @app.post("/api/detail")
 async def api_detail(p: DetailPayload):
-    if ENGINE.loaded_family == "krea2":
+    if ENGINE.loaded_family in ("krea2", "z_image"):
         p.teacache = 0.0
     err = _teacache_cuda_graphs_conflict(p.teacache)
     if err:

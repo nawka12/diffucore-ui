@@ -202,7 +202,8 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     fields.append(f"Model: {model}")
     variant = getattr(engine, "loaded_variant", None)
     if variant:
-        fields.append(f"Krea2 variant: {variant}")
+        label = "Z Image" if getattr(engine, "loaded_family", None) == "z_image" else "Krea2"
+        fields.append(f"{label} variant: {variant}")
     if "uncond_skip_layers" in gen_kwargs:
         fields.append(f"Uncond skip layers: {_quote(_skip_layers_text(gen_kwargs['uncond_skip_layers']))}")
     if "slg_layers" in gen_kwargs:
@@ -309,7 +310,8 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
     extra: dict = {"date": date.today().isoformat(), "diffucore_ui": UI_ID, "diffucore": DIFF_ID}
     variant = getattr(engine, "loaded_variant", None)
     if variant:
-        extra["krea2_variant"] = variant
+        key = "z_image_variant" if getattr(engine, "loaded_family", None) == "z_image" else "krea2_variant"
+        extra[key] = variant
     if "uncond_skip_layers" in gen_kwargs:
         extra["uncond_skip_layers"] = _skip_layers_text(gen_kwargs["uncond_skip_layers"])
     if "slg_layers" in gen_kwargs:

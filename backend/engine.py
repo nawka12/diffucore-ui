@@ -69,6 +69,7 @@ from diffucore import (
     load_krea2_checkpoint,
     load_moss_checkpoint,
     load_prompt_enhancer,
+    load_zimage_checkpoint,
     ImageToImage,
     Inpaint,
     TextToImage,
@@ -84,9 +85,10 @@ from utils import checkpoint_path, lora_path, diffusion_model_path, vae_path, te
 
 LORA_PROMPT_RE = re.compile(r"<lora:([^:]+):([^>]+)>")
 
-# Flow families (Anima, FLUX, Krea 2, MOSS-Image) drive everything except "ddpm" (VP/VE-only).
+# Flow families (Anima, FLUX, Krea 2, MOSS-Image, Z-Image) drive everything except "ddpm" (VP/VE-only).
 # Keep these lists in sync with the pipelines' _ANIMA_SAMPLERS / _FLUX_SAMPLERS /
-# _KREA2_SAMPLERS and _KREA2_SCHEDULERS, _MOSS_SAMPLERS and _MOSS_SCHEDULERS.
+# _KREA2_SAMPLERS and _KREA2_SCHEDULERS, _MOSS_SAMPLERS and _MOSS_SCHEDULERS,
+# _ZIMAGE_SAMPLERS and _ZIMAGE_SCHEDULERS.
 # GUIDE.md describes each sampler and scheduler.
 SAMPLERS_SD = [
     "euler",
@@ -142,6 +144,8 @@ SAMPLERS_FLUX = [s for s in SAMPLERS_FLOW if s not in _SAMPLERS_4D_ONLY]
 SAMPLERS_KREA2 = SAMPLERS_ANIMA
 # MOSS-Image too: a 4-D [B, 128, H/16, W/16] latent.
 SAMPLERS_MOSS = SAMPLERS_ANIMA
+# Z-Image samples a plain 4-D 16-ch latent.
+SAMPLERS_ZIMAGE = SAMPLERS_ANIMA
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
                  "align_your_steps", "sgm_uniform", "simple", "normal",
@@ -167,6 +171,12 @@ SCHEDULERS_MOSS = ["moss", "flow", "flow_dyn", "sgm_uniform", "simple", "normal"
                    "infinity", "infinity_htds", "kl_optimal", "linear_quadratic",
                    "smoothstep", "beta", "beta_mix", "pump_dual", "pump_taper",
                    "secant_tilt", "relay_tilt"]
+# "zimage" is the variant's own shift (Turbo 3, Base 6, ignores the shift slider);
+# "flow_dyn" derives its own shift, the rest take the slider.
+SCHEDULERS_ZIMAGE = ["zimage", "flow", "flow_dyn", "sgm_uniform", "simple", "normal",
+                     "infinity", "infinity_htds", "kl_optimal", "linear_quadratic",
+                     "smoothstep", "beta", "beta_mix", "pump_dual", "pump_taper",
+                     "secant_tilt", "relay_tilt"]
 
 # Sections of the UI's sampler / scheduler dropdowns; a test keeps every name above in one.
 SAMPLER_GROUPS = {
@@ -183,7 +193,7 @@ SAMPLER_GROUPS = {
                   "secant_anneal", "euler_ancestral_anneal"],
 }
 SCHEDULER_GROUPS = {
-    "Model default": ["flow", "flow_dyn", "flux", "krea2", "moss", "oss"],
+    "Model default": ["flow", "flow_dyn", "flux", "krea2", "moss", "zimage", "oss"],
     "Classic": ["karras", "exponential", "polyexponential", "normal", "simple",
                 "sgm_uniform", "ddim_uniform", "kl_optimal", "align_your_steps",
                 "linear_quadratic", "beta"],
@@ -265,6 +275,7 @@ MODEL_FAMILY_FLUX2 = "flux2"
 _FLUX_FAMILIES = (MODEL_FAMILY_FLUX1, MODEL_FAMILY_FLUX2)
 MODEL_FAMILY_KREA2 = "krea2"
 MODEL_FAMILY_MOSS = "moss_image"
+MODEL_FAMILY_ZIMAGE = "z_image"
 
 # Latent→RGB preview factors from ComfyUI's comfy/latent_formats.py, as
 # (factors[C][3], bias[3] | None). Anima uses the Wan2.1 latent format.
@@ -314,6 +325,18 @@ _PREVIEW_RGB[MODEL_FAMILY_MOSS] = (
      [-0.0076, 0.0003, -0.0043], [-0.0111, -0.0460, -0.0614]],
     [-0.0329, -0.0718, -0.0851],
 )
+# Z-Image samples in the FLUX.1 VAE's scaled 16-ch space (ComfyUI's Flux format).
+_PREVIEW_RGB[MODEL_FAMILY_ZIMAGE] = (
+    [[-0.0346, 0.0244, 0.0681], [0.0034, 0.0210, 0.0687],
+     [0.0275, -0.0668, -0.0433], [-0.0174, 0.0160, 0.0617],
+     [0.0859, 0.0721, 0.0329], [0.0004, 0.0383, 0.0115],
+     [0.0405, 0.0861, 0.0915], [-0.0236, -0.0185, -0.0259],
+     [-0.0245, 0.0250, 0.1180], [0.1008, 0.0755, -0.0421],
+     [-0.0515, 0.0201, 0.0011], [0.0428, -0.0012, -0.0036],
+     [0.0817, 0.0765, 0.0749], [-0.1264, -0.0522, -0.1103],
+     [-0.0280, -0.0881, -0.0499], [-0.1262, -0.0982, -0.0778]],
+    [-0.0329, -0.0718, -0.0851],
+)
 
 
 def _bundle_to(bundle, device) -> None:
@@ -336,7 +359,7 @@ class LoadedModel:
     vae_name: Optional[str] = None
     te_name: Optional[str] = None
     clip_name: Optional[str] = None
-    variant: Optional[str] = None       # Krea 2: "raw" | "turbo"
+    variant: Optional[str] = None       # Krea 2: "raw" | "turbo"; Z-Image: "turbo" | "base"
     # Staging settings it was loaded under (offload, vae_tile, …), so an LRU
     # restore can check the placement still matches.
     stage_settings: Optional[tuple] = None
@@ -479,6 +502,8 @@ class Engine:
             return SCHEDULERS_KREA2
         if self._loaded and self._loaded.family == MODEL_FAMILY_MOSS:
             return SCHEDULERS_MOSS
+        if self._loaded and self._loaded.family == MODEL_FAMILY_ZIMAGE:
+            return SCHEDULERS_ZIMAGE
         return SCHEDULERS_SD
 
     def status_text(self) -> str:
@@ -701,7 +726,7 @@ class Engine:
         if te_name is not None and lm.family not in (MODEL_FAMILY_ANIMA, MODEL_FAMILY_KREA2):
             raise ValueError("The Text Encoder axis needs an Anima or Krea 2 model")
         if name is None:
-            # Split-file labels are "Anima(<dit>)" / "Krea2(<dit>)" / "MOSS(<dit>)".
+            # Split-file labels are "Anima(<dit>)" / "Krea2(<dit>)" / "MOSS(<dit>)" / "ZImage(<dit>)".
             name = lm.name.split("(", 1)[1][:-1] if "(" in lm.name else lm.name
         if lm and lm.family == MODEL_FAMILY_ANIMA:
             return self.load_anima(
@@ -727,6 +752,17 @@ class Engine:
             )
         if lm and lm.family == MODEL_FAMILY_MOSS:
             return self.load_moss(
+                name, lm.vae_name, lm.te_name,
+                offload=self._offload, vae_tile=self._vae_tile,
+                compile=self._compile,
+                fp16_accumulation=self._fp16_accumulation,
+                attention=self._attention,
+                vae_fp16=self._vae_fp16,
+                int8=self._int8,
+            )
+        if lm and lm.family == MODEL_FAMILY_ZIMAGE:
+            # The variant is re-read from each DiT's filename.
+            return self.load_zimage(
                 name, lm.vae_name, lm.te_name,
                 offload=self._offload, vae_tile=self._vae_tile,
                 compile=self._compile,
@@ -1075,6 +1111,82 @@ class Engine:
         return (f"Loaded MOSS-Image in {elapsed:.1f}s{flags}{note}  "
                 f"(DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})")
 
+    def load_zimage(
+        self, dit_name: str, vae_name: str, te_name: str,
+        variant: str | None = None,
+        offload: bool | str = True, vae_tile: bool = True,
+        compile: bool = False,
+        fp16_accumulation: bool = False, attention: str = "sdpa",
+        vae_fp16: bool = False, int8: bool = False,
+    ) -> str:
+        """Load a split-file Z-Image model. ``variant`` is "turbo" | "base"; None
+        infers it from the DiT filename."""
+        label = f"ZImage({dit_name})"
+        offload, forced_stream = self._krea2_fit_offload(
+            diffusion_model_path(dit_name), offload, int8, tag="Z-Image")
+        if compile and offload is True:
+            offload = "encoders"
+        elif compile and offload == "stream":
+            compile = False
+            log.warning("compile disabled: incompatible with offload='stream' "
+                         "(backbone is block-streamed to fit VRAM)")
+        if (self._loaded and self._loaded.name == label
+                and (variant is None or self._loaded.variant == variant)
+                and self._components_match(vae_name, te_name)
+                and self._settings_match(offload, vae_tile, compile,
+                                         False, False, False,
+                                         fp16_accumulation, attention, vae_fp16, False, int8)):
+            return f"Model already loaded: {label}"
+
+        self._unload()
+        self._offload = offload
+        self._vae_tile = vae_tile
+        self._compile = compile
+        self._cuda_graphs = False
+        self._channels_last = False
+        self._tf32 = False
+        self._fp16_accumulation = fp16_accumulation
+        self._attention = attention
+        self._vae_fp16 = vae_fp16
+        self._fused_glue = False
+        self._int8 = int8
+
+        dit_path = diffusion_model_path(dit_name)
+        vae_file = vae_path(vae_name)
+        te_file = te_path(te_name)
+        for p in (dit_path, vae_file, te_file):
+            if not p.exists():
+                raise FileNotFoundError(f"Z-Image file not found: {p}")
+
+        policy = DevicePolicy(
+            device=self.device, compute_dtype=self.dtype,
+            vae_dtype=self._vae_dtype(vae_fp16),
+            offload=offload, vae_tile=vae_tile,
+            compile=compile,
+            fp16_accumulation=fp16_accumulation, attention=attention,
+            int8=int8,
+            stream_prefetch=(offload == "stream"),
+        )
+
+        log.info("[load] Z-Image: DiT=%s VAE=%s TE=%s variant=%s offload=%s",
+                 dit_name, vae_name, te_name, variant or "auto", offload)
+        t0 = time.time()
+        model = load_zimage_checkpoint(
+            str(dit_path), str(te_file), str(vae_file),
+            variant=variant, policy=policy,
+        )
+        elapsed = time.time() - t0
+
+        self._loaded = LoadedModel(
+            name=label, family=MODEL_FAMILY_ZIMAGE, model=model, native_res=1024,
+            vae_name=vae_name, te_name=te_name, variant=model.spec.variant,
+        )
+        self._attach_cond_cache()
+        flags = self._perf_flag_summary()
+        note = "  [offload switched to stream: the DiT doesn't fit in VRAM]" if forced_stream else ""
+        return (f"Loaded Z-Image {model.spec.variant} in {elapsed:.1f}s{flags}{note}  "
+                f"(DiT: {dit_name}, VAE: {vae_name}, TE: {te_name})")
+
     def _krea2_fit_offload(self, dit_path: Path, offload: bool | str, int8: bool,
                            tag: str = "Krea2") -> tuple[bool | str, bool]:
         """``(offload, forced)``: "stream" when the requested mode would keep a
@@ -1182,11 +1294,12 @@ class Engine:
     def _cacheable_for_stash(self) -> bool:
         """Only fully resident, non-FLUX models can be parked: offloaded models
         sit behind a staging proxy that ``.to()`` would break, CUDA graphs keep
-        the old weight addresses, and FLUX / Krea 2 / MOSS-Image are too large for a
-        second copy."""
+        the old weight addresses, and FLUX / Krea 2 / MOSS-Image / Z-Image are too
+        large for a second copy."""
         if self._loaded is None or self._offload is not False or self._cuda_graphs:
             return False
-        if self._loaded.family in (*_FLUX_FAMILIES, MODEL_FAMILY_KREA2, MODEL_FAMILY_MOSS):
+        if self._loaded.family in (*_FLUX_FAMILIES, MODEL_FAMILY_KREA2, MODEL_FAMILY_MOSS,
+                                   MODEL_FAMILY_ZIMAGE):
             return False
         return True
 
@@ -1269,7 +1382,8 @@ class Engine:
 
     @staticmethod
     def _native_res(family: str) -> int:
-        if family in (MODEL_FAMILY_SDXL, MODEL_FAMILY_ANIMA, MODEL_FAMILY_KREA2, MODEL_FAMILY_MOSS, *_FLUX_FAMILIES):
+        if family in (MODEL_FAMILY_SDXL, MODEL_FAMILY_ANIMA, MODEL_FAMILY_KREA2, MODEL_FAMILY_MOSS,
+                      MODEL_FAMILY_ZIMAGE, *_FLUX_FAMILIES):
             return 1024
         return 512
 
@@ -1513,13 +1627,14 @@ class Engine:
     # ── Anima resolution snapping ───────────────────────────────────
     # Anima was trained on the SDXL ÷64 grid; ÷16-only sizes (848×1200 → 53×75
     # tokens) misregister in img2img/inpaint. Generate on the ÷64 grid and map
-    # the result back. MOSS-Image only needs its 16 px token grid (the UI rounds
-    # loaded images to ÷8).
+    # the result back. MOSS-Image and Z-Image only need their 16 px token grid (the
+    # UI rounds loaded images to ÷8).
     def _anima_gen_size(self, width, height) -> Tuple[int | None, int | None, bool]:
         """Generation size to run at, plus whether it was snapped. Snaps up, so
         mapping back is a downscale."""
         family = self._loaded.family if self._loaded else None
-        if family in (MODEL_FAMILY_ANIMA, MODEL_FAMILY_MOSS) and width is not None and height is not None:
+        if (family in (MODEL_FAMILY_ANIMA, MODEL_FAMILY_MOSS, MODEL_FAMILY_ZIMAGE)
+                and width is not None and height is not None):
             if family == MODEL_FAMILY_ANIMA:
                 snap = lambda n: max(512, ((n + 63) // 64) * 64)
             else:
@@ -1611,7 +1726,8 @@ class Engine:
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
         )
-        if self._loaded.family in (MODEL_FAMILY_ANIMA, MODEL_FAMILY_KREA2, MODEL_FAMILY_MOSS, *_FLUX_FAMILIES):
+        if self._loaded.family in (MODEL_FAMILY_ANIMA, MODEL_FAMILY_KREA2, MODEL_FAMILY_MOSS,
+                                   MODEL_FAMILY_ZIMAGE, *_FLUX_FAMILIES):
             kwargs["shift"] = shift
         if self._loaded.family == MODEL_FAMILY_ANIMA and scheduler == "oss":
             kwargs["oss_sigmas"] = self._load_oss_sigmas(steps, width, height, shift)

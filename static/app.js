@@ -59,20 +59,22 @@ const ARCHES = {
   anima: { family: 'Anima',   label: 'Anima' },
   krea2: { family: 'Krea2',   label: 'Krea 2' },
   moss_image: { family: 'MOSS', label: 'MOSS-Image' },
+  z_image: { family: 'ZImage', label: 'Z-Image' },
   flux1: { family: 'FLUX',    label: 'FLUX.1' },
   flux2: { family: 'FLUX',    label: 'FLUX.2' },
 };
-const FAMILY_LABELS = { 'SD/SDXL': 'SD / SDXL', Anima: 'Anima', FLUX: 'FLUX', Krea2: 'Krea 2', MOSS: 'MOSS-Image' };
+const FAMILY_LABELS = { 'SD/SDXL': 'SD / SDXL', Anima: 'Anima', FLUX: 'FLUX', Krea2: 'Krea 2', MOSS: 'MOSS-Image', ZImage: 'Z-Image' };
 // Families each models/ folder can load: checkpoints/ holds SD/SDXL and
 // all-in-one FLUX, diffusion-models/ the DiTs.
-const SOURCES = { ckpt: ['SD/SDXL', 'FLUX'], dit: ['Anima', 'Krea2', 'MOSS', 'FLUX'] };
+const SOURCES = { ckpt: ['SD/SDXL', 'FLUX'], dit: ['Anima', 'Krea2', 'MOSS', 'ZImage', 'FLUX'] };
 // VAE / text encoder kinds each architecture loads, best first.
 const COMPANIONS = {
   anima: { vae: ['qwen_image', 'qwen2d'], te: ['qwen3', 'qwen35'] },
   krea2: { vae: ['qwen_image', 'qwen2d'], te: ['qwen3vl'] },
   moss_image: { vae: ['flux2_small', 'flux2'], te: ['qwen35_9b'] },
+  z_image: { vae: ['flux1'], te: ['qwen3_4b'] },
   flux1: { vae: ['flux1'], te: ['t5'], clip: ['clip_l'] },
-  flux2: { vae: ['flux2'], te: ['flux2_lm'], clip: [] },
+  flux2: { vae: ['flux2'], te: ['flux2_lm', 'qwen3_4b'], clip: [] },
 };
 
 // ── searchable dropdown ───────────────────────────────────────────
@@ -206,6 +208,8 @@ document.addEventListener('alpine:init', () => {
     krea2Applied: false,
     krea2Variant: 'raw',   // 'raw' | 'turbo'; follows the DiT filename until overridden
     mossApplied: false,
+    familyMemory: {},
+    zimageVariant: 'turbo',   // 'turbo' | 'base'; follows the DiT filename until overridden
     mossUncondSkip: [22],  // the reference default, replaced by the backend's
     enhancing: false,
     // The prompt before the last Enhance and what it became; Undo shows while
@@ -220,11 +224,13 @@ document.addEventListener('alpine:init', () => {
     samplersFlux: [],
     samplersKrea2: [],
     samplersMoss: [],
+    samplersZimage: [],
     schedulersSd: ['karras'],
     schedulersAnima: ['flow'],
     schedulersFlux: ['flux'],
     schedulersKrea2: ['krea2'],
     schedulersMoss: ['moss'],
+    schedulersZimage: ['zimage'],
     samplerGroups: {},
     schedulerGroups: {},
     paramTypes: ['None'],
@@ -407,6 +413,7 @@ document.addEventListener('alpine:init', () => {
       if (this.modelType === 'FLUX') return this.samplersFlux;
       if (this.modelType === 'Krea2') return this.samplersKrea2;
       if (this.modelType === 'MOSS') return this.samplersMoss;
+      if (this.modelType === 'ZImage') return this.samplersZimage;
       return this.samplersSd;
     },
     get schedulers() {
@@ -414,6 +421,7 @@ document.addEventListener('alpine:init', () => {
       if (this.modelType === 'FLUX') return this.schedulersFlux;
       if (this.modelType === 'Krea2') return this.schedulersKrea2;
       if (this.modelType === 'MOSS') return this.schedulersMoss;
+      if (this.modelType === 'ZImage') return this.schedulersZimage;
       return this.schedulersSd;
     },
     get samplerItems() { return groupItems(this.samplers, this.samplerGroups); },
@@ -458,11 +466,11 @@ document.addEventListener('alpine:init', () => {
     familyLabel(f) { return FAMILY_LABELS[f] || f; },
     get needsSplitFiles() {
       return this.modelType === 'Anima' || this.modelType === 'Krea2' || this.modelType === 'MOSS'
-        || (this.modelType === 'FLUX' && !this.fluxCheckpoint);
+        || this.modelType === 'ZImage' || (this.modelType === 'FLUX' && !this.fluxCheckpoint);
     },
     // The architecture whose VAE / text encoder kinds the rack suggests.
     get companionArch() {
-      return this.modelArch || { Anima: 'anima', Krea2: 'krea2', MOSS: 'moss_image' }[this.modelType] || null;
+      return this.modelArch || { Anima: 'anima', Krea2: 'krea2', MOSS: 'moss_image', ZImage: 'z_image' }[this.modelType] || null;
     },
     // A companion dropdown's files: those of a kind this model loads first.
     companionGroups(slot) {
@@ -475,14 +483,17 @@ document.addEventListener('alpine:init', () => {
         { label: 'Other files', files: files.filter(f => !want.includes(kinds[f])) },
       ].filter(g => g.files.length);
     },
-    // Shift is flow-only, and honoured by Anima and MOSS-Image everywhere but
-    // flow_dyn (and MOSS's own "moss" schedule) and by FLUX and Krea 2 only on plain flow.
+    // Shift is flow-only, and honoured by Anima, MOSS-Image and Z-Image everywhere but
+    // flow_dyn (and their own "moss" / "zimage" schedules) and by FLUX and Krea 2 only on plain flow.
     get isFlowModel() {
       return this.modelType === 'Anima' || this.modelType === 'FLUX' || this.modelType === 'Krea2'
-        || this.modelType === 'MOSS';
+        || this.modelType === 'MOSS' || this.modelType === 'ZImage';
     },
     get isKrea2() { return this.modelType === 'Krea2'; },
     get isMoss() { return this.modelType === 'MOSS'; },
+    get isZImage() { return this.modelType === 'ZImage'; },
+    // Z-Image runs no negative-prompt pass at CFG 1 (Turbo's setting).
+    get negativeUsed() { return !this.isZImage || this.form.cfg > 1; },
     get slgAvailable() { return this.isMoss || this.modelType === 'Anima'; },
     // Qwen3 / Qwen3-VL text-encoder files the Anima Enhance can run (no Qwen3.5).
     get enhancerModels() {
@@ -494,6 +505,7 @@ document.addEventListener('alpine:init', () => {
     get shiftHonored() {
       if (this.modelType === 'Anima') return this.form.scheduler !== 'flow_dyn';
       if (this.modelType === 'MOSS') return !['moss', 'flow_dyn'].includes(this.form.scheduler);
+      if (this.modelType === 'ZImage') return !['zimage', 'flow_dyn'].includes(this.form.scheduler);
       if (this.modelType === 'FLUX' || this.modelType === 'Krea2') return this.form.scheduler === 'flow';
       return false;
     },
@@ -509,10 +521,10 @@ document.addEventListener('alpine:init', () => {
     axisIsList(axis) { return ['Sampler', 'Scheduler', 'Checkpoint', 'Text Encoder'].includes(axis.type); },
     axisOptions(axis) {
       if (axis.type === 'Scheduler') return this.schedulers;
-      // Anima's, Krea 2's and MOSS-Image's "checkpoint" is the DiT (VAE + TE stay
+      // Anima's, Krea 2's, MOSS-Image's and Z-Image's "checkpoint" is the DiT (VAE + TE stay
       // fixed). Files detected as another family are left out.
       if (axis.type === 'Checkpoint') {
-        const src = ['Anima', 'Krea2', 'MOSS'].includes(this.modelType) ? 'dit' : 'ckpt';
+        const src = ['Anima', 'Krea2', 'MOSS', 'ZImage'].includes(this.modelType) ? 'dit' : 'ckpt';
         return (src === 'dit' ? this.dits : this.checkpoints).filter(n => {
           const a = this.fileArch(src + ':' + n);
           return !a || ARCHES[a].family === this.modelType;
@@ -808,6 +820,7 @@ document.addEventListener('alpine:init', () => {
         this.mossApplied = true;
         this.mode = 't2i';
       }
+      if (f.model_type === 'ZImage') this.zimageVariant = f.variant || this.inferZimageVariant(f.dit);
       if (f.offload) this.perf.offload = f.offload;
       this.perf.compile = !!f.compile;
       this.perf.cudaGraphs = !!f.cuda_graphs;
@@ -834,11 +847,13 @@ document.addEventListener('alpine:init', () => {
       this.samplersFlux = m.samplers_flux;
       this.samplersKrea2 = m.samplers_krea2;
       this.samplersMoss = m.samplers_moss;
+      this.samplersZimage = m.samplers_zimage;
       this.schedulersSd = m.schedulers_sd;
       this.schedulersAnima = m.schedulers_anima;
       this.schedulersFlux = m.schedulers_flux;
       this.schedulersKrea2 = m.schedulers_krea2;
       this.schedulersMoss = m.schedulers_moss;
+      this.schedulersZimage = m.schedulers_zimage;
       this.mossUncondSkip = m.moss_uncond_skip || [22];
       this.samplerGroups = m.sampler_groups || {};
       this.schedulerGroups = m.scheduler_groups || {};
@@ -906,6 +921,7 @@ document.addEventListener('alpine:init', () => {
       }
       if (family !== this.modelType) this.setModelType(family);
       if (family === 'Krea2') this.onKrea2DitChange();
+      if (family === 'ZImage') this.onZimageDitChange();
       this.loadFormDirty = true;
       this.pickCompanions();
     },
@@ -928,20 +944,40 @@ document.addEventListener('alpine:init', () => {
       if (want.clip) this.clip = want.clip.length ? pick(this.clip, this.tes, this.fileKinds.tes, want.clip) : '';
     },
 
+    // The Generate knobs and companions each family was last left with, so a
+    // round trip (Anima -> Z-Image -> Anima) returns to them.
+    rememberFamily(type) {
+      const { sampler, scheduler, steps, cfg, shift } = this.form;
+      this.familyMemory[type] = { sampler, scheduler, steps, cfg, shift, vae: this.vae, te: this.te };
+    },
+
+    recallFamily(type) {
+      const m = this.familyMemory[type];
+      if (!m) return false;
+      const { vae, te, ...knobs } = m;
+      Object.assign(this.form, knobs);
+      if (this.vaes.includes(vae)) this.vae = vae;
+      if (this.tes.includes(te)) this.te = te;
+      return true;
+    },
+
     setModelType(type) {
+      if (type !== this.modelType) this.rememberFamily(this.modelType);
       this.modelType = type;
       this.loadFormDirty = true;
+      const recalled = this.recallFamily(type);
       this.syncSampler();
       this.syncScheduler();
-      // FLUX, Krea 2 and MOSS-Image always stream their DiT; the others take the
+      // FLUX, Krea 2, MOSS-Image and Z-Image always stream their DiT; the others take the
       // backend's VRAM-based default.
-      this.perf.offload = (type === 'FLUX' || type === 'Krea2' || type === 'MOSS') ? 'stream' : this.recommendedOffload;
+      this.perf.offload = ['FLUX', 'Krea2', 'MOSS', 'ZImage'].includes(type) ? 'stream' : this.recommendedOffload;
       // channels_last only helps conv backbones (SD/SDXL UNet + VAE).
       this.perf.channelsLast = (type === 'SD/SDXL');
       // Block numbers don't carry between families: swap the other's default,
       // keep anything typed.
       if (type === 'Anima' && this.form.slgLayers === '24') this.form.slgLayers = '14';
       if (type === 'MOSS' && this.form.slgLayers === '14') this.form.slgLayers = '24';
+      if (recalled) return;
       if (type === 'Anima' && !this.animaApplied) {
         this.animaApplied = true;
         this.form.sampler = 'er_sde';
@@ -970,6 +1006,12 @@ document.addEventListener('alpine:init', () => {
           this.mossApplied = true;
           this.applyMossDefaults();
         }
+      }
+      // No once-only flag: a restored load form doesn't reset the form, so the first
+      // pick of Z-Image from another family would otherwise keep that family's knobs.
+      if (type === 'ZImage') {
+        this.zimageVariant = this.inferZimageVariant(this.dit);
+        this.applyZimageDefaults();
       }
     },
 
@@ -1025,6 +1067,34 @@ document.addEventListener('alpine:init', () => {
       this.setKrea2Variant(this.inferKrea2Variant(this.dit));
     },
 
+    inferZimageVariant(dit) {
+      return /turbo/i.test(dit || '') ? 'turbo' : 'base';
+    },
+
+    // Turbo is distilled: 8 steps, no CFG pass, shift 3. Base: 50 steps at CFG 5
+    // (the reference's guidance 4 + 1), shift 6, with a negative prompt.
+    applyZimageDefaults() {
+      const turbo = this.zimageVariant === 'turbo';
+      this.form.sampler = 'euler';
+      this.form.scheduler = 'zimage';
+      this.form.steps = turbo ? 8 : 50;
+      this.form.cfg = turbo ? 1.0 : 5.0;
+      this.form.shift = turbo ? 3.0 : 6.0;
+      this.syncSampler();
+      this.syncScheduler();
+    },
+
+    setZimageVariant(v) {
+      this.loadFormDirty = true;
+      if (v === this.zimageVariant) return;
+      this.zimageVariant = v;
+      this.applyZimageDefaults();
+    },
+
+    onZimageDitChange() {
+      this.setZimageVariant(this.inferZimageVariant(this.dit));
+    },
+
     syncSampler() {
       const list = this.samplers;
       if (!list.includes(this.form.sampler)) this.form.sampler = list[0];
@@ -1045,7 +1115,7 @@ document.addEventListener('alpine:init', () => {
           dit: this.dit, vae: this.vae, te: this.te, clip: this.clip,
           offload: this.perf.offload,
           compile: this.perf.compile,
-          cuda_graphs: this.perf.cudaGraphs && this.modelType !== 'Krea2' && this.modelType !== 'MOSS',
+          cuda_graphs: this.perf.cudaGraphs && !['Krea2', 'MOSS', 'ZImage'].includes(this.modelType),
           channels_last: this.perf.channelsLast,
           tf32: this.perf.tf32,
           fp16_accumulation: this.perf.fp16Acc,
@@ -1054,8 +1124,9 @@ document.addEventListener('alpine:init', () => {
           attention: this.modelType !== 'SD/SDXL' && this.perf.int8Attn ? 'int8_turing'
             : this.perf.fa2Attn ? 'fa2_turing' : 'sdpa',
           fused_glue: this.perf.fusedGlue && this.modelType === 'Anima',
-          int8: this.perf.int8 && ['Anima', 'Krea2', 'MOSS'].includes(this.modelType),
-          variant: this.modelType === 'Krea2' ? this.krea2Variant : null,
+          int8: this.perf.int8 && ['Anima', 'Krea2', 'MOSS', 'ZImage'].includes(this.modelType),
+          variant: this.modelType === 'Krea2' ? this.krea2Variant
+            : this.modelType === 'ZImage' ? this.zimageVariant : null,
         };
         // Queued like any job; the server broadcasts the new state everywhere.
         const ev = await this.submitJob('/api/load', body);
