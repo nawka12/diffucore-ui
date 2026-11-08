@@ -249,7 +249,7 @@ document.addEventListener('alpine:init', () => {
       teacacheOn: false, teacache: 0.15, teacacheCalibrated: true, teacacheForecast: 'hermite',
       teacacheRule: 'drift', teacacheFloor: 0,
       deepcacheOn: false, deepcache: 2,
-      uncondSkip: '22',   // MOSS-Image only: blocks the negative-prompt pass skips
+      uncondSkip: '22',   // MOSS-Image and Anima: blocks the negative-prompt pass skips
       slgScale: 0, slgLayers: '24', slgStart: 0, slgStop: 1,   // MOSS-Image and Anima: Skip Layer Guidance
     },
     // >1 submits N jobs: seed+i with a pinned seed, a fresh random with -1.
@@ -515,6 +515,15 @@ document.addEventListener('alpine:init', () => {
     get sweeping() {
       return this.mode === 't2i' && this.xyzSweep;
     },
+    get axisTypes() {
+      return this.slgAvailable ? this.paramTypes : this.paramTypes.filter(t => !t.startsWith('SLG '));
+    },
+    sweepsAxis(type) {
+      return this.sweeping && Object.values(this.axes).some(a => a.type === type);
+    },
+    axisPlaceholder(axis) {
+      return { 'SLG Scale': '0, 1.5', 'SLG Blocks': '10, 14, 14+24' }[axis.type] || 'comma separated';
+    },
 
     // Sampler / Scheduler / Checkpoint / Text Encoder axes are multi-selects;
     // numeric axes keep a free-text comma list.
@@ -604,6 +613,14 @@ document.addEventListener('alpine:init', () => {
       await this.refreshModels();
       await this.loadSettings();
       this.applyGenDefaults();
+      this.fitUncondSkip();
+      // A family without SLG has no SLG axes.
+      this.$watch('modelType', () => {
+        if (this.slgAvailable) return;
+        for (const a of Object.values(this.axes)) {
+          if (a.type.startsWith('SLG ')) { a.type = 'None'; this.clearAxisValues(a); }
+        }
+      });
       this._initGenToggles();
       this._initTitle();
       this.connectEvents();
@@ -947,8 +964,8 @@ document.addEventListener('alpine:init', () => {
     // The Generate knobs and companions each family was last left with, so a
     // round trip (Anima -> Z-Image -> Anima) returns to them.
     rememberFamily(type) {
-      const { sampler, scheduler, steps, cfg, shift } = this.form;
-      this.familyMemory[type] = { sampler, scheduler, steps, cfg, shift, vae: this.vae, te: this.te };
+      const { sampler, scheduler, steps, cfg, shift, uncondSkip } = this.form;
+      this.familyMemory[type] = { sampler, scheduler, steps, cfg, shift, uncondSkip, vae: this.vae, te: this.te };
     },
 
     recallFamily(type) {
@@ -977,6 +994,7 @@ document.addEventListener('alpine:init', () => {
       // keep anything typed.
       if (type === 'Anima' && this.form.slgLayers === '24') this.form.slgLayers = '14';
       if (type === 'MOSS' && this.form.slgLayers === '14') this.form.slgLayers = '24';
+      this.fitUncondSkip();
       if (recalled) return;
       if (type === 'Anima' && !this.animaApplied) {
         this.animaApplied = true;
@@ -1030,6 +1048,11 @@ document.addEventListener('alpine:init', () => {
       this.form.slgStop = 1;
       this.syncSampler();
       this.syncScheduler();
+    },
+
+    // MOSS-Image's reference uncond skip must not carry over to Anima, where it is opt-in.
+    fitUncondSkip() {
+      if (this.modelType === 'Anima' && this.form.uncondSkip === this.mossUncondSkip.join(', ')) this.form.uncondSkip = '';
     },
 
     // A skip-blocks field as block indices ('' = none), or null when it isn't a
@@ -1476,23 +1499,35 @@ document.addEventListener('alpine:init', () => {
       return this.sweeping ? this.generateXyz() : this.generate();
     },
 
-    async generate() {
-      // A load in flight is fine: the job queues behind it.
-      if (!this.modelLoaded && !this.loadingModel) { this.flash('Load a model first'); return; }
+    // The skip-layer payload fields Generate and X/Y/Z share, or null after
+    // flashing what is wrong.
+    skipFields() {
       let uncondSkip = null;
       let slgLayers = [];
-      if (this.isMoss) {
+      if (this.slgAvailable) {
         uncondSkip = this.parseSkipBlocks(this.form.uncondSkip);
-        if (uncondSkip === null) { this.flash('Uncond skip blocks: use block numbers like 22 or 22, 30'); return; }
+        if (uncondSkip === null) { this.flash('Uncond skip blocks: use block numbers like 22 or 22, 30'); return null; }
       }
       if (this.slgAvailable) {
         slgLayers = this.parseSkipBlocks(this.form.slgLayers);
-        if (slgLayers === null) { this.flash('SLG blocks: use block numbers like 24 or 24, 30'); return; }
-        if (this.form.slgStart > this.form.slgStop) { this.flash('Skip window: start must not exceed stop'); return; }
-        if (this.modelType === 'Anima' && this.form.teacacheOn && this.form.slgScale > 0 && slgLayers.length) {
-          this.flash('SLG is incompatible with TeaCache: set the SLG scale to 0 or disable TeaCache');
-          return;
-        }
+        if (slgLayers === null) { this.flash('SLG blocks: use block numbers like 24 or 24, 30'); return null; }
+        if (this.form.slgStart > this.form.slgStop) { this.flash('Skip window: start must not exceed stop'); return null; }
+      }
+      return {
+        uncond_skip_layers: uncondSkip,
+        slg_layers: slgLayers, slg_scale: this.form.slgScale,
+        slg_start: this.form.slgStart, slg_stop: this.form.slgStop,
+      };
+    },
+
+    async generate() {
+      // A load in flight is fine: the job queues behind it.
+      if (!this.modelLoaded && !this.loadingModel) { this.flash('Load a model first'); return; }
+      const skip = this.skipFields();
+      if (!skip) return;
+      if (this.modelType === 'Anima' && this.form.teacacheOn && skip.slg_scale > 0 && skip.slg_layers.length) {
+        this.flash('SLG is incompatible with TeaCache: set the SLG scale to 0 or disable TeaCache');
+        return;
       }
       if (this.mode === 'i2i' && !this.inputImage) { this.flash('Provide an input image'); return; }
       if (this.mode === 'inpaint') {
@@ -1536,9 +1571,7 @@ document.addEventListener('alpine:init', () => {
           teacache_rule: this.form.teacacheRule,
           teacache_sigma_floor: this.form.teacacheFloor,
           deepcache: this.form.deepcacheOn ? this.form.deepcache : 1,
-          uncond_skip_layers: uncondSkip,
-          slg_layers: slgLayers, slg_scale: this.form.slgScale,
-          slg_start: this.form.slgStart, slg_stop: this.form.slgStop,
+          ...skip,
           input_image: this.mode !== 't2i' ? this.inputImage : null,
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
           preview: this.preview,
@@ -1676,6 +1709,8 @@ document.addEventListener('alpine:init', () => {
           return;
         }
       }
+      const skip = this.skipFields();
+      if (!skip) return;
       this.busy = true;
       this.progress = { step: 0, total: 0 };
       this.previewUrl = null;
@@ -1695,6 +1730,7 @@ document.addEventListener('alpine:init', () => {
         teacache_forecast: this.form.teacacheForecast,
         teacache_rule: this.form.teacacheRule,
         teacache_sigma_floor: this.form.teacacheFloor,
+        ...skip,
         x_type: this.axes.x.type, x_vals: this.axisValues(this.axes.x),
         y_type: this.axes.y.type, y_vals: this.axisValues(this.axes.y),
         z_type: this.axes.z.type, z_vals: this.axisValues(this.axes.z),
@@ -1874,7 +1910,7 @@ document.addEventListener('alpine:init', () => {
       if (d.xyzSweep != null) this.xyzSweep = d.xyzSweep;
       for (const a of ['x', 'y', 'z']) {
         const s = d.axes && d.axes[a];
-        if (!s || !this.paramTypes.includes(s.type)) continue;
+        if (!s || !this.axisTypes.includes(s.type)) continue;
         const axis = this.axes[a];
         axis.type = s.type;
         axis.text = s.text || '';
@@ -2503,6 +2539,8 @@ document.addEventListener('alpine:init', () => {
                     'deepcacheOn', 'deepcache', 'uncondSkip',
                     'slgScale', 'slgLayers', 'slgStart', 'slgStop'];
       for (const k of keys) if (f[k] !== undefined) this.form[k] = f[k];
+      // An Anima image without the key ran no uncond skip.
+      if (f.uncondSkip === undefined && this.modelType === 'Anima') this.form.uncondSkip = '';
       // Metadata from another family's image may name a sampler the active
       // family can't run.
       this.syncSampler();

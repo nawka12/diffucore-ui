@@ -1112,8 +1112,13 @@ picks a parameter (Sampler, Scheduler, Steps, CFG, Seed, Prompt S/R,
 Checkpoint); Sampler, Scheduler and Checkpoint axes get a multi-select dropdown,
 the others take a comma-separated list. Prompt S/R replaces the list's first
 entry, wherever it appears in the prompt, with each entry in turn. A Checkpoint
-axis reloads the model you had loaded when the sweep ends. The assembled grid and
-every individual cell are saved to `outputs/`.
+axis reloads the model you had loaded when the sweep ends. On Anima and MOSS-Image,
+an SLG Scale axis compares Skip Layer Guidance strengths, `0` being off (for
+example `0, 1.5` for off vs on), and an SLG Blocks axis compares which blocks are
+skipped: commas separate cells and `+` joins blocks within one, so `10, 14, 14+24`
+is three cells. Whatever an SLG axis doesn't set (blocks, scale, skip window) comes
+from the form, and without SLG axes cells run the form's SLG and uncond skip, as
+Generate does. The assembled grid and every individual cell are saved to `outputs/`.
 
 ### Browse past outputs
 

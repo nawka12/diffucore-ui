@@ -50,7 +50,7 @@ family from the file, so there is no mode to switch.
 - **Tiled upscaler**: 2× or 4× through overlapping low-denoise img2img tiles,
   with an optional ESRGAN base, so big outputs fit in modest VRAM.
 - **X/Y/Z sweeps**: a comparison grid across sampler, scheduler, steps, CFG,
-  seed or text encoder.
+  seed, text encoder or SLG scale and blocks.
 - **Prompt enhance** (Krea 2, Anima): a vision-language model expands a short
   prompt into a detailed one.
 

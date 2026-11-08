@@ -1731,9 +1731,8 @@ class Engine:
             kwargs["shift"] = shift
         if self._loaded.family == MODEL_FAMILY_ANIMA and scheduler == "oss":
             kwargs["oss_sigmas"] = self._load_oss_sigmas(steps, width, height, shift)
-        if self._loaded.family == MODEL_FAMILY_MOSS:
-            kwargs["uncond_skip_layers"] = uncond_skip_layers
         if self._loaded.family in (MODEL_FAMILY_MOSS, MODEL_FAMILY_ANIMA):
+            kwargs["uncond_skip_layers"] = uncond_skip_layers
             kwargs.update(slg_layers=slg_layers, slg_scale=slg_scale, slg_start=slg_start, slg_stop=slg_stop)
         try:
             image, pipeline_info = gen(**kwargs)
@@ -1820,9 +1819,8 @@ class Engine:
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
         )
-        if self._loaded.family == MODEL_FAMILY_MOSS:
-            gen_kwargs["uncond_skip_layers"] = uncond_skip_layers
         if self._loaded.family in (MODEL_FAMILY_MOSS, MODEL_FAMILY_ANIMA):
+            gen_kwargs["uncond_skip_layers"] = uncond_skip_layers
             gen_kwargs.update(slg_layers=slg_layers, slg_scale=slg_scale, slg_start=slg_start, slg_stop=slg_stop)
         try:
             image, pipeline_info = gen(**gen_kwargs)
@@ -1914,9 +1912,8 @@ class Engine:
             preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
             return_info=True,
         )
-        if self._loaded.family == MODEL_FAMILY_MOSS:
-            gen_kwargs["uncond_skip_layers"] = uncond_skip_layers
         if self._loaded.family in (MODEL_FAMILY_MOSS, MODEL_FAMILY_ANIMA):
+            gen_kwargs["uncond_skip_layers"] = uncond_skip_layers
             gen_kwargs.update(slg_layers=slg_layers, slg_scale=slg_scale, slg_start=slg_start, slg_stop=slg_stop)
         try:
             image, pipeline_info = gen(**gen_kwargs)

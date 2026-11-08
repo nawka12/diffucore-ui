@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+import re
 import time
 from typing import Any, Callable
 
@@ -14,7 +15,7 @@ from engine import ENGINE
 # ── public constants ──────────────────────────────────────────────
 
 PARAM_TYPES = ["None", "Seed", "Sampler", "Scheduler", "Steps", "CFG Scale", "Prompt S/R",
-               "Checkpoint", "Text Encoder"]
+               "Checkpoint", "Text Encoder", "SLG Scale", "SLG Blocks"]
 
 # Cap on |x|·|y|·|z|: "50,50,50" would be 125k generations.
 MAX_XYZ_CELLS = 1000
@@ -25,6 +26,8 @@ _PARAM_MAP: dict[str, str] = {
     "Scheduler": "scheduler",
     "Steps": "steps",
     "CFG Scale": "cfg_scale",
+    "SLG Scale": "slg_scale",
+    "SLG Blocks": "slg_layers",
 }
 
 # ── font helpers ──────────────────────────────────────────────────
@@ -123,7 +126,25 @@ def resolve_values(param_type: str, values_str: str, base_value: Any) -> list:
         return [_parse_num(param_type, v, int) for v in raw]
     if param_type == "CFG Scale":
         return [_parse_num(param_type, v, float) for v in raw]
+    if param_type == "SLG Scale":
+        vals = [_parse_num(param_type, v, float) for v in raw]
+        if any(v < 0 for v in vals):
+            raise ValueError("SLG Scale axis: values must be 0 or more (0 = off)")
+        return vals
+    # Commas separate cells, so "+" or spaces join the blocks of one cell.
+    if param_type == "SLG Blocks":
+        cells = [[t for t in re.split(r"[\s+]+", v) if t] for v in raw]
+        for v, blocks in zip(raw, cells):
+            if not blocks or not all(re.fullmatch(r"[0-9]+", t) for t in blocks):
+                raise ValueError(
+                    f"SLG Blocks axis: {v!r} is not block numbers (like 14 or 14+24)")
+        return [[int(t) for t in blocks] for blocks in cells]
     return raw
+
+
+def _label(value) -> str:
+    """An axis value as a grid label; an SLG block set reads "14+24"."""
+    return "+".join(map(str, value)) if isinstance(value, list) else str(value)
 
 
 def _parse_num(param_type: str, token: str, cast):
@@ -226,7 +247,7 @@ def generate_xyz_grid(
     progress_callback: Callable[..., None] | None = None,
     preview_callback: Callable[[Image.Image], None] | None = None,
     save_callback: Callable[[Image.Image, dict], None] | None = None,
-    cell_knobs: Callable[[str, str], dict] | None = None,
+    cell_knobs: Callable[[dict], dict] | None = None,
 ) -> tuple[list[Image.Image], str]:
     """Generate one X/Y/Z grid image per Z value; returns ``(grids, info)``.
 
@@ -234,7 +255,8 @@ def generate_xyz_grid(
     cfg_scale, sampler, scheduler, seed and shift. ``progress_callback`` gets
     ``(step, total_steps, cell, total_cells)`` cumulative over the grid;
     ``save_callback(image, kwargs)`` runs per successful cell; ``cell_knobs
-    (sampler, scheduler)`` returns settings-panel kwargs merged into each cell.
+    (kwargs)`` gets a cell's kwargs and returns the ones it samples with
+    (settings-panel knobs added, skip-layer values made what Generate sends).
     """
     x_vals = resolve_values(
         x_type, x_values_str,
@@ -345,7 +367,7 @@ def generate_xyz_grid(
                             last_loras = None
 
                     if cell_knobs is not None:
-                        kwargs.update(cell_knobs(kwargs["sampler"], kwargs["scheduler"]))
+                        kwargs = cell_knobs(kwargs)
 
                     # Re-fuse only when the cell's LoRA set changed.
                     cp, cp_loras = ENGINE.parse_lora_prompt(cell_prompt)
@@ -390,9 +412,9 @@ def generate_xyz_grid(
 
                 rows.append(cols)
 
-            x_labels = [str(v) for v in x_vals]
+            x_labels = [_label(v) for v in x_vals]
             y_labels = [
-                f"{y_type}: {v}" if y_type != "None" else ""
+                f"{y_type}: {_label(v)}" if y_type != "None" else ""
                 for v in y_vals
             ]
 
@@ -403,7 +425,7 @@ def generate_xyz_grid(
                 zf = _get_font(zf_size)
                 z_line_h = zf_size + 8
                 z_lines = _wrap_lines(
-                    f"{z_type}: {z_val}", zf, grid.width - 2 * zf_size,
+                    f"{z_type}: {_label(z_val)}", zf, grid.width - 2 * zf_size,
                 )
                 strip_h = len(z_lines) * z_line_h + 12
                 final = Image.new(

@@ -113,7 +113,6 @@ def test_retuning_a_post_pass_keeps_reusing(stub):
     ("scheduler", "beta"),
     ("shift", 4.0),
     ("teacache", 0.2),
-    ("deepcache", 2),
     ("seed", 8),
 ])
 def test_changing_the_base_re_samples(stub, field, value):
@@ -121,6 +120,14 @@ def test_changing_the_base_re_samples(stub, field, value):
     _run(**base)
     _run(**{**base, field: value})
     assert stub.gen_calls == 2, f"{field} must invalidate the base"
+
+
+@pytest.mark.parametrize("family, calls", [("sdxl", 2), ("anima", 1)])
+def test_deepcache_re_samples_only_on_a_unet(stub, family, calls):
+    stub.loaded_family = family
+    _run(prompt="a cat", seed=7)
+    _run(prompt="a cat", seed=7, deepcache=2)
+    assert stub.gen_calls == calls
 
 
 def test_random_seed_never_reuses(stub):

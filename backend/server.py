@@ -48,7 +48,7 @@ from utils import (
     scan_vae, scan_text_encoders, scan_detectors, scan_upscalers, scan_outputs, next_output_path,
     invalidate_outputs_cache,
 )
-from xyz_grid import generate_xyz_grid, PARAM_TYPES as XYZ_PARAM_TYPES
+from xyz_grid import generate_xyz_grid, resolve_values, PARAM_TYPES as XYZ_PARAM_TYPES
 import metadata as md
 import model_arch
 import gallery_search
@@ -308,7 +308,34 @@ class DetailerModel(BaseModel):
     prompt: str = ""
 
 
-class GeneratePayload(BaseModel):
+class SkipFields(BaseModel):
+    """Skip-layer options shared by Generate and X/Y/Z."""
+    # Blocks the uncond (negative) forward skips. MOSS-Image: None = the
+    # reference's (22,), [] = skip none. Anima: opt-in, None or [] = none.
+    uncond_skip_layers: Optional[List[int]] = Field(None, max_length=64)
+    # Skip Layer Guidance (MOSS-Image, Anima): a third forward per step, the
+    # positive prompt with slg_layers skipped. slg_scale 0 = off. On MOSS-Image the
+    # [start, stop) step window also bounds the uncond skip, as in the reference.
+    slg_layers: List[int] = Field([], max_length=64)
+    slg_scale: float = Field(0.0, ge=0.0, le=30.0)
+    slg_start: float = Field(0.0, ge=0.0, le=1.0)
+    slg_stop: float = Field(1.0, ge=0.0, le=1.0)
+
+    @field_validator("uncond_skip_layers", "slg_layers")
+    @classmethod
+    def _skip_layers_are_indices(cls, v, info):
+        if v is not None and any(i < 0 for i in v):
+            raise ValueError(f"{info.field_name} must be block indices >= 0")
+        return v
+
+    @model_validator(mode="after")
+    def _slg_window_is_ordered(self):
+        if self.slg_start > self.slg_stop:
+            raise ValueError("slg_start must not exceed slg_stop")
+        return self
+
+
+class GeneratePayload(SkipFields):
     mode: str = "t2i"                 # t2i | i2i | inpaint
     prompt: str = ""
     neg: str = ""
@@ -327,16 +354,6 @@ class GeneratePayload(BaseModel):
     teacache_rule: Literal["drift", "easy"] = "drift"   # input drift | EasyCache output change
     teacache_sigma_floor: float = Field(0.0, ge=0.0, le=1.0)   # never skip below this σ (0 = off)
     deepcache: int = Field(1, ge=1, le=64)                # reuse interval (1 = off; SD/SDXL UNet only)
-    # MOSS-Image: blocks the uncond (negative) forward skips. None = the
-    # reference's (22,), [] = skip none.
-    uncond_skip_layers: Optional[List[int]] = Field(None, max_length=64)
-    # Skip Layer Guidance (MOSS-Image, Anima): a third forward per step, the
-    # positive prompt with slg_layers skipped. slg_scale 0 = off. On MOSS-Image the
-    # [start, stop) step window also bounds the uncond skip, as in the reference.
-    slg_layers: List[int] = Field([], max_length=64)
-    slg_scale: float = Field(0.0, ge=0.0, le=30.0)
-    slg_start: float = Field(0.0, ge=0.0, le=1.0)
-    slg_stop: float = Field(1.0, ge=0.0, le=1.0)
     input_image: Optional[str] = None   # base64 / data-URL
     mask_image: Optional[str] = None
     preview: bool = True
@@ -363,19 +380,6 @@ class GeneratePayload(BaseModel):
     upscale_prompt: str = ""
     upscale_teacache: float = Field(0.0, ge=0.0, le=1.0)   # refine-pass TeaCache (0 = off)
     upscale_base: str = ""               # ESRGAN model in models/upscalers/ (blank = Lanczos)
-
-    @field_validator("uncond_skip_layers", "slg_layers")
-    @classmethod
-    def _skip_layers_are_indices(cls, v, info):
-        if v is not None and any(i < 0 for i in v):
-            raise ValueError(f"{info.field_name} must be block indices >= 0")
-        return v
-
-    @model_validator(mode="after")
-    def _slg_window_is_ordered(self):
-        if self.slg_start > self.slg_stop:
-            raise ValueError("slg_start must not exceed slg_stop")
-        return self
 
     @model_validator(mode="after")
     def _upscale_overlap_fits(self):
@@ -507,7 +511,7 @@ class Settings(BaseModel):
     enhancer_int8: bool = False
 
 
-class XYZPayload(BaseModel):
+class XYZPayload(SkipFields):
     prompt: str = ""
     neg: str = ""
     width: int = Field(1024, ge=64, le=8192)
@@ -673,18 +677,23 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
     return knobs
 
 
-def _skip_kwargs(p: GeneratePayload) -> dict:
-    """The family's skip options. SLG keys appear only when they change the
-    sampling, so an off run keeps its metadata and base-image fingerprint. The
-    window also matters to MOSS-Image's uncond skip with SLG off; Anima has none."""
+def _skip_kwargs(p: SkipFields, slg_scale: Optional[float] = None,
+                 slg_layers: Optional[List[int]] = None) -> dict:
+    """The family's skip options, with ``slg_scale`` and ``slg_layers`` in place
+    of the form's when given (an X/Y/Z cell). SLG keys appear only when they change the
+    sampling, so an off run keeps its metadata and base-image fingerprint; so does
+    Anima's uncond skip, which is opt-in. The window also bounds the uncond skip."""
     moss = ENGINE.loaded_family == "moss_image"
     if not moss and ENGINE.loaded_family != "anima":
         return {}
-    kwargs: dict = {"uncond_skip_layers": list(p.uncond_skip_layers)} if moss else {}
-    slg_on = p.slg_scale > 0 and bool(p.slg_layers)
+    scale = p.slg_scale if slg_scale is None else slg_scale
+    layers = p.slg_layers if slg_layers is None else slg_layers
+    uncond_skip = p.uncond_skip_layers if moss else (p.uncond_skip_layers or [])
+    kwargs: dict = {"uncond_skip_layers": list(uncond_skip)} if moss or uncond_skip else {}
+    slg_on = scale > 0 and bool(layers)
     if slg_on:
-        kwargs.update(slg_layers=list(p.slg_layers), slg_scale=float(p.slg_scale))
-    if (moss or slg_on) and (p.slg_start, p.slg_stop) != (0.0, 1.0):
+        kwargs.update(slg_layers=list(layers), slg_scale=float(scale))
+    if (moss or slg_on or uncond_skip) and (p.slg_start, p.slg_stop) != (0.0, 1.0):
         kwargs.update(slg_start=float(p.slg_start), slg_stop=float(p.slg_stop))
     return kwargs
 
@@ -700,6 +709,9 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
     if ENGINE.loaded_family in ("krea2", "moss_image", "z_image"):
         # No cache support; keep it out of the metadata.
         p.teacache, p.deepcache, p.upscale_teacache = 0.0, 1, 0.0
+    if ENGINE.loaded_family not in ("sd15", "sdxl"):
+        # DeepCache is UNet-only, and the hidden toggle can still be on from an SD session.
+        p.deepcache = 1
     if ENGINE.loaded_family == "z_image" and p.scheduler not in SCHEDULERS_ZIMAGE:
         # The pipeline coerces an unknown scheduler to "zimage"; record that one.
         p.scheduler = "zimage"
@@ -907,6 +919,15 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
     axis_types = (p.x_type, p.y_type, p.z_type)
     if "Text Encoder" in axis_types and ENGINE.loaded_family not in ("anima", "krea2"):
         raise RuntimeError("The Text Encoder axis needs an Anima or Krea 2 model")
+    slg_family = ENGINE.loaded_family in ("anima", "moss_image")
+    for name in ("SLG Scale", "SLG Blocks"):
+        if name in axis_types and not slg_family:
+            raise RuntimeError(f"The {name} axis needs an Anima or MOSS-Image model")
+    # Each axis alone needs the form to supply the other half.
+    if "SLG Scale" in axis_types and "SLG Blocks" not in axis_types and not p.slg_layers:
+        raise RuntimeError("The SLG Scale axis needs SLG blocks")
+    if "SLG Blocks" in axis_types and "SLG Scale" not in axis_types and p.slg_scale <= 0:
+        raise RuntimeError("The SLG Blocks axis needs an SLG scale above 0")
     if ENGINE.loaded_family in ("krea2", "moss_image", "z_image"):
         p.teacache = 0.0    # no TeaCache support; keep it out of the metadata
     base_kwargs = dict(
@@ -921,6 +942,16 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
         teacache_rule=p.teacache_rule,
         teacache_sigma_floor=float(p.teacache_sigma_floor),
     )
+    # The SLG axes override these per cell; cell_kwargs turns them into what
+    # Generate would send.
+    if slg_family:
+        base_kwargs.update(slg_scale=float(p.slg_scale), slg_layers=list(p.slg_layers))
+
+    def cell_kwargs(kw: dict) -> dict:
+        kw = dict(kw)
+        skip = _skip_kwargs(p, kw.pop("slg_scale", None), kw.pop("slg_layers", None))
+        return {**kw, **_settings_knobs(kw["sampler"], kw["scheduler"], p.teacache), **skip}
+
     # A Checkpoint or Text Encoder axis leaves the last swept files loaded;
     # reload the user's.
     swaps_model = "Checkpoint" in axis_types or "Text Encoder" in axis_types
@@ -931,13 +962,11 @@ def _run_xyz(p: XYZPayload, on_progress: Callable[..., None],
             progress_callback=on_progress,
             preview_callback=on_preview if p.preview else None,
             save_callback=partial(_save_output, blur_check=p.blur_check),
-            cell_knobs=lambda sampler, scheduler: _settings_knobs(
-                sampler, scheduler, p.teacache),
+            cell_knobs=cell_kwargs,
         )
         # generate_xyz_grid mutated base_kwargs in place (prompt cleaned, seed
         # resolved), so it now carries the grid's metadata params.
-        grid_kwargs = {**base_kwargs,
-                       **_settings_knobs(p.sampler, p.scheduler, p.teacache)}
+        grid_kwargs = cell_kwargs(base_kwargs)
         urls = []
         for grid in grids:
             out = _save_output(grid, grid_kwargs, blur_check=p.blur_check)
@@ -1827,18 +1856,26 @@ async def api_load(p: LoadPayload):
     return {"job": job.id}
 
 
-def _slg_conflict(p: GeneratePayload) -> Optional[str]:
-    """Submit-time guard for Anima SLG, whose pipeline rejects the same pairs."""
-    if ENGINE.loaded_family != "anima" or p.slg_scale <= 0 or not p.slg_layers:
+def _slg_conflict(p: SkipFields, scale: Optional[float] = None,
+                  layers: Optional[List[int]] = None) -> Optional[str]:
+    """Submit-time guard for Anima SLG and uncond skip, whose pipeline rejects the
+    same pairs. ``scale`` and ``layers`` override the form's (what X/Y/Z cells run with)."""
+    scale = p.slg_scale if scale is None else scale
+    layers = p.slg_layers if layers is None else layers
+    if ENGINE.loaded_family != "anima":
         return None
-    if p.teacache > 0:
-        return "SLG is incompatible with TeaCache. Set the SLG scale to 0 or disable TeaCache."
-    if ENGINE.cuda_graphs_enabled:
-        return ("SLG is incompatible with CUDA Graphs. Set the SLG scale to 0 or reload "
-                "the model without the CUDA Graphs flag.")
-    if ENGINE.compile_enabled:
-        return ("SLG is incompatible with torch.compile. Set the SLG scale to 0 or reload "
-                "the model without the compile flag.")
+    for what, off, on in (("SLG", "Set the SLG scale to 0", scale > 0 and bool(layers)),
+                          ("Uncond skip", "Clear the uncond skip blocks", bool(p.uncond_skip_layers))):
+        if not on:
+            continue
+        if p.teacache > 0:
+            return f"{what} is incompatible with TeaCache. {off} or disable TeaCache."
+        if ENGINE.cuda_graphs_enabled:
+            return (f"{what} is incompatible with CUDA Graphs. {off} or reload "
+                    "the model without the CUDA Graphs flag.")
+        if ENGINE.compile_enabled:
+            return (f"{what} is incompatible with torch.compile. {off} or reload "
+                    "the model without the compile flag.")
     return None
 
 
@@ -2012,8 +2049,27 @@ async def api_detail(p: DetailPayload):
     return {"job": job.id}
 
 
+def _xyz_slg(p: XYZPayload) -> tuple:
+    """The largest SLG scale and every SLG block the cells run with: the SLG
+    axes' values, else the form's."""
+    vals: dict = {"SLG Scale": [], "SLG Blocks": []}
+    base = {"SLG Scale": p.slg_scale, "SLG Blocks": list(p.slg_layers)}
+    for t, v in ((p.x_type, p.x_vals), (p.y_type, p.y_vals), (p.z_type, p.z_vals)):
+        if t in vals:
+            vals[t] += resolve_values(t, v, base[t])
+    scale = max(vals["SLG Scale"], default=p.slg_scale)
+    layers = sorted({b for blocks in vals["SLG Blocks"] for b in blocks}) or list(p.slg_layers)
+    return scale, layers
+
+
 @app.post("/api/xyz")
 async def api_xyz(p: XYZPayload):
+    try:
+        err = _slg_conflict(p, *_xyz_slg(p))
+    except ValueError as e:
+        err = str(e)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     def run(job: Job) -> dict:
         on_progress, on_preview = _make_callbacks(job)
         return _run_xyz(p, on_progress, on_preview)

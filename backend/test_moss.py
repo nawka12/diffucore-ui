@@ -483,7 +483,23 @@ def _anima_loaded():
                        model=SimpleNamespace(backbone=SimpleNamespace(blocks=[None] * 28)), native_res=1024)
 
 
-def test_engine_sends_slg_to_anima_but_not_the_moss_uncond_skip(monkeypatch):
+@pytest.mark.parametrize("family, want", [("anima", 1), ("flux1", 1), ("sdxl", 3), ("sd15", 3)])
+def test_deepcache_reaches_only_unet_families(monkeypatch, family, want):
+    monkeypatch.setattr(ENGINE, "_loaded", LoadedModel(name="x", family=family, model=object(), native_res=1024))
+    seen = {}
+
+    def fake(**kw):
+        seen.update(kw)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(ENGINE, "generate_t2i", fake, raising=False)
+    p = server.GeneratePayload(prompt="a fox", deepcache=3)
+    with pytest.raises(RuntimeError, match="stop"):
+        server._run_generation(p, lambda *a: None)
+    assert p.deepcache == want and seen["deepcache_interval"] == want
+
+
+def test_engine_sends_slg_and_the_uncond_skip_to_anima(monkeypatch):
     seen = {}
 
     class FakePipeline:
@@ -498,14 +514,15 @@ def test_engine_sends_slg_to_anima_but_not_the_moss_uncond_skip(monkeypatch):
         monkeypatch.setattr(engine_mod, name, FakePipeline)
     eng = Engine(device="cpu")
     eng._loaded = _anima_loaded()
-    for call in (lambda: eng.generate_t2i("p", **_SLG), lambda: eng.generate_i2i("p", None, **_SLG),
-                 lambda: eng.generate_inpaint("p", None, None, **_SLG)):
+    want = {**_SLG, "uncond_skip_layers": [15, 16, 17]}
+    for call in (lambda: eng.generate_t2i("p", **want), lambda: eng.generate_i2i("p", None, **want),
+                 lambda: eng.generate_inpaint("p", None, None, **want)):
         seen.clear()
         call()
-        assert {k: seen[k] for k in _SLG} == _SLG and "uncond_skip_layers" not in seen
+        assert {k: seen[k] for k in want} == want
 
 
-def test_anima_run_generation_sends_slg_only_when_on_and_no_uncond_skip(monkeypatch):
+def test_anima_run_generation_sends_slg_and_uncond_skip_only_when_on(monkeypatch):
     monkeypatch.setattr(ENGINE, "_loaded", _anima_loaded())
     seen = {}
 
@@ -519,15 +536,18 @@ def test_anima_run_generation_sends_slg_only_when_on_and_no_uncond_skip(monkeypa
     def run(**slg):
         with pytest.raises(RuntimeError, match="stop"):
             server._run_generation(server.GeneratePayload(prompt="a fox", **slg), lambda *a: None)
-        assert "uncond_skip_layers" not in seen
-        return {k: seen[k] for k in _SLG if k in seen}
+        return {k: seen[k] for k in (*_SLG, "uncond_skip_layers") if k in seen}
 
     assert run() == {}
     assert run(slg_layers=[8]) == {}
-    # Anima has no uncond skip, so a window alone changes nothing and is not recorded.
+    assert run(uncond_skip_layers=[]) == {}
+    # Anima's uncond skip is opt-in, so without it a window alone changes nothing and is not recorded.
     assert run(slg_start=0.1, slg_stop=0.6) == {}
     assert run(slg_layers=[8], slg_scale=3.0) == {"slg_layers": [8], "slg_scale": 3.0}
     assert run(**_SLG) == _SLG
+    assert run(uncond_skip_layers=[15, 16, 17]) == {"uncond_skip_layers": [15, 16, 17]}
+    assert run(uncond_skip_layers=[16], slg_start=0.35, slg_stop=0.7) == {
+        "uncond_skip_layers": [16], "slg_start": 0.35, "slg_stop": 0.7}
 
 
 @pytest.mark.parametrize("family, graphs, compiled, teacache, conflict", [
@@ -542,7 +562,8 @@ def test_slg_submit_guard(monkeypatch, family, graphs, compiled, teacache, confl
     monkeypatch.setattr(ENGINE, "_loaded", LoadedModel(name="x", family=family, model=object(), native_res=1024))
     monkeypatch.setattr(ENGINE, "_cuda_graphs", graphs)
     monkeypatch.setattr(ENGINE, "_compile", compiled)
-    on = server.GeneratePayload(prompt="p", teacache=teacache, slg_layers=[8], slg_scale=3.0)
-    err = server._slg_conflict(on)
-    assert (err is None) if conflict is None else (conflict in err)
+    for on, what in ((dict(slg_layers=[8], slg_scale=3.0), "SLG"), (dict(uncond_skip_layers=[16]), "Uncond skip")):
+        err = server._slg_conflict(server.GeneratePayload(prompt="p", teacache=teacache, **on))
+        assert (err is None) if conflict is None else err.startswith(what) and conflict in err
     assert server._slg_conflict(server.GeneratePayload(prompt="p", teacache=teacache, slg_layers=[8])) is None
+    assert server._slg_conflict(server.GeneratePayload(prompt="p", teacache=teacache, uncond_skip_layers=[])) is None

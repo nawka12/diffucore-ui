@@ -350,7 +350,7 @@ def test_xyz_applies_the_settings_and_drops_teacache(zimage_loaded, monkeypatch)
     captured = {}
 
     def fake_grid(base_kwargs, *a, cell_knobs=None, **kw):
-        captured.update(base=dict(base_kwargs), knobs=cell_knobs("secant_anneal", "beta"))
+        captured.update(base=dict(base_kwargs), knobs=cell_knobs({"sampler": "secant_anneal", "scheduler": "beta"}))
         raise RuntimeError("stop")
 
     monkeypatch.setattr(server, "generate_xyz_grid", fake_grid)
