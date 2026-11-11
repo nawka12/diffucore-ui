@@ -251,6 +251,7 @@ document.addEventListener('alpine:init', () => {
       deepcacheOn: false, deepcache: 2,
       uncondSkip: '22',   // MOSS-Image and Anima: blocks the negative-prompt pass skips
       slgScale: 0, slgLayers: '24', slgStart: 0, slgStop: 1,   // MOSS-Image and Anima: Skip Layer Guidance
+      lowresOn: false, lowresSigma: 0.95,   // Anima: half-res backbone calls while σ >= lowresSigma
     },
     // >1 submits N jobs: seed+i with a pinned seed, a fresh random with -1.
     batchCount: 1,
@@ -1517,6 +1518,7 @@ document.addEventListener('alpine:init', () => {
         uncond_skip_layers: uncondSkip,
         slg_layers: slgLayers, slg_scale: this.form.slgScale,
         slg_start: this.form.slgStart, slg_stop: this.form.slgStop,
+        lowres_sigma: this.modelType === 'Anima' && this.form.lowresOn ? this.form.lowresSigma : 0,
       };
     },
 
@@ -2537,7 +2539,7 @@ document.addEventListener('alpine:init', () => {
                     'teacacheOn', 'teacache', 'teacacheCalibrated', 'teacacheForecast',
                     'teacacheRule', 'teacacheFloor',
                     'deepcacheOn', 'deepcache', 'uncondSkip',
-                    'slgScale', 'slgLayers', 'slgStart', 'slgStop'];
+                    'slgScale', 'slgLayers', 'slgStart', 'slgStop', 'lowresOn', 'lowresSigma'];
       for (const k of keys) if (f[k] !== undefined) this.form[k] = f[k];
       // An Anima image without the key ran no uncond skip.
       if (f.uncondSkip === undefined && this.modelType === 'Anima') this.form.uncondSkip = '';

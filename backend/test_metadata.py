@@ -128,6 +128,21 @@ def test_teacache_sigma_floor_roundtrips():
     assert "teacacheFloor" not in _roundtrip(_BASE_GEN)
 
 
+def test_half_res_layout_roundtrips():
+    """Written only when on (2 decimals); restored through both formats, and as
+    off when absent."""
+    assert "Half-res layout" not in md.format_metadata(_BASE_GEN, _StubEngine())
+    off = _roundtrip(_BASE_GEN)
+    assert off["lowresOn"] is False and "lowresSigma" not in off
+    gen = {**_BASE_GEN, "lowres_sigma": 0.95}
+    assert "Half-res layout: 0.95" in md.format_metadata(gen, _StubEngine())
+    for back in (_roundtrip(gen), _roundtrip_swarm(gen)):
+        assert back["lowresOn"] is True and back["lowresSigma"] == 0.95
+    assert _roundtrip_swarm(_BASE_GEN)["lowresOn"] is False
+    assert "Half-res layout: 0.80" in md.format_metadata({**_BASE_GEN, "lowres_sigma": 0.8}, _StubEngine())
+    assert "Half-res layout" not in md.format_metadata({**_BASE_GEN, "lowres_sigma": 0.0}, _StubEngine())
+
+
 def test_teacache_uncond_scale_written_only_when_set():
     """Written when raised, absent at 1.0, never restored onto the form."""
     gen = {**_BASE_GEN, "teacache_thresh": 0.15}

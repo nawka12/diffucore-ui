@@ -320,6 +320,9 @@ class SkipFields(BaseModel):
     slg_scale: float = Field(0.0, ge=0.0, le=30.0)
     slg_start: float = Field(0.0, ge=0.0, le=1.0)
     slg_stop: float = Field(1.0, ge=0.0, le=1.0)
+    # Anima half-res layout: backbone calls at σ >= this run on a 2x-downsampled
+    # latent (0 = off).
+    lowres_sigma: float = Field(0.0, ge=0.0, le=1.0)
 
     @field_validator("uncond_skip_layers", "slg_layers")
     @classmethod
@@ -695,6 +698,8 @@ def _skip_kwargs(p: SkipFields, slg_scale: Optional[float] = None,
         kwargs.update(slg_layers=list(layers), slg_scale=float(scale))
     if (moss or slg_on or uncond_skip) and (p.slg_start, p.slg_stop) != (0.0, 1.0):
         kwargs.update(slg_start=float(p.slg_start), slg_stop=float(p.slg_stop))
+    if not moss and p.lowres_sigma > 0:
+        kwargs["lowres_sigma"] = float(p.lowres_sigma)
     return kwargs
 
 
@@ -1858,17 +1863,19 @@ async def api_load(p: LoadPayload):
 
 def _slg_conflict(p: SkipFields, scale: Optional[float] = None,
                   layers: Optional[List[int]] = None) -> Optional[str]:
-    """Submit-time guard for Anima SLG and uncond skip, whose pipeline rejects the
-    same pairs. ``scale`` and ``layers`` override the form's (what X/Y/Z cells run with)."""
+    """Submit-time guard for Anima SLG, uncond skip and half-res layout, whose pipeline
+    rejects the same pairs. ``scale`` and ``layers`` override the form's (what X/Y/Z cells run with)."""
     scale = p.slg_scale if scale is None else scale
     layers = p.slg_layers if layers is None else layers
     if ENGINE.loaded_family != "anima":
         return None
-    for what, off, on in (("SLG", "Set the SLG scale to 0", scale > 0 and bool(layers)),
-                          ("Uncond skip", "Clear the uncond skip blocks", bool(p.uncond_skip_layers))):
+    for what, off, on, teacache_clash in (
+            ("SLG", "Set the SLG scale to 0", scale > 0 and bool(layers), True),
+            ("Uncond skip", "Clear the uncond skip blocks", bool(p.uncond_skip_layers), True),
+            ("Half-res layout", "Turn off half-res layout", p.lowres_sigma > 0, False)):
         if not on:
             continue
-        if p.teacache > 0:
+        if teacache_clash and p.teacache > 0:
             return f"{what} is incompatible with TeaCache. {off} or disable TeaCache."
         if ENGINE.cuda_graphs_enabled:
             return (f"{what} is incompatible with CUDA Graphs. {off} or reload "

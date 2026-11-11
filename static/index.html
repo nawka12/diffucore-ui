@@ -440,6 +440,17 @@
             <label class="field"><span>Skip window stop</span>
               <input type="number" x-model.number="form.slgStop" min="0" max="1" step="0.05"></label>
           </div>
+          <div class="slider" x-show="modelType==='Anima'">
+            <label class="chip toggle" :class="{on: form.lowresOn}"
+                   title="~1.5x faster; changes the image for a given seed. Not with CUDA Graphs or torch.compile.">
+              <input type="checkbox" x-model="form.lowresOn"> Half-res layout steps</label>
+            <div x-show="form.lowresOn">
+              <div class="slider-head"><span>until σ</span>
+                <input type="number" x-model.number="form.lowresSigma" min="0.8" max="0.99" step="0.01"></div>
+              <input type="range" x-model.number="form.lowresSigma" min="0.8" max="0.99" step="0.01">
+              <p class="sub">~1.5x faster; changes the image for a given seed.</p>
+            </div>
+          </div>
           <div class="slider" x-show="isFlowModel">
             <div class="slider-head"><span>Shift</span>
               <input type="number" x-model.number="form.shift" min="1" max="9" step="0.1" :disabled="!shiftHonored"></div>

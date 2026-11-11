@@ -1688,6 +1688,7 @@ class Engine:
         slg_scale: float = 0.0,
         slg_start: float = 0.0,
         slg_stop: float = 1.0,
+        lowres_sigma: float = 0.0,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -1734,6 +1735,8 @@ class Engine:
         if self._loaded.family in (MODEL_FAMILY_MOSS, MODEL_FAMILY_ANIMA):
             kwargs["uncond_skip_layers"] = uncond_skip_layers
             kwargs.update(slg_layers=slg_layers, slg_scale=slg_scale, slg_start=slg_start, slg_stop=slg_stop)
+        if self._loaded.family == MODEL_FAMILY_ANIMA and lowres_sigma > 0:
+            kwargs["lowres_sigma"] = lowres_sigma
         try:
             image, pipeline_info = gen(**kwargs)
         finally:
@@ -1777,6 +1780,7 @@ class Engine:
         slg_scale: float = 0.0,
         slg_start: float = 0.0,
         slg_stop: float = 1.0,
+        lowres_sigma: float = 0.0,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -1822,6 +1826,8 @@ class Engine:
         if self._loaded.family in (MODEL_FAMILY_MOSS, MODEL_FAMILY_ANIMA):
             gen_kwargs["uncond_skip_layers"] = uncond_skip_layers
             gen_kwargs.update(slg_layers=slg_layers, slg_scale=slg_scale, slg_start=slg_start, slg_stop=slg_stop)
+        if self._loaded.family == MODEL_FAMILY_ANIMA and lowres_sigma > 0:
+            gen_kwargs["lowres_sigma"] = lowres_sigma
         try:
             image, pipeline_info = gen(**gen_kwargs)
         finally:
@@ -1869,6 +1875,7 @@ class Engine:
         slg_scale: float = 0.0,
         slg_start: float = 0.0,
         slg_stop: float = 1.0,
+        lowres_sigma: float = 0.0,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -1915,6 +1922,8 @@ class Engine:
         if self._loaded.family in (MODEL_FAMILY_MOSS, MODEL_FAMILY_ANIMA):
             gen_kwargs["uncond_skip_layers"] = uncond_skip_layers
             gen_kwargs.update(slg_layers=slg_layers, slg_scale=slg_scale, slg_start=slg_start, slg_stop=slg_stop)
+        if self._loaded.family == MODEL_FAMILY_ANIMA and lowres_sigma > 0:
+            gen_kwargs["lowres_sigma"] = lowres_sigma
         try:
             image, pipeline_info = gen(**gen_kwargs)
         finally:

@@ -41,6 +41,12 @@ network/share flags, architecture, and status.
 - **CFG guidance interval**: opt-in speedup for Anima and SD/SDXL that applies
   CFG only in a middle fraction of the sampling run and skips the negative-prompt
   model pass outside it (Settings → Sampler defaults).
+- **Half-res layout steps (Anima)**: opt-in Generate setting. While σ is at or above
+  the chosen value (default 0.95, the band where the layout is decided) every DiT
+  call runs on a 2× downsampled latent and returns a full-res velocity; the sampler
+  and later steps stay full res. Measured ~1.5× end to end at 1024×1536 on an RTX
+  2060 and blind-tested as equal quality, but it changes the image for a given
+  seed. Not with CUDA Graphs or torch.compile; TeaCache only caches the full-res steps.
 - **fp16 accumulation**: opt-in per-load perf flag. fp16-accumulated matmuls
   run at 2× the tensor-core rate on consumer GPUs (measured ~1.17× end-to-end
   on Anima on an RTX 2060, slight precision trade-off). All families.

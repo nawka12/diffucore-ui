@@ -567,3 +567,42 @@ def test_slg_submit_guard(monkeypatch, family, graphs, compiled, teacache, confl
         assert (err is None) if conflict is None else err.startswith(what) and conflict in err
     assert server._slg_conflict(server.GeneratePayload(prompt="p", teacache=teacache, slg_layers=[8])) is None
     assert server._slg_conflict(server.GeneratePayload(prompt="p", teacache=teacache, uncond_skip_layers=[])) is None
+
+
+def test_lowres_sigma_is_sent_for_anima_only_when_on(monkeypatch):
+    seen = {}
+
+    def fake(**kw):
+        seen.clear()
+        seen.update(kw)
+        raise RuntimeError("stop")
+
+    def run(family, **kw):
+        loaded = _anima_loaded() if family == "anima" else LoadedModel(
+            name="x", family=family, model=object(), native_res=1024)
+        monkeypatch.setattr(ENGINE, "_loaded", loaded)
+        monkeypatch.setattr(ENGINE, "generate_t2i", fake, raising=False)
+        with pytest.raises(RuntimeError, match="stop"):
+            server._run_generation(server.GeneratePayload(prompt="a fox", **kw), lambda *a: None)
+        return seen.get("lowres_sigma")
+
+    assert run("anima") is None
+    assert run("anima", lowres_sigma=0.95) == 0.95
+    assert run("moss_image", lowres_sigma=0.95) is None
+    assert run("sdxl", lowres_sigma=0.95) is None
+
+
+@pytest.mark.parametrize("family, graphs, compiled, teacache, conflict", [
+    ("anima", True, False, 0.0, "CUDA Graphs"),
+    ("anima", False, True, 0.0, "torch.compile"),
+    ("anima", False, False, 0.3, None),       # TeaCache only caches the full-res steps
+    ("anima", False, False, 0.0, None),
+    ("moss_image", True, True, 0.0, None),
+])
+def test_lowres_submit_guard(monkeypatch, family, graphs, compiled, teacache, conflict):
+    monkeypatch.setattr(ENGINE, "_loaded", LoadedModel(name="x", family=family, model=object(), native_res=1024))
+    monkeypatch.setattr(ENGINE, "_cuda_graphs", graphs)
+    monkeypatch.setattr(ENGINE, "_compile", compiled)
+    err = server._slg_conflict(server.GeneratePayload(prompt="p", teacache=teacache, lowres_sigma=0.95))
+    assert (err is None) if conflict is None else err.startswith("Half-res layout") and conflict in err
+    assert server._slg_conflict(server.GeneratePayload(prompt="p", teacache=teacache)) is None

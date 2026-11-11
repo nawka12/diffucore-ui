@@ -212,6 +212,8 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     if "slg_start" in gen_kwargs:
         fields.append(f"SLG start: {gen_kwargs['slg_start']}")
         fields.append(f"SLG stop: {gen_kwargs['slg_stop']}")
+    if gen_kwargs.get("lowres_sigma", 0.0) > 0:
+        fields.append(f"Half-res layout: {gen_kwargs['lowres_sigma']:.2f}")
     if lora_hashes:
         # Forge always quotes this map, even with one entry, and Civitai expects it.
         fields.append(f"Lora hashes: {json.dumps(', '.join(lora_hashes), ensure_ascii=False)}")
@@ -320,6 +322,8 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
     if "slg_start" in gen_kwargs:
         extra["slg_start"] = gen_kwargs["slg_start"]
         extra["slg_stop"] = gen_kwargs["slg_stop"]
+    if gen_kwargs.get("lowres_sigma", 0.0) > 0:
+        extra["lowres_sigma"] = round(gen_kwargs["lowres_sigma"], 2)
     if "strength" in gen_kwargs:
         extra["denoising_strength"] = gen_kwargs["strength"]
     if "shift" in gen_kwargs:
@@ -629,6 +633,14 @@ def workspace_fields(meta: dict) -> dict:
     out["slgStop"] = float(meta.get("slg_stop", 1.0))
     if "slg_layers" in meta:
         out["slgLayers"] = str(meta["slg_layers"])
+    # Absent means off; the A1111 key is the text label, SwarmUI's the extra field.
+    try:
+        lowres = float(meta.get("half-res_layout", meta.get("lowres_sigma", 0.0)))
+    except (TypeError, ValueError):
+        lowres = 0.0
+    out["lowresOn"] = lowres > 0
+    if lowres > 0:
+        out["lowresSigma"] = min(lowres, 1.0)
     detailer = extract_detailer(meta)
     if detailer:
         out["detailer"] = detailer

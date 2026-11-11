@@ -72,6 +72,16 @@ def test_teacache_sigma_floor_is_bounded():
                 model(teacache_sigma_floor=bad)
 
 
+def test_lowres_sigma_is_bounded():
+    """Half-res layout threshold on Generate and X/Y/Z, bounded at [0, 1], default off."""
+    for model in (server.GeneratePayload, server.XYZPayload):
+        assert model().lowres_sigma == 0.0
+        assert model(lowres_sigma=0.95).lowres_sigma == 0.95
+        for bad in (-0.1, 1.5):
+            with pytest.raises(ValidationError):
+                model(lowres_sigma=bad)
+
+
 def test_xyz_and_upscale_payloads_bounded():
     with pytest.raises(ValidationError):
         server.XYZPayload(steps=201)
