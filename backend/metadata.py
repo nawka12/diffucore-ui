@@ -214,6 +214,8 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
         fields.append(f"SLG stop: {gen_kwargs['slg_stop']}")
     if gen_kwargs.get("lowres_sigma", 0.0) > 0:
         fields.append(f"Half-res layout: {gen_kwargs['lowres_sigma']:.2f}")
+    if gen_kwargs.get("fdg_low", 1.0) < 1.0:
+        fields.append(f"Frequency guidance: {gen_kwargs['fdg_low']:.2f}")
     if lora_hashes:
         # Forge always quotes this map, even with one entry, and Civitai expects it.
         fields.append(f"Lora hashes: {json.dumps(', '.join(lora_hashes), ensure_ascii=False)}")
@@ -324,6 +326,8 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
         extra["slg_stop"] = gen_kwargs["slg_stop"]
     if gen_kwargs.get("lowres_sigma", 0.0) > 0:
         extra["lowres_sigma"] = round(gen_kwargs["lowres_sigma"], 2)
+    if gen_kwargs.get("fdg_low", 1.0) < 1.0:
+        extra["fdg_low"] = round(gen_kwargs["fdg_low"], 2)
     if "strength" in gen_kwargs:
         extra["denoising_strength"] = gen_kwargs["strength"]
     if "shift" in gen_kwargs:
@@ -641,6 +645,13 @@ def workspace_fields(meta: dict) -> dict:
     out["lowresOn"] = lowres > 0
     if lowres > 0:
         out["lowresSigma"] = min(lowres, 1.0)
+    try:
+        fdg = float(meta.get("frequency_guidance", meta.get("fdg_low", 1.0)))
+    except (TypeError, ValueError):
+        fdg = 1.0
+    out["fdgOn"] = fdg < 1.0
+    if fdg < 1.0:
+        out["fdgLow"] = max(fdg, 0.0)
     detailer = extract_detailer(meta)
     if detailer:
         out["detailer"] = detailer

@@ -252,6 +252,7 @@ document.addEventListener('alpine:init', () => {
       uncondSkip: '22',   // MOSS-Image and Anima: blocks the negative-prompt pass skips
       slgScale: 0, slgLayers: '24', slgStart: 0, slgStop: 1,   // MOSS-Image and Anima: Skip Layer Guidance
       lowresOn: false, lowresSigma: 0.95,   // Anima: half-res backbone calls while σ >= lowresSigma
+      fdgOn: false, fdgLow: 0.45,   // Anima: coarse CFG scale below σ 0.90 (frequency-decoupled guidance)
     },
     // >1 submits N jobs: seed+i with a pinned seed, a fresh random with -1.
     batchCount: 1,
@@ -1519,6 +1520,7 @@ document.addEventListener('alpine:init', () => {
         slg_layers: slgLayers, slg_scale: this.form.slgScale,
         slg_start: this.form.slgStart, slg_stop: this.form.slgStop,
         lowres_sigma: this.modelType === 'Anima' && this.form.lowresOn ? this.form.lowresSigma : 0,
+        fdg_low: this.modelType === 'Anima' && this.form.fdgOn ? this.form.fdgLow : 1.0,
       };
     },
 
@@ -2539,7 +2541,8 @@ document.addEventListener('alpine:init', () => {
                     'teacacheOn', 'teacache', 'teacacheCalibrated', 'teacacheForecast',
                     'teacacheRule', 'teacacheFloor',
                     'deepcacheOn', 'deepcache', 'uncondSkip',
-                    'slgScale', 'slgLayers', 'slgStart', 'slgStop', 'lowresOn', 'lowresSigma'];
+                    'slgScale', 'slgLayers', 'slgStart', 'slgStop', 'lowresOn', 'lowresSigma',
+                    'fdgOn', 'fdgLow'];
       for (const k of keys) if (f[k] !== undefined) this.form[k] = f[k];
       // An Anima image without the key ran no uncond skip.
       if (f.uncondSkip === undefined && this.modelType === 'Anima') this.form.uncondSkip = '';

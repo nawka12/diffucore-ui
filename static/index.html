@@ -451,6 +451,16 @@
               <p class="sub">~1.5x faster; changes the image for a given seed.</p>
             </div>
           </div>
+          <div class="slider" x-show="modelType==='Anima'">
+            <label class="chip toggle" :class="{on: form.fdgOn}"
+                   title="Weaker coarse guidance below σ 0.90, full guidance for fine detail. Same speed.">
+              <input type="checkbox" x-model="form.fdgOn"> Frequency guidance</label>
+            <div x-show="form.fdgOn">
+              <div class="slider-head"><span>coarse CFG ×</span>
+                <input type="number" x-model.number="form.fdgLow" min="0.2" max="1" step="0.05"></div>
+              <input type="range" x-model.number="form.fdgLow" min="0.2" max="1" step="0.05">
+            </div>
+          </div>
           <div class="slider" x-show="isFlowModel">
             <div class="slider-head"><span>Shift</span>
               <input type="number" x-model.number="form.shift" min="1" max="9" step="0.1" :disabled="!shiftHonored"></div>

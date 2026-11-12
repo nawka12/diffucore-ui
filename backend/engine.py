@@ -1689,6 +1689,7 @@ class Engine:
         slg_start: float = 0.0,
         slg_stop: float = 1.0,
         lowres_sigma: float = 0.0,
+        fdg_low: float = 1.0,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -1737,6 +1738,8 @@ class Engine:
             kwargs.update(slg_layers=slg_layers, slg_scale=slg_scale, slg_start=slg_start, slg_stop=slg_stop)
         if self._loaded.family == MODEL_FAMILY_ANIMA and lowres_sigma > 0:
             kwargs["lowres_sigma"] = lowres_sigma
+        if self._loaded.family == MODEL_FAMILY_ANIMA and fdg_low < 1.0:
+            kwargs["fdg_low"] = fdg_low
         try:
             image, pipeline_info = gen(**kwargs)
         finally:
@@ -1781,6 +1784,7 @@ class Engine:
         slg_start: float = 0.0,
         slg_stop: float = 1.0,
         lowres_sigma: float = 0.0,
+        fdg_low: float = 1.0,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -1828,6 +1832,8 @@ class Engine:
             gen_kwargs.update(slg_layers=slg_layers, slg_scale=slg_scale, slg_start=slg_start, slg_stop=slg_stop)
         if self._loaded.family == MODEL_FAMILY_ANIMA and lowres_sigma > 0:
             gen_kwargs["lowres_sigma"] = lowres_sigma
+        if self._loaded.family == MODEL_FAMILY_ANIMA and fdg_low < 1.0:
+            gen_kwargs["fdg_low"] = fdg_low
         try:
             image, pipeline_info = gen(**gen_kwargs)
         finally:
@@ -1876,6 +1882,7 @@ class Engine:
         slg_start: float = 0.0,
         slg_stop: float = 1.0,
         lowres_sigma: float = 0.0,
+        fdg_low: float = 1.0,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -1924,6 +1931,8 @@ class Engine:
             gen_kwargs.update(slg_layers=slg_layers, slg_scale=slg_scale, slg_start=slg_start, slg_stop=slg_stop)
         if self._loaded.family == MODEL_FAMILY_ANIMA and lowres_sigma > 0:
             gen_kwargs["lowres_sigma"] = lowres_sigma
+        if self._loaded.family == MODEL_FAMILY_ANIMA and fdg_low < 1.0:
+            gen_kwargs["fdg_low"] = fdg_low
         try:
             image, pipeline_info = gen(**gen_kwargs)
         finally:

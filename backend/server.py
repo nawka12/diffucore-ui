@@ -323,6 +323,8 @@ class SkipFields(BaseModel):
     # Anima half-res layout: backbone calls at σ >= this run on a 2x-downsampled
     # latent (0 = off).
     lowres_sigma: float = Field(0.0, ge=0.0, le=1.0)
+    # Anima frequency-decoupled guidance: coarse CFG scale below σ 0.90 (1 = off).
+    fdg_low: float = Field(1.0, ge=0.0, le=1.0)
 
     @field_validator("uncond_skip_layers", "slg_layers")
     @classmethod
@@ -700,6 +702,8 @@ def _skip_kwargs(p: SkipFields, slg_scale: Optional[float] = None,
         kwargs.update(slg_start=float(p.slg_start), slg_stop=float(p.slg_stop))
     if not moss and p.lowres_sigma > 0:
         kwargs["lowres_sigma"] = float(p.lowres_sigma)
+    if not moss and p.fdg_low < 1.0:
+        kwargs["fdg_low"] = float(p.fdg_low)
     return kwargs
 
 
