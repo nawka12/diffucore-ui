@@ -51,7 +51,7 @@ def test_option_lists_match_the_pipeline():
     from diffucore.pipelines._zimage import _ZIMAGE_SAMPLERS, _ZIMAGE_SCHEDULERS
     assert SCHEDULERS_ZIMAGE == list(_ZIMAGE_SCHEDULERS)
     assert SCHEDULERS_ZIMAGE[0] == "zimage"
-    assert set(SAMPLERS_ZIMAGE) == set(_ZIMAGE_SAMPLERS) == set(SAMPLERS_ANIMA)
+    assert set(SAMPLERS_ZIMAGE) | {"cogent3_pump_onset"} == set(_ZIMAGE_SAMPLERS) == set(SAMPLERS_ANIMA)
 
 
 # ── model_hash / metadata ────────────────────────────────────────────

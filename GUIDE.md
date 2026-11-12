@@ -588,6 +588,15 @@ bugs, just how the model responds):
   accessories came out right depended on the noise draw even at 50 and 100
   steps, so judge coherency over several seeds.
 
+- **`cogent3_pump_onset` (Anima only)** is `cogent3_pump_rate` with the layout
+  band (σ ≥ 0.90) sub-stepped ×2 and run at half resolution. It takes your
+  normal step count: only the steps that lie wholly in the band are split in two
+  (in λ), and the first step from σ 1 is never split. The extra steps are cheap
+  because the band runs at half res, so it is faster than `cogent3_pump_rate`
+  at the same step count. It aims at prompt coherence and hands/anatomy, which
+  are decided in that band. It switches "Half-res layout steps" on by itself
+  (at σ 0.90, or at your own threshold if that is lower).
+
 - **The `secant_tilt` scheduler** is built for `secant_anneal` and replaces
   `beta_mix` as its pairing. It came from measuring where AnimaFranken v1.3
   decides what (1024×1536, CFG 5, CFG interval 0.1–0.75):

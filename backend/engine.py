@@ -136,7 +136,7 @@ SAMPLERS_FLOW = [s for s in SAMPLERS_SD if s != "ddpm" and s not in _SAMPLERS_SD
 # These need a [B, C, H, W] latent (2-D convolutions, per-channel spatial
 # statistics). FLUX samples a patchified token sequence, so it doesn't get them.
 _SAMPLERS_4D_ONLY = {"infinity_omega", "infinity_realism",
-                     "infinity_aether", "cogent3_pump", "cogent3_pump_rate"}
+                     "infinity_aether", "cogent3_pump", "cogent3_pump_rate", "cogent3_pump_onset"}
 # Anima-only additions.
 SAMPLERS_ANIMA = SAMPLERS_FLOW + ["euler_ancestral_anneal", "secant_anneal"]
 SAMPLERS_FLUX = [s for s in SAMPLERS_FLOW if s not in _SAMPLERS_4D_ONLY]
@@ -146,6 +146,9 @@ SAMPLERS_KREA2 = SAMPLERS_ANIMA
 SAMPLERS_MOSS = SAMPLERS_ANIMA
 # Z-Image samples a plain 4-D 16-ch latent.
 SAMPLERS_ZIMAGE = SAMPLERS_ANIMA
+# Rebinds after the lists above took the old one: the onset sampler needs Anima's half-res
+# layout band, which no other family has.
+SAMPLERS_ANIMA = SAMPLERS_ANIMA + ["cogent3_pump_onset"]
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
                  "align_your_steps", "sgm_uniform", "simple", "normal",
@@ -189,7 +192,7 @@ SAMPLER_GROUPS = {
                      "gradient_estimation"],
     "SDE": ["er_sde", "sa_solver", "sa_solver_pece", "seeds_2", "seeds_3"],
     "Infinity": ["infinity", "infinity_realism", "infinity_omega", "infinity_aether"],
-    "Diffucore": ["cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate", "secant",
+    "Diffucore": ["cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate", "cogent3_pump_onset", "secant",
                   "secant_anneal", "euler_ancestral_anneal"],
 }
 SCHEDULER_GROUPS = {
