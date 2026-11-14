@@ -597,6 +597,13 @@ bugs, just how the model responds):
   are decided in that band. It switches "Half-res layout steps" on by itself
   (at σ 0.90, or at your own threshold if that is lower).
 
+- **`secant_onset` (Anima only)** is `secant_anneal` with the layout band
+  (σ ≥ 0.90) sub-stepped ×2 and run at half resolution, like `cogent3_pump_onset`.
+  Below σ 0.90 it is `secant_anneal` on your grid, so use it with `beta_mix` and
+  your usual CFG interval and SLG window; they land where they did. About 15%
+  faster than `secant_anneal` at the same step count. It switches "Half-res
+  layout steps" on by itself (at σ 0.90, or your own threshold if lower).
+
 - **The `secant_tilt` scheduler** is built for `secant_anneal` and replaces
   `beta_mix` as its pairing. It came from measuring where AnimaFranken v1.3
   decides what (1024×1536, CFG 5, CFG interval 0.1–0.75):

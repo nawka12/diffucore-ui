@@ -656,10 +656,10 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
     # Anima, Krea 2, MOSS-Image and Z-Image. Inject just the knobs the sampler/scheduler
     # consumes, so the metadata carries no unused keys.
     if ENGINE.loaded_family in ("anima", "krea2", "moss_image", "z_image"):
-        if sampler in ("secant", "secant_anneal"):
+        if sampler in ("secant", "secant_anneal", "secant_onset"):
             knobs["curvature"] = float(SETTINGS["curvature"])
-        if sampler in ("secant_anneal", "euler_ancestral_anneal", "cogent", "cogent3", "cogent3_pump",
-                       "cogent3_pump_rate", "cogent3_pump_onset"):
+        if sampler in ("secant_anneal", "secant_onset", "euler_ancestral_anneal", "cogent", "cogent3",
+                       "cogent3_pump", "cogent3_pump_rate", "cogent3_pump_onset"):
             knobs["eta_max"] = float(SETTINGS["eta_max"])
         if scheduler == "beta":
             knobs["beta_alpha"] = float(SETTINGS["beta_alpha"])

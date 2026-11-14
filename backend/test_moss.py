@@ -50,7 +50,7 @@ def test_option_lists_match_the_pipeline():
     from diffucore.pipelines._moss import _MOSS_SAMPLERS, _MOSS_SCHEDULERS, MOSS_UNCOND_SKIP as ref_skip
     assert SCHEDULERS_MOSS == list(_MOSS_SCHEDULERS)
     assert SCHEDULERS_MOSS[0] == "moss"
-    assert set(SAMPLERS_MOSS) | {"cogent3_pump_onset"} == set(_MOSS_SAMPLERS) == set(SAMPLERS_ANIMA)
+    assert set(SAMPLERS_MOSS) | {"cogent3_pump_onset", "secant_onset"} == set(_MOSS_SAMPLERS) == set(SAMPLERS_ANIMA)
     assert MOSS_UNCOND_SKIP == ref_skip == (22,)
 
 

@@ -162,7 +162,7 @@ def test_models_endpoint_lists_krea2_options():
         m = c.get("/api/models").json()
     assert m["schedulers_krea2"] == SCHEDULERS_KREA2
     assert m["schedulers_krea2"][0] == "krea2"
-    assert m["samplers_krea2"] + ["cogent3_pump_onset"] == SAMPLERS_ANIMA
+    assert m["samplers_krea2"] + ["cogent3_pump_onset", "secant_onset"] == SAMPLERS_ANIMA
 
 
 class _FakeEnhancer:

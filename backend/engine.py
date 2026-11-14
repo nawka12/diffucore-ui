@@ -148,7 +148,7 @@ SAMPLERS_MOSS = SAMPLERS_ANIMA
 SAMPLERS_ZIMAGE = SAMPLERS_ANIMA
 # Rebinds after the lists above took the old one: the onset sampler needs Anima's half-res
 # layout band, which no other family has.
-SAMPLERS_ANIMA = SAMPLERS_ANIMA + ["cogent3_pump_onset"]
+SAMPLERS_ANIMA = SAMPLERS_ANIMA + ["cogent3_pump_onset", "secant_onset"]
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
                  "align_your_steps", "sgm_uniform", "simple", "normal",
@@ -193,7 +193,7 @@ SAMPLER_GROUPS = {
     "SDE": ["er_sde", "sa_solver", "sa_solver_pece", "seeds_2", "seeds_3"],
     "Infinity": ["infinity", "infinity_realism", "infinity_omega", "infinity_aether"],
     "Diffucore": ["cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate", "cogent3_pump_onset", "secant",
-                  "secant_anneal", "euler_ancestral_anneal"],
+                  "secant_anneal", "secant_onset", "euler_ancestral_anneal"],
 }
 SCHEDULER_GROUPS = {
     "Model default": ["flow", "flow_dyn", "flux", "krea2", "moss", "zimage", "oss"],
