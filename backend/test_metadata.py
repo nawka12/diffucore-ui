@@ -410,3 +410,17 @@ def test_half_res_calibration_roundtrips_only_while_the_band_runs():
     idle = {**_BASE_GEN, "lowres_calibrated": True}
     assert "Half-res calibration" not in md.format_metadata(idle, _StubEngine())
     assert _roundtrip(idle)["lowresCal"] is False and _roundtrip_swarm(idle)["lowresCal"] is False
+
+
+def test_forecast_roundtrips_only_while_on():
+    """Written as two fields only when on; restored through both formats, off when absent."""
+    assert "Forecast" not in md.format_metadata(_BASE_GEN, _StubEngine())
+    off = _roundtrip(_BASE_GEN)
+    assert off["forecastOn"] is False and "forecastRatio" not in off
+    assert _roundtrip_swarm(_BASE_GEN)["forecastOn"] is False
+    gen = {**_BASE_GEN, "forecast_ratio": 0.4, "forecast_sigma": 0.75}
+    text = md.format_metadata(gen, _StubEngine())
+    assert "Forecast steps: 0.4" in text and "Forecast sigma: 0.75" in text
+    for back in (_roundtrip(gen), _roundtrip_swarm(gen)):
+        assert back["forecastOn"] is True and back["forecastRatio"] == 0.4 and back["forecastSigma"] == 0.75
+    assert "Forecast" not in md.format_metadata({**_BASE_GEN, "forecast_ratio": 0.0, "forecast_sigma": 0.75}, _StubEngine())

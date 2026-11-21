@@ -228,6 +228,9 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
         fields.append("Half-res calibration: on")
     if gen_kwargs.get("fdg_low", 1.0) < 1.0:
         fields.append(f"Frequency guidance: {gen_kwargs['fdg_low']:.2f}")
+    if gen_kwargs.get("forecast_ratio", 0.0) > 0:
+        fields.append(f"Forecast steps: {gen_kwargs['forecast_ratio']:g}")
+        fields.append(f"Forecast sigma: {gen_kwargs['forecast_sigma']:g}")
     if lora_hashes:
         # Forge always quotes this map, even with one entry, and Civitai expects it.
         fields.append(f"Lora hashes: {json.dumps(', '.join(lora_hashes), ensure_ascii=False)}")
@@ -342,6 +345,9 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
         extra["lowres_calibrated"] = True
     if gen_kwargs.get("fdg_low", 1.0) < 1.0:
         extra["fdg_low"] = round(gen_kwargs["fdg_low"], 2)
+    if gen_kwargs.get("forecast_ratio", 0.0) > 0:
+        extra["forecast_ratio"] = gen_kwargs["forecast_ratio"]
+        extra["forecast_sigma"] = gen_kwargs["forecast_sigma"]
     if "strength" in gen_kwargs:
         extra["denoising_strength"] = gen_kwargs["strength"]
     if "shift" in gen_kwargs:
@@ -670,6 +676,15 @@ def workspace_fields(meta: dict) -> dict:
     out["fdgOn"] = fdg < 1.0
     if fdg < 1.0:
         out["fdgLow"] = max(fdg, 0.0)
+    try:
+        fc = float(meta.get("forecast_steps", meta.get("forecast_ratio", 0.0)))
+        fc_sigma = float(meta.get("forecast_sigma", 0.75))
+    except (TypeError, ValueError):
+        fc, fc_sigma = 0.0, 0.75
+    out["forecastOn"] = fc > 0
+    if fc > 0:
+        out["forecastRatio"] = min(fc, 0.99)
+        out["forecastSigma"] = min(max(fc_sigma, 0.05), 1.0)
     detailer = extract_detailer(meta)
     if detailer:
         out["detailer"] = detailer

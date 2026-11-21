@@ -1694,6 +1694,8 @@ class Engine:
         lowres_sigma: float = 0.0,
         lowres_calibrated: bool = False,
         fdg_low: float = 1.0,
+        forecast_ratio: float = 0.0,
+        forecast_sigma: float = 0.75,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -1746,6 +1748,8 @@ class Engine:
             kwargs["lowres_calibrated"] = True
         if self._loaded.family == MODEL_FAMILY_ANIMA and fdg_low < 1.0:
             kwargs["fdg_low"] = fdg_low
+        if self._loaded.family == MODEL_FAMILY_ANIMA and forecast_ratio > 0:
+            kwargs.update(forecast_ratio=forecast_ratio, forecast_sigma=forecast_sigma)
         try:
             image, pipeline_info = gen(**kwargs)
         finally:
@@ -1792,6 +1796,8 @@ class Engine:
         lowres_sigma: float = 0.0,
         lowres_calibrated: bool = False,
         fdg_low: float = 1.0,
+        forecast_ratio: float = 0.0,
+        forecast_sigma: float = 0.75,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -1843,6 +1849,8 @@ class Engine:
             gen_kwargs["lowres_calibrated"] = True
         if self._loaded.family == MODEL_FAMILY_ANIMA and fdg_low < 1.0:
             gen_kwargs["fdg_low"] = fdg_low
+        if self._loaded.family == MODEL_FAMILY_ANIMA and forecast_ratio > 0:
+            gen_kwargs.update(forecast_ratio=forecast_ratio, forecast_sigma=forecast_sigma)
         try:
             image, pipeline_info = gen(**gen_kwargs)
         finally:
@@ -1893,6 +1901,8 @@ class Engine:
         lowres_sigma: float = 0.0,
         lowres_calibrated: bool = False,
         fdg_low: float = 1.0,
+        forecast_ratio: float = 0.0,
+        forecast_sigma: float = 0.75,
         progress_callback: Callable[[int, int], None] | None = None,
         preview_callback: Callable[[Image.Image], None] | None = None,
     ) -> Tuple[Image.Image, str]:
@@ -1945,6 +1955,8 @@ class Engine:
             gen_kwargs["lowres_calibrated"] = True
         if self._loaded.family == MODEL_FAMILY_ANIMA and fdg_low < 1.0:
             gen_kwargs["fdg_low"] = fdg_low
+        if self._loaded.family == MODEL_FAMILY_ANIMA and forecast_ratio > 0:
+            gen_kwargs.update(forecast_ratio=forecast_ratio, forecast_sigma=forecast_sigma)
         try:
             image, pipeline_info = gen(**gen_kwargs)
         finally:

@@ -53,6 +53,15 @@ network/share flags, architecture, and status.
   full-res model's, measured on AnimaFranken v1.3 (9-26% lower error, largest at
   the top of the band). Only acts while half-res steps run (the chip, or
   `secant_onset` / `cogent3_pump_onset`). Off by default; old seeds change when on.
+- **Forecast late steps (Anima).** Opt-in Generate setting, ported from galpt's
+  infinity-diffusion (EWMA forecast). On "share of steps" of the steps below σ
+  "below σ" (defaults 0.15 and 0.75), spread evenly, the model is not called at all
+  (cond, uncond and SLG passes): the sampler gets an exponentially weighted average
+  (0.8 new, 0.2 old) of the x0 estimates from earlier steps instead. The first and
+  last step always run. The share is capped by how many steps fall below σ (on
+  pump_taper@32, 8 of 32): above 0.15 there, forecast steps run back to back (all 8
+  from 0.25 up) and fine detail (irises, hair strands) smears. Changes the image for a given seed.
+  Works with TeaCache, half-res, SLG and CUDA Graphs.
 - **Frequency guidance (Anima)** splits the CFG push into coarse shapes and fine detail (Sadat et al. 2025, FDG). Below σ 0.90 the coarse part gets "coarse CFG ×" times your CFG scale while fine detail keeps the full scale; above σ 0.90, where the layout is decided, guidance is unchanged. At CFG 7 the paper's SD3 setting is about 0.45 (3 coarse / 7 fine), aimed at less over-saturation and more detail. No extra model calls.
 - **fp16 accumulation**: opt-in per-load perf flag. fp16-accumulated matmuls
   run at 2× the tensor-core rate on consumer GPUs (measured ~1.17× end-to-end

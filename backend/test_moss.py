@@ -629,3 +629,27 @@ def test_lowres_submit_guard(monkeypatch, family, graphs, compiled, teacache, co
     err = server._slg_conflict(server.GeneratePayload(prompt="p", teacache=teacache, lowres_sigma=0.95))
     assert (err is None) if conflict is None else err.startswith("Half-res layout") and conflict in err
     assert server._slg_conflict(server.GeneratePayload(prompt="p", teacache=teacache)) is None
+
+
+def test_forecast_is_sent_for_anima_only_when_on(monkeypatch):
+    seen = {}
+
+    def fake(**kw):
+        seen.clear()
+        seen.update(kw)
+        raise RuntimeError("stop")
+
+    def run(family, **kw):
+        loaded = _anima_loaded() if family == "anima" else LoadedModel(
+            name="x", family=family, model=object(), native_res=1024)
+        monkeypatch.setattr(ENGINE, "_loaded", loaded)
+        monkeypatch.setattr(ENGINE, "generate_t2i", fake, raising=False)
+        with pytest.raises(RuntimeError, match="stop"):
+            server._run_generation(server.GeneratePayload(prompt="a fox", **kw), lambda *a: None)
+        return seen.get("forecast_ratio"), seen.get("forecast_sigma")
+
+    assert run("anima") == (None, None)
+    assert run("anima", forecast_ratio=0.4) == (0.4, 0.75)
+    assert run("anima", forecast_ratio=0.3, forecast_sigma=0.6) == (0.3, 0.6)
+    assert run("moss_image", forecast_ratio=0.4) == (None, None)
+    assert run("sdxl", forecast_ratio=0.4) == (None, None)

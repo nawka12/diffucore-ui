@@ -327,6 +327,9 @@ class SkipFields(BaseModel):
     lowres_calibrated: bool = False
     # Anima frequency-decoupled guidance: coarse CFG scale below σ 0.90 (1 = off).
     fdg_low: float = Field(1.0, ge=0.0, le=1.0)
+    # Anima EWMA forecast: skip the model on this share of the steps below forecast_sigma (0 = off).
+    forecast_ratio: float = Field(0.0, ge=0.0, lt=1.0)
+    forecast_sigma: float = Field(0.75, gt=0.0, le=1.0)
 
     @field_validator("uncond_skip_layers", "slg_layers")
     @classmethod
@@ -708,6 +711,8 @@ def _skip_kwargs(p: SkipFields, slg_scale: Optional[float] = None,
         kwargs["lowres_calibrated"] = True
     if not moss and p.fdg_low < 1.0:
         kwargs["fdg_low"] = float(p.fdg_low)
+    if not moss and p.forecast_ratio > 0:
+        kwargs.update(forecast_ratio=float(p.forecast_ratio), forecast_sigma=float(p.forecast_sigma))
     return kwargs
 
 

@@ -82,6 +82,17 @@ def test_lowres_sigma_is_bounded():
                 model(lowres_sigma=bad)
 
 
+def test_forecast_fields_are_bounded():
+    """EWMA forecast share in [0, 1) and σ limit in (0, 1] on Generate and X/Y/Z, default off."""
+    for model in (server.GeneratePayload, server.XYZPayload):
+        assert model().forecast_ratio == 0.0 and model().forecast_sigma == 0.75
+        assert model(forecast_ratio=0.4, forecast_sigma=0.5).forecast_ratio == 0.4
+        for field, bad in (("forecast_ratio", -0.1), ("forecast_ratio", 1.0),
+                           ("forecast_sigma", 0.0), ("forecast_sigma", 1.5)):
+            with pytest.raises(ValidationError):
+                model(**{field: bad})
+
+
 def test_xyz_and_upscale_payloads_bounded():
     with pytest.raises(ValidationError):
         server.XYZPayload(steps=201)

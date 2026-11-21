@@ -457,6 +457,19 @@
               <input type="checkbox" x-model="form.lowresCal"> Calibrated half-res</label>
           </div>
           <div class="slider" x-show="modelType==='Anima'">
+            <label class="chip toggle" :class="{on: form.forecastOn}"
+                   title="Skips the model on some late steps and reuses an average of earlier estimates. Faster; changes the image for a given seed.">
+              <input type="checkbox" x-model="form.forecastOn"> Forecast late steps</label>
+            <div x-show="form.forecastOn">
+              <div class="slider-head"><span>share of steps</span>
+                <input type="number" x-model.number="form.forecastRatio" min="0.1" max="0.6" step="0.05"></div>
+              <input type="range" x-model.number="form.forecastRatio" min="0.1" max="0.6" step="0.05">
+              <div class="slider-head"><span>below σ</span>
+                <input type="number" x-model.number="form.forecastSigma" min="0.3" max="0.95" step="0.05"></div>
+              <input type="range" x-model.number="form.forecastSigma" min="0.3" max="0.95" step="0.05">
+            </div>
+          </div>
+          <div class="slider" x-show="modelType==='Anima'">
             <label class="chip toggle" :class="{on: form.fdgOn}"
                    title="Weaker coarse guidance below σ 0.90, full guidance for fine detail. Same speed.">
               <input type="checkbox" x-model="form.fdgOn"> Frequency guidance</label>
