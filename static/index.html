@@ -451,6 +451,11 @@
               <p class="sub">~1.5x faster; changes the image for a given seed.</p>
             </div>
           </div>
+          <div class="slider" x-show="modelType==='Anima' && (form.lowresOn || form.sampler === 'secant_onset' || form.sampler === 'cogent3_pump_onset')">
+            <label class="chip toggle" :class="{on: form.lowresCal}"
+                   title="Model sees a calibrated noise level in half-res steps">
+              <input type="checkbox" x-model="form.lowresCal"> Calibrated half-res</label>
+          </div>
           <div class="slider" x-show="modelType==='Anima'">
             <label class="chip toggle" :class="{on: form.fdgOn}"
                    title="Weaker coarse guidance below σ 0.90, full guidance for fine detail. Same speed.">

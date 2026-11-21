@@ -592,6 +592,29 @@ def test_lowres_sigma_is_sent_for_anima_only_when_on(monkeypatch):
     assert run("sdxl", lowres_sigma=0.95) is None
 
 
+def test_lowres_calibrated_is_sent_for_anima_only_when_on(monkeypatch):
+    seen = {}
+
+    def fake(**kw):
+        seen.clear()
+        seen.update(kw)
+        raise RuntimeError("stop")
+
+    def run(family, **kw):
+        loaded = _anima_loaded() if family == "anima" else LoadedModel(
+            name="x", family=family, model=object(), native_res=1024)
+        monkeypatch.setattr(ENGINE, "_loaded", loaded)
+        monkeypatch.setattr(ENGINE, "generate_t2i", fake, raising=False)
+        with pytest.raises(RuntimeError, match="stop"):
+            server._run_generation(server.GeneratePayload(prompt="a fox", **kw), lambda *a: None)
+        return seen.get("lowres_calibrated")
+
+    assert run("anima") is None
+    assert run("anima", lowres_sigma=0.95, lowres_calibrated=True) is True
+    assert run("moss_image", lowres_calibrated=True) is None
+    assert run("sdxl", lowres_calibrated=True) is None
+
+
 @pytest.mark.parametrize("family, graphs, compiled, teacache, conflict", [
     ("anima", True, False, 0.0, "CUDA Graphs"),
     ("anima", False, True, 0.0, "torch.compile"),

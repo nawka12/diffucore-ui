@@ -47,6 +47,12 @@ network/share flags, architecture, and status.
   and later steps stay full res. Measured ~1.5× end to end at 1024×1536 on an RTX
   2060 and blind-tested as equal quality, but it changes the image for a given
   seed. Not with CUDA Graphs or torch.compile; TeaCache only caches the full-res steps.
+- **Calibrated half-res (Anima).** Half-res steps tell the model a calibrated
+  noise level instead of the pooled one, following NoiseShift (arXiv 2510.02307)
+  re-fit for the pooled band: the shift that makes the half-res x0 closest to the
+  full-res model's, measured on AnimaFranken v1.3 (9-26% lower error, largest at
+  the top of the band). Only acts while half-res steps run (the chip, or
+  `secant_onset` / `cogent3_pump_onset`). Off by default; old seeds change when on.
 - **Frequency guidance (Anima)** splits the CFG push into coarse shapes and fine detail (Sadat et al. 2025, FDG). Below σ 0.90 the coarse part gets "coarse CFG ×" times your CFG scale while fine detail keeps the full scale; above σ 0.90, where the layout is decided, guidance is unchanged. At CFG 7 the paper's SD3 setting is about 0.45 (3 coarse / 7 fine), aimed at less over-saturation and more detail. No extra model calls.
 - **fp16 accumulation**: opt-in per-load perf flag. fp16-accumulated matmuls
   run at 2× the tensor-core rate on consumer GPUs (measured ~1.17× end-to-end

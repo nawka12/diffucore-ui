@@ -165,6 +165,15 @@ def _skip_layers_text(layers) -> str:
     return ", ".join(str(int(i)) for i in layers) or "none"
 
 
+_ONSET_SAMPLERS = ("cogent3_pump_onset", "secant_onset")
+
+
+def _lowres_calibrated_runs(gen_kwargs: dict) -> bool:
+    """Calibration only acts while the half-res band runs: the chip's, or an onset sampler's own."""
+    return bool(gen_kwargs.get("lowres_calibrated")) and (
+        gen_kwargs.get("lowres_sigma", 0.0) > 0 or gen_kwargs.get("sampler") in _ONSET_SAMPLERS)
+
+
 def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
                     upscale: dict | None = None, seed: int | None = None) -> str:
     """Build the AUTO1111-style ``parameters`` string for a finished generation.
@@ -215,6 +224,8 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
         fields.append(f"SLG stop: {gen_kwargs['slg_stop']}")
     if gen_kwargs.get("lowres_sigma", 0.0) > 0:
         fields.append(f"Half-res layout: {gen_kwargs['lowres_sigma']:.2f}")
+    if _lowres_calibrated_runs(gen_kwargs):
+        fields.append("Half-res calibration: on")
     if gen_kwargs.get("fdg_low", 1.0) < 1.0:
         fields.append(f"Frequency guidance: {gen_kwargs['fdg_low']:.2f}")
     if lora_hashes:
@@ -327,6 +338,8 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
         extra["slg_stop"] = gen_kwargs["slg_stop"]
     if gen_kwargs.get("lowres_sigma", 0.0) > 0:
         extra["lowres_sigma"] = round(gen_kwargs["lowres_sigma"], 2)
+    if _lowres_calibrated_runs(gen_kwargs):
+        extra["lowres_calibrated"] = True
     if gen_kwargs.get("fdg_low", 1.0) < 1.0:
         extra["fdg_low"] = round(gen_kwargs["fdg_low"], 2)
     if "strength" in gen_kwargs:
@@ -647,6 +660,9 @@ def workspace_fields(meta: dict) -> dict:
     out["lowresOn"] = lowres > 0
     if lowres > 0:
         out["lowresSigma"] = min(lowres, 1.0)
+    # The A1111 key is the text label ("on"), SwarmUI's the extra field.
+    cal = meta.get("half-res_calibration", meta.get("lowres_calibrated", False))
+    out["lowresCal"] = str(cal).strip().lower() in ("on", "true", "1")
     try:
         fdg = float(meta.get("frequency_guidance", meta.get("fdg_low", 1.0)))
     except (TypeError, ValueError):

@@ -394,3 +394,19 @@ def test_prompt_rating_ignores_negative_prompt():
     # Someone banning "nude" in the negative isn't generating nudity.
     assert md.prompt_rating("a cat") == "PG"
     assert md.prompt_rating("a cat\nNegative prompt: nude, gore") == "PG"
+
+
+def test_half_res_calibration_roundtrips_only_while_the_band_runs():
+    """Written when on AND the band runs (the chip's sigma, or an onset sampler)."""
+    assert "Half-res calibration" not in md.format_metadata(_BASE_GEN, _StubEngine())
+    assert _roundtrip(_BASE_GEN)["lowresCal"] is False
+    cal = {**_BASE_GEN, "lowres_sigma": 0.95, "lowres_calibrated": True}
+    assert "Half-res calibration: on" in md.format_metadata(cal, _StubEngine())
+    for back in (_roundtrip(cal), _roundtrip_swarm(cal)):
+        assert back["lowresCal"] is True and back["lowresOn"] is True
+    onset = {**_BASE_GEN, "sampler": "secant_onset", "lowres_calibrated": True}
+    assert "Half-res calibration: on" in md.format_metadata(onset, _StubEngine())
+    assert _roundtrip(onset)["lowresCal"] is True and _roundtrip_swarm(onset)["lowresCal"] is True
+    idle = {**_BASE_GEN, "lowres_calibrated": True}
+    assert "Half-res calibration" not in md.format_metadata(idle, _StubEngine())
+    assert _roundtrip(idle)["lowresCal"] is False and _roundtrip_swarm(idle)["lowresCal"] is False
