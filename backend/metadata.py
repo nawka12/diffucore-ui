@@ -166,12 +166,16 @@ def _skip_layers_text(layers) -> str:
 
 
 _ONSET_SAMPLERS = ("cogent3_pump_onset", "secant_onset")
+_GATE_SAMPLERS = ("cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate", "cogent3_pump_onset",
+                  "cogent3_reward")
 
 
 def _lowres_calibrated_runs(gen_kwargs: dict) -> bool:
-    """Calibration only acts while the half-res band runs: the chip's, or an onset sampler's own."""
+    """Calibration only acts while the half-res band runs: the chip's, an onset sampler's own,
+    or the one a reward pick forced."""
     return bool(gen_kwargs.get("lowres_calibrated")) and (
-        gen_kwargs.get("lowres_sigma", 0.0) > 0 or gen_kwargs.get("sampler") in _ONSET_SAMPLERS)
+        gen_kwargs.get("lowres_sigma", 0.0) > 0 or gen_kwargs.get("sampler") in _ONSET_SAMPLERS
+        or bool(gen_kwargs.get("reward")))
 
 
 def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
@@ -200,9 +204,7 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     if "cfg_interval_start" in gen_kwargs:
         fields.append(f"CFG interval: {gen_kwargs['cfg_interval_start']}-"
                       f"{gen_kwargs.get('cfg_interval_end', 1.0)}")
-    if (gen_kwargs.get("sampler") in ("cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate",
-                                      "cogent3_pump_onset")
-            and "gate_reduce" in gen_kwargs):
+    if (gen_kwargs.get("sampler") in _GATE_SAMPLERS and "gate_reduce" in gen_kwargs):
         fields.append(f"Gate reduce: {gen_kwargs['gate_reduce']}")
     fields.append(f"Seed: {engine.last_seed if seed is None else seed}")
     if "width" in gen_kwargs and "height" in gen_kwargs:
@@ -231,6 +233,8 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
     if gen_kwargs.get("forecast_ratio", 0.0) > 0:
         fields.append(f"Forecast steps: {gen_kwargs['forecast_ratio']:g}")
         fields.append(f"Forecast sigma: {gen_kwargs['forecast_sigma']:g}")
+    if gen_kwargs.get("reward"):
+        fields.append(f"Reward: {_quote(gen_kwargs['reward'])}")
     if lora_hashes:
         # Forge always quotes this map, even with one entry, and Civitai expects it.
         fields.append(f"Lora hashes: {json.dumps(', '.join(lora_hashes), ensure_ascii=False)}")
@@ -348,6 +352,8 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
     if gen_kwargs.get("forecast_ratio", 0.0) > 0:
         extra["forecast_ratio"] = gen_kwargs["forecast_ratio"]
         extra["forecast_sigma"] = gen_kwargs["forecast_sigma"]
+    if gen_kwargs.get("reward"):
+        extra["reward"] = gen_kwargs["reward"]
     if "strength" in gen_kwargs:
         extra["denoising_strength"] = gen_kwargs["strength"]
     if "shift" in gen_kwargs:
@@ -355,9 +361,7 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
     if "cfg_interval_start" in gen_kwargs:
         extra["cfg_interval"] = (f"{gen_kwargs['cfg_interval_start']}-"
                                  f"{gen_kwargs.get('cfg_interval_end', 1.0)}")
-    if (gen_kwargs.get("sampler") in ("cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate",
-                                      "cogent3_pump_onset")
-            and "gate_reduce" in gen_kwargs):
+    if (gen_kwargs.get("sampler") in _GATE_SAMPLERS and "gate_reduce" in gen_kwargs):
         extra["gate_reduce"] = gen_kwargs["gate_reduce"]
     if gen_kwargs.get("teacache_thresh", 0):
         raw = "" if gen_kwargs.get("teacache_use_coeffs", True) else " (raw)"

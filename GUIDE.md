@@ -619,6 +619,16 @@ bugs, just how the model responds):
   faster than `secant_anneal` at the same step count. It switches "Half-res
   layout steps" on by itself (at σ 0.90, or your own threshold if lower).
 
+- **`cogent3_reward` (Anima only)** is plain `cogent3` plus a
+  best-of-6 pick of the layout: 6 particles run the half-res layout band
+  (σ ≥ 0.90), each from the same noise with its own random stream. At σ 0.90 each
+  one is scored by the WD tagger on a cheap half-res lookahead, using your
+  prompt's own danbooru tags (mean log probability), and the best one is finished
+  at full res. Needs at least 3 non-count tags in the prompt (`1girl`, `solo`
+  don't count), else it is plain `cogent3`. Costs about 1.5x a plain run; the
+  Metadata and info line say which particle won. Not with
+  "Forecast late steps"; img2img and inpaint run plain `cogent3`.
+
 - **The `secant_tilt` scheduler** is built for `secant_anneal` and replaces
   `beta_mix` as its pairing. It came from measuring where AnimaFranken v1.3
   decides what (1024×1536, CFG 5, CFG interval 0.1–0.75):

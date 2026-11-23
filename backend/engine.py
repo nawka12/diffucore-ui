@@ -81,6 +81,7 @@ from diffucore.loading import read_header
 from diffucore.runtime import ConditioningCache, DevicePolicy
 
 from utils import checkpoint_path, lora_path, diffusion_model_path, vae_path, te_path
+from reward import reward_fn_for
 
 
 LORA_PROMPT_RE = re.compile(r"<lora:([^:]+):([^>]+)>")
@@ -148,7 +149,7 @@ SAMPLERS_MOSS = SAMPLERS_ANIMA
 SAMPLERS_ZIMAGE = SAMPLERS_ANIMA
 # Rebinds after the lists above took the old one: the onset sampler needs Anima's half-res
 # layout band, which no other family has.
-SAMPLERS_ANIMA = SAMPLERS_ANIMA + ["cogent3_pump_onset", "secant_onset"]
+SAMPLERS_ANIMA = SAMPLERS_ANIMA + ["cogent3_pump_onset", "secant_onset", "cogent3_reward"]
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
                  "align_your_steps", "sgm_uniform", "simple", "normal",
@@ -192,7 +193,8 @@ SAMPLER_GROUPS = {
                      "gradient_estimation"],
     "SDE": ["er_sde", "sa_solver", "sa_solver_pece", "seeds_2", "seeds_3"],
     "Infinity": ["infinity", "infinity_realism", "infinity_omega", "infinity_aether"],
-    "Diffucore": ["cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate", "cogent3_pump_onset", "secant",
+    "Diffucore": ["cogent", "cogent3", "cogent3_reward", "cogent3_pump",
+                  "cogent3_pump_rate", "cogent3_pump_onset", "secant",
                   "secant_anneal", "secant_onset", "euler_ancestral_anneal"],
 }
 SCHEDULER_GROUPS = {
@@ -394,6 +396,7 @@ class Engine:
         self._int8 = False
         self._attention = "sdpa"
         self._last_seed: int = -1
+        self._last_reward: str = ""
         self._last_upscale_seed: int = -1
         self._weights_epoch: int = 0
         self._anima_defaults_applied: bool = False
@@ -446,6 +449,11 @@ class Engine:
     @property
     def last_seed(self) -> int:
         return self._last_seed
+
+    @property
+    def last_reward(self) -> str:
+        """The last t2i run's reward pick ("k=6, pick=3, tags=..."); empty when it had none."""
+        return self._last_reward
 
     @property
     def last_upscale_seed(self) -> int:
@@ -1750,11 +1758,20 @@ class Engine:
             kwargs["fdg_low"] = fdg_low
         if self._loaded.family == MODEL_FAMILY_ANIMA and forecast_ratio > 0:
             kwargs.update(forecast_ratio=forecast_ratio, forecast_sigma=forecast_sigma)
+        self._last_reward = ""
+        reward_fn = (reward_fn_for(prompt) if self._loaded.family == MODEL_FAMILY_ANIMA
+                     and sampler == "cogent3_reward" else None)
+        if reward_fn is not None:
+            kwargs["reward_fn"] = reward_fn
         try:
             image, pipeline_info = gen(**kwargs)
         finally:
             self._reclaim_memory()
         info = f"Seed: {seed} | {width}x{height} | {steps} steps | VAE: {pipeline_info.vae_decode_mode}"
+        r = getattr(pipeline_info, "reward", None)
+        if r:
+            self._last_reward = f"k={r['k']}, pick={r['pick']}, tags={', '.join(reward_fn.tags)}"
+            info += f" | Reward: {self._last_reward}"
         return image, info
 
     def generate_i2i(

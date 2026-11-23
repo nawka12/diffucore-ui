@@ -622,7 +622,7 @@ def _save_output(image: Image.Image, gen_kwargs: dict,
 # The upscaler and detailer don't change the base image, so re-running with only
 # those re-tuned reuses the last base. One slot, touched only by the worker
 # thread, so no lock.
-_BASE_CACHE: "dict[str, tuple[Image.Image, str]]" = {}
+_BASE_CACHE: "dict[str, tuple[Image.Image, str, str]]" = {}   # image, info, reward note
 
 
 def _fingerprint_value(v):
@@ -655,7 +655,8 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
     """Settings-panel engine kwargs for this sampler/scheduler. Shared by plain
     generations and every X/Y/Z cell so both sample the same thing."""
     knobs: dict = {}
-    if sampler in ("cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate", "cogent3_pump_onset"):
+    if sampler in ("cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate", "cogent3_pump_onset",
+                   "cogent3_reward"):
         knobs["gate_reduce"] = SETTINGS["gate_reduce"]
 
     # Anima, Krea 2, MOSS-Image and Z-Image. Inject just the knobs the sampler/scheduler
@@ -664,7 +665,8 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
         if sampler in ("secant", "secant_anneal", "secant_onset"):
             knobs["curvature"] = float(SETTINGS["curvature"])
         if sampler in ("secant_anneal", "secant_onset", "euler_ancestral_anneal", "cogent", "cogent3",
-                       "cogent3_pump", "cogent3_pump_rate", "cogent3_pump_onset"):
+                       "cogent3_pump", "cogent3_pump_rate", "cogent3_pump_onset",
+                       "cogent3_reward"):
             knobs["eta_max"] = float(SETTINGS["eta_max"])
         if scheduler == "beta":
             knobs["beta_alpha"] = float(SETTINGS["beta_alpha"])
@@ -803,16 +805,19 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
     cached = _BASE_CACHE.get(fp) if fp else None
     # Copies in and out: a post_generate extension may draw on its image.
     if cached is not None:
-        base, info = cached
+        base, info, reward_note = cached
         image, seed = base.copy(), int(p.seed)
     else:
         image, info = gen_fn(**gen_kwargs)
         seed = ENGINE.last_seed
+        reward_note = getattr(ENGINE, "last_reward", "") if p.mode == "t2i" else ""
         if fp is None and seed >= 0:
             fp = _base_fingerprint({**gen_kwargs, "seed": seed}, p.mode, loras)
         if fp is not None:
             _BASE_CACHE.clear()
-            _BASE_CACHE[fp] = (image.copy(), info)
+            _BASE_CACHE[fp] = (image.copy(), info, reward_note)
+    if reward_note:
+        gen_kwargs["reward"] = reward_note
 
     # Upscale first so the detailer refines at the final resolution.
     upscale_info = ""
