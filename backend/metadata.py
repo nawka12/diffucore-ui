@@ -165,9 +165,9 @@ def _skip_layers_text(layers) -> str:
     return ", ".join(str(int(i)) for i in layers) or "none"
 
 
-_ONSET_SAMPLERS = ("cogent3_pump_onset", "secant_onset")
+_ONSET_SAMPLERS = ("cogent3_pump_onset", "secant_onset", "cogent3_pump_onset_reward")
 _GATE_SAMPLERS = ("cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate", "cogent3_pump_onset",
-                  "cogent3_reward")
+                  "cogent3_reward", "cogent3_pump_onset_reward")
 
 
 def _lowres_calibrated_runs(gen_kwargs: dict) -> bool:

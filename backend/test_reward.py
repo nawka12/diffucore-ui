@@ -161,6 +161,31 @@ def test_names_are_anima_only_and_grouped_right_after_cogent3():
     assert group[group.index("cogent3") + 1:group.index("cogent3") + 1 + len(NAMES)] == NAMES
 
 
+def test_secant_anneal_reward_is_anima_only_and_grouped_right_after_secant_anneal():
+    assert "secant_anneal_reward" in engine.SAMPLERS_ANIMA
+    for other in (engine.SAMPLERS_SD, engine.SAMPLERS_FLUX, engine.SAMPLERS_FLOW):
+        assert "secant_anneal_reward" not in other
+    group = engine.SAMPLER_GROUPS["Diffucore"]
+    assert group[group.index("secant_anneal") + 1] == "secant_anneal_reward"
+
+
+def test_secant_anneal_reward_gets_the_secant_knobs_not_the_cogent_gate():
+    import server
+    from unittest import mock
+    assert "gate_reduce" not in server._settings_knobs("secant_anneal_reward", "flow", 0.0)
+    with mock.patch.object(server.ENGINE, "_loaded", mock.Mock(family="anima")):
+        knobs = server._settings_knobs("secant_anneal_reward", "flow", 0.0)
+        assert set(knobs) == set(server._settings_knobs("secant_anneal", "flow", 0.0))
+        assert {"curvature", "eta_max"} <= set(knobs)
+
+
+def test_registry_knows_secant_anneal_reward():
+    from diffucore.pipelines._anima import _ANIMA_SAMPLERS, _FLOW_AWARE_SAMPLERS
+    from diffucore.sampling import get_sampler
+    assert get_sampler("secant_anneal_reward").keywords["k"] == 6
+    assert "secant_anneal_reward" in _ANIMA_SAMPLERS and "secant_anneal_reward" in _FLOW_AWARE_SAMPLERS
+
+
 def test_registry_and_pipeline_know_both_names():
     from diffucore.pipelines._anima import _ANIMA_SAMPLERS, _FLOW_AWARE_SAMPLERS
     from diffucore.sampling import get_sampler
@@ -248,3 +273,58 @@ def test_engine_passes_the_reward_fn_only_to_a_reward_sampler_with_enough_tags(m
     assert eng.last_reward == "k=6, pick=2, tags=smile, window, indoors"
     _, info = eng.generate_t2i("a long prompt", sampler="cogent3", scheduler="flow", steps=8)
     assert "reward_fn" not in seen and "Reward" not in info and eng.last_reward == ""
+
+
+def test_engine_passes_the_reward_fn_to_secant_anneal_reward_too(monkeypatch):
+    eng, seen = _anima_engine(monkeypatch, pick=4)
+    _, info = eng.generate_t2i("a long prompt", sampler="secant_anneal_reward", scheduler="flow", steps=8)
+    assert seen["reward_fn"] is _fn
+    assert "Reward: k=6, pick=4, tags=smile, window, indoors" in info
+    assert eng.last_reward == "k=6, pick=4, tags=smile, window, indoors"
+    _, info = eng.generate_t2i("a", sampler="secant_anneal_reward", scheduler="flow", steps=8)
+    assert "reward_fn" not in seen and "Reward" not in info and eng.last_reward == ""
+    _, info = eng.generate_t2i("a long prompt", sampler="secant_anneal", scheduler="flow", steps=8)
+    assert "reward_fn" not in seen and eng.last_reward == ""
+
+
+def test_metadata_reward_line_for_secant_anneal_reward_has_no_gate_line():
+    gen = {**_BASE, "sampler": "secant_anneal_reward", "reward": "k=6, pick=1, tags=a, b, c"}
+    text = md.format_metadata(gen, _Eng())
+    assert 'Reward: "k=6, pick=1, tags=a, b, c"' in text and "Gate reduce" not in text
+    parsed = md.parse_metadata(text)
+    assert parsed["reward"] == "k=6, pick=1, tags=a, b, c" and parsed["sampler"] == "secant_anneal_reward"
+    assert "reward" in md.format_swarmui_metadata(gen, _Eng())
+    assert "Half-res calibration: on" in md.format_metadata({**gen, "lowres_calibrated": True}, _Eng())
+
+
+def test_pump_onset_reward_is_anima_only_grouped_after_pump_onset_with_cogent_and_pump_knobs():
+    import server
+    from unittest import mock
+    n = "cogent3_pump_onset_reward"
+    assert n in engine.SAMPLERS_ANIMA
+    for other in (engine.SAMPLERS_SD, engine.SAMPLERS_FLUX, engine.SAMPLERS_FLOW):
+        assert n not in other
+    group = engine.SAMPLER_GROUPS["Diffucore"]
+    assert group[group.index("cogent3_pump_onset") + 1] == n
+    assert server._settings_knobs(n, "flow", 0.0)["gate_reduce"] == server.SETTINGS["gate_reduce"]
+    with mock.patch.object(server.ENGINE, "_loaded", mock.Mock(family="anima")):
+        assert set(server._settings_knobs(n, "flow", 0.0)) == set(server._settings_knobs("cogent3_pump_onset", "flow", 0.0))
+    from diffucore.sampling import get_sampler
+    assert get_sampler(n).keywords["pump_strength"] == 0.08
+
+
+def test_engine_passes_the_reward_fn_to_pump_onset_reward(monkeypatch):
+    eng, seen = _anima_engine(monkeypatch, pick=1)
+    _, info = eng.generate_t2i("a long prompt", sampler="cogent3_pump_onset_reward", scheduler="flow", steps=8)
+    assert seen["reward_fn"] is _fn and "Reward: k=6, pick=1, tags=smile, window, indoors" in info
+    _, info = eng.generate_t2i("a long prompt", sampler="cogent3_pump_onset", scheduler="flow", steps=8)
+    assert "reward_fn" not in seen and eng.last_reward == ""
+
+
+def test_metadata_for_pump_onset_reward_has_the_gate_reward_and_calibration_lines():
+    gen = {**_BASE, "sampler": "cogent3_pump_onset_reward", "reward": "k=3, pick=2, tags=a, b, c",
+           "lowres_calibrated": True}
+    text = md.format_metadata(gen, _Eng())
+    assert "Gate reduce: per_channel" in text and 'Reward: "k=3, pick=2, tags=a, b, c"' in text
+    assert "Half-res calibration: on" in md.format_metadata({k: v for k, v in gen.items() if k != "reward"}, _Eng())
+    assert md.parse_metadata(text)["sampler"] == "cogent3_pump_onset_reward"

@@ -629,6 +629,15 @@ bugs, just how the model responds):
   Metadata and info line say which particle won. Not with
   "Forecast late steps"; img2img and inpaint run plain `cogent3`.
 
+- **`secant_anneal_reward` (Anima only)** is `secant_anneal` with the same
+  best-of-6 layout pick as `cogent3_reward` (same scoring and limits; without
+  enough prompt tags it is plain `secant_anneal`).
+
+- **`cogent3_pump_onset_reward` (Anima only)** is `cogent3_pump_onset` with a
+  best-of-3 layout pick (fewer particles than `cogent3_reward`, to stay near 2x
+  the plain sampler's time; same scoring and limits, plain `cogent3_pump_onset`
+  without enough prompt tags).
+
 - **The `secant_tilt` scheduler** is built for `secant_anneal` and replaces
   `beta_mix` as its pairing. It came from measuring where AnimaFranken v1.3
   decides what (1024×1536, CFG 5, CFG interval 0.1–0.75):

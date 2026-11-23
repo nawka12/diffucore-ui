@@ -79,6 +79,7 @@ from diffucore.pipelines._flux import _flux2_unpatchify_latents
 from diffucore.pipelines._moss import MOSS_UNCOND_SKIP
 from diffucore.loading import read_header
 from diffucore.runtime import ConditioningCache, DevicePolicy
+from diffucore.sampling.samplers import REWARD_SAMPLERS
 
 from utils import checkpoint_path, lora_path, diffusion_model_path, vae_path, te_path
 from reward import reward_fn_for
@@ -149,7 +150,8 @@ SAMPLERS_MOSS = SAMPLERS_ANIMA
 SAMPLERS_ZIMAGE = SAMPLERS_ANIMA
 # Rebinds after the lists above took the old one: the onset sampler needs Anima's half-res
 # layout band, which no other family has.
-SAMPLERS_ANIMA = SAMPLERS_ANIMA + ["cogent3_pump_onset", "secant_onset", "cogent3_reward"]
+SAMPLERS_ANIMA = SAMPLERS_ANIMA + ["cogent3_pump_onset", "secant_onset", "cogent3_reward",
+                                  "secant_anneal_reward", "cogent3_pump_onset_reward"]
 
 SCHEDULERS_SD = ["karras", "exponential", "polyexponential", "kl_optimal",
                  "align_your_steps", "sgm_uniform", "simple", "normal",
@@ -194,8 +196,8 @@ SAMPLER_GROUPS = {
     "SDE": ["er_sde", "sa_solver", "sa_solver_pece", "seeds_2", "seeds_3"],
     "Infinity": ["infinity", "infinity_realism", "infinity_omega", "infinity_aether"],
     "Diffucore": ["cogent", "cogent3", "cogent3_reward", "cogent3_pump",
-                  "cogent3_pump_rate", "cogent3_pump_onset", "secant",
-                  "secant_anneal", "secant_onset", "euler_ancestral_anneal"],
+                  "cogent3_pump_rate", "cogent3_pump_onset", "cogent3_pump_onset_reward", "secant",
+                  "secant_anneal", "secant_anneal_reward", "secant_onset", "euler_ancestral_anneal"],
 }
 SCHEDULER_GROUPS = {
     "Model default": ["flow", "flow_dyn", "flux", "krea2", "moss", "zimage", "oss"],
@@ -1760,7 +1762,7 @@ class Engine:
             kwargs.update(forecast_ratio=forecast_ratio, forecast_sigma=forecast_sigma)
         self._last_reward = ""
         reward_fn = (reward_fn_for(prompt) if self._loaded.family == MODEL_FAMILY_ANIMA
-                     and sampler == "cogent3_reward" else None)
+                     and sampler in REWARD_SAMPLERS else None)
         if reward_fn is not None:
             kwargs["reward_fn"] = reward_fn
         try:
