@@ -328,3 +328,34 @@ def test_metadata_for_pump_onset_reward_has_the_gate_reward_and_calibration_line
     assert "Gate reduce: per_channel" in text and 'Reward: "k=3, pick=2, tags=a, b, c"' in text
     assert "Half-res calibration: on" in md.format_metadata({k: v for k, v in gen.items() if k != "reward"}, _Eng())
     assert md.parse_metadata(text)["sampler"] == "cogent3_pump_onset_reward"
+
+
+def test_pump_rate_reward_is_anima_only_grouped_after_pump_rate_with_cogent_and_pump_knobs():
+    import server
+    from unittest import mock
+    n = "cogent3_pump_rate_reward"
+    assert n in engine.SAMPLERS_ANIMA
+    for other in (engine.SAMPLERS_SD, engine.SAMPLERS_FLUX, engine.SAMPLERS_FLOW):
+        assert n not in other
+    group = engine.SAMPLER_GROUPS["Diffucore"]
+    assert group[group.index("cogent3_pump_rate") + 1] == n
+    assert server._settings_knobs(n, "flow", 0.0)["gate_reduce"] == server.SETTINGS["gate_reduce"]
+    with mock.patch.object(server.ENGINE, "_loaded", mock.Mock(family="anima")):
+        assert set(server._settings_knobs(n, "flow", 0.0)) == set(server._settings_knobs("cogent3_pump_rate", "flow", 0.0))
+    from diffucore.sampling import get_sampler
+    assert get_sampler(n).keywords["pump_strength"] == 0.08 and get_sampler(n).keywords["k"] == 6
+
+
+def test_engine_passes_the_reward_fn_to_pump_rate_reward(monkeypatch):
+    eng, seen = _anima_engine(monkeypatch, pick=1)
+    _, info = eng.generate_t2i("a long prompt", sampler="cogent3_pump_rate_reward", scheduler="pump_taper", steps=8)
+    assert seen["reward_fn"] is _fn and "Reward: k=6, pick=1, tags=smile, window, indoors" in info
+    _, info = eng.generate_t2i("a long prompt", sampler="cogent3_pump_rate", scheduler="pump_taper", steps=8)
+    assert "reward_fn" not in seen and eng.last_reward == ""
+
+
+def test_metadata_for_pump_rate_reward_has_the_gate_and_reward_lines():
+    gen = {**_BASE, "sampler": "cogent3_pump_rate_reward", "reward": "k=6, pick=4, tags=a, b, c"}
+    text = md.format_metadata(gen, _Eng())
+    assert "Gate reduce: per_channel" in text and 'Reward: "k=6, pick=4, tags=a, b, c"' in text
+    assert md.parse_metadata(text)["sampler"] == "cogent3_pump_rate_reward"

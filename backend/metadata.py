@@ -167,7 +167,7 @@ def _skip_layers_text(layers) -> str:
 
 _ONSET_SAMPLERS = ("cogent3_pump_onset", "secant_onset", "cogent3_pump_onset_reward")
 _GATE_SAMPLERS = ("cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate", "cogent3_pump_onset",
-                  "cogent3_reward", "cogent3_pump_onset_reward")
+                  "cogent3_reward", "cogent3_pump_onset_reward", "cogent3_pump_rate_reward")
 
 
 def _lowres_calibrated_runs(gen_kwargs: dict) -> bool:

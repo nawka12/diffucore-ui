@@ -656,7 +656,7 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
     generations and every X/Y/Z cell so both sample the same thing."""
     knobs: dict = {}
     if sampler in ("cogent", "cogent3", "cogent3_pump", "cogent3_pump_rate", "cogent3_pump_onset",
-                   "cogent3_reward", "cogent3_pump_onset_reward"):
+                   "cogent3_reward", "cogent3_pump_onset_reward", "cogent3_pump_rate_reward"):
         knobs["gate_reduce"] = SETTINGS["gate_reduce"]
 
     # Anima, Krea 2, MOSS-Image and Z-Image. Inject just the knobs the sampler/scheduler
@@ -666,7 +666,8 @@ def _settings_knobs(sampler: str, scheduler: str, teacache: float) -> dict:
             knobs["curvature"] = float(SETTINGS["curvature"])
         if sampler in ("secant_anneal", "secant_onset", "euler_ancestral_anneal", "cogent", "cogent3",
                        "cogent3_pump", "cogent3_pump_rate", "cogent3_pump_onset",
-                       "cogent3_reward", "secant_anneal_reward", "cogent3_pump_onset_reward"):
+                       "cogent3_reward", "secant_anneal_reward", "cogent3_pump_onset_reward",
+                       "cogent3_pump_rate_reward"):
             knobs["eta_max"] = float(SETTINGS["eta_max"])
         if scheduler == "beta":
             knobs["beta_alpha"] = float(SETTINGS["beta_alpha"])

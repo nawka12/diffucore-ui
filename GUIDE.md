@@ -638,6 +638,10 @@ bugs, just how the model responds):
   the plain sampler's time; same scoring and limits, plain `cogent3_pump_onset`
   without enough prompt tags).
 
+- **`cogent3_pump_rate_reward` (Anima only)** is `cogent3_pump_rate` with the
+  same best-of-6 layout pick as `cogent3_reward` (same scoring and limits; plain
+  `cogent3_pump_rate` without enough prompt tags). Pairs with `pump_taper`.
+
 - **The `secant_tilt` scheduler** is built for `secant_anneal` and replaces
   `beta_mix` as its pairing. It came from measuring where AnimaFranken v1.3
   decides what (1024×1536, CFG 5, CFG interval 0.1–0.75):
