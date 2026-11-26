@@ -346,7 +346,7 @@ class SkipFields(BaseModel):
 
 
 class GeneratePayload(SkipFields):
-    mode: str = "t2i"                 # t2i | i2i | inpaint
+    mode: str = "t2i"                 # t2i | i2i | inpaint | edit
     prompt: str = ""
     neg: str = ""
     sampler: str = "dpmpp_2m"
@@ -366,6 +366,7 @@ class GeneratePayload(SkipFields):
     deepcache: int = Field(1, ge=1, le=64)                # reuse interval (1 = off; SD/SDXL UNet only)
     input_image: Optional[str] = None   # base64 / data-URL
     mask_image: Optional[str] = None
+    reference_images: List[str] = []    # edit mode (FLUX.2): base64 / data-URLs
     preview: bool = True
     blur_check: bool = False             # the page will blur this result: rate it even if gallery blur is off
 
@@ -618,6 +619,9 @@ def _save_output(image: Image.Image, gen_kwargs: dict,
     return out
 
 
+MAX_REFERENCE_IMAGES = 4
+
+
 # ── base-image cache ────────────────────────────────────────────────
 # The upscaler and detailer don't change the base image, so re-running with only
 # those re-tuned reuses the last base. One slot, touched only by the worker
@@ -629,6 +633,8 @@ def _fingerprint_value(v):
     """JSON-safe stand-in for one generation kwarg; images hash by pixels."""
     if isinstance(v, Image.Image):
         return ["image", v.mode, v.size, hashlib.sha256(v.tobytes()).hexdigest()]
+    if isinstance(v, (list, tuple)):
+        return [_fingerprint_value(x) for x in v]
     return v
 
 
@@ -743,6 +749,10 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
         if p.uncond_skip_layers is None:
             p.uncond_skip_layers = list(MOSS_UNCOND_SKIP)
 
+    if ENGINE.loaded_family == "flux1" and p.scheduler == "flux2":
+        # "flux2" is FLUX.2's own schedule; record the one FLUX.1 runs instead.
+        p.scheduler = "flux"
+
     clean_prompt, prompt_loras = ENGINE.parse_lora_prompt(p.prompt)
     clean_neg, neg_loras = ENGINE.parse_lora_prompt(p.neg)
     loras = prompt_loras + neg_loras
@@ -790,6 +800,24 @@ def _run_generation(p: GeneratePayload, on_progress: Callable[[int, int], None],
         )
         gen_kwargs.update(_skip_kwargs(p))
         gen_fn = ENGINE.generate_inpaint
+    elif p.mode == "edit":
+        if ENGINE.loaded_family != "flux2":
+            raise RuntimeError("Edit needs a FLUX.2 model")
+        if not p.reference_images:
+            raise RuntimeError("Provide a reference image")
+        if len(p.reference_images) > MAX_REFERENCE_IMAGES:
+            raise RuntimeError(f"Edit takes at most {MAX_REFERENCE_IMAGES} reference images")
+        gen_kwargs = dict(
+            prompt=clean_prompt,
+            reference_images=[_decode_image(r) for r in p.reference_images],
+            width=int(p.width), height=int(p.height),
+            steps=int(p.steps), cfg_scale=float(p.cfg),
+            sampler=p.sampler, scheduler=p.scheduler, seed=int(p.seed),
+            shift=float(p.shift),
+            progress_callback=on_progress,
+            preview_callback=on_preview if p.preview else None,
+        )
+        gen_fn = ENGINE.generate_edit
     else:  # t2i
         gen_kwargs = dict(
             prompt=clean_prompt, width=int(p.width), height=int(p.height),
@@ -1160,6 +1188,7 @@ def _state_payload() -> dict:
     return {
         "status": ENGINE.status_text(),
         "loaded": bool(ENGINE.loaded_name),
+        "loaded_family": ENGINE.loaded_family,
         "load_form": LAST_LOAD_FORM,
         "last_seed": ENGINE.last_seed,
     }
@@ -1638,6 +1667,7 @@ def api_models():
         "xyz_param_types": XYZ_PARAM_TYPES,
         "status": ENGINE.status_text(),
         "loaded": bool(ENGINE.loaded_name),
+        "loaded_family": ENGINE.loaded_family,
         "load_form": LAST_LOAD_FORM,
         "last_seed": ENGINE.last_seed,
         "recommended_offload": ENGINE.recommended_offload(),

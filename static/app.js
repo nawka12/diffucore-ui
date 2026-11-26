@@ -94,6 +94,18 @@ function groupItems(names, groups) {
     .map((n, i) => ({ value: n, label: n, group: rank[n] ? rank[n][0] : 'Other', r: rank[n] ? rank[n][1] : r + i }))
     .sort((a, b) => a.r - b.r);
 }
+// JS twin of diffucore's _flux2_reference_geometry: the size an Edit run
+// outputs for a reference, after the 1 MP cap and the floor to a multiple of 16.
+function flux2RefSize(w, h) {
+  const area = 1024 * 1024;
+  if (w * h > area) {
+    const k = Math.sqrt(area / (w * h));
+    w = Math.trunc(w * k);
+    h = Math.trunc(h * k);
+  }
+  return [Math.floor(w / 16) * 16, Math.floor(h / 16) * 16];
+}
+const MAX_REFS = 4;
 let comboSeq = 0;
 
 document.addEventListener('alpine:init', () => {
@@ -205,6 +217,10 @@ document.addEventListener('alpine:init', () => {
     loadFormDirty: false,
     animaApplied: false,
     fluxApplied: false,
+    kleinApplied: '',   // the klein DiT file whose defaults were last applied
+    loadedFamily: null,   // the backend's loaded family, which the rack may differ from
+    refImages: [],        // Edit mode references (data URLs)
+    maxRefs: MAX_REFS,
     krea2Applied: false,
     krea2Variant: 'raw',   // 'raw' | 'turbo'; follows the DiT filename until overridden
     mossApplied: false,
@@ -422,7 +438,9 @@ document.addEventListener('alpine:init', () => {
     },
     get schedulers() {
       if (this.modelType === 'Anima') return this.schedulersAnima;
-      if (this.modelType === 'FLUX') return this.schedulersFlux;
+      if (this.modelType === 'FLUX') {
+        return this.modelArch === 'flux2' ? this.schedulersFlux : this.schedulersFlux.filter(s => s !== 'flux2');
+      }
       if (this.modelType === 'Krea2') return this.schedulersKrea2;
       if (this.modelType === 'MOSS') return this.schedulersMoss;
       if (this.modelType === 'ZImage') return this.schedulersZimage;
@@ -493,11 +511,18 @@ document.addEventListener('alpine:init', () => {
       return this.modelType === 'Anima' || this.modelType === 'FLUX' || this.modelType === 'Krea2'
         || this.modelType === 'MOSS' || this.modelType === 'ZImage';
     },
+    // Edit mode needs the LOADED model to be FLUX.2, not just the rack's pick.
+    get editAvailable() { return this.modelLoaded && this.loadedFamily === 'flux2'; },
+    // Distilled klein has no guidance embedding, so CFG does nothing.
+    get isKleinDistilled() {
+      return this.modelType === 'FLUX' && this.modelArch === 'flux2' && this.modelSource === 'dit'
+        && /klein/i.test(this.dit) && !/base/i.test(this.dit);
+    },
     get isKrea2() { return this.modelType === 'Krea2'; },
     get isMoss() { return this.modelType === 'MOSS'; },
     get isZImage() { return this.modelType === 'ZImage'; },
     // Z-Image runs no negative-prompt pass at CFG 1 (Turbo's setting).
-    get negativeUsed() { return !this.isZImage || this.form.cfg > 1; },
+    get negativeUsed() { return this.modelType !== 'FLUX' && (!this.isZImage || this.form.cfg > 1); },
     get slgAvailable() { return this.isMoss || this.modelType === 'Anima'; },
     // Qwen3 / Qwen3-VL text-encoder files the Anima Enhance can run (no Qwen3.5).
     get enhancerModels() {
@@ -817,9 +842,15 @@ document.addEventListener('alpine:init', () => {
       return promises;
     },
 
+    leaveEditIfUnavailable() {
+      if (this.mode === 'edit' && !this.editAvailable) this.mode = 't2i';
+    },
+
     applyState(s) {
       this.status = s.status;
       this.modelLoaded = !!s.loaded;
+      if (s.loaded_family !== undefined) this.loadedFamily = s.loaded_family;
+      this.leaveEditIfUnavailable();
       if (s.last_seed !== undefined) this.lastSeed = s.last_seed;
       // Don't overwrite a selection the user is editing locally.
       if (s.load_form && !this.loadFormDirty) this.restoreLoadForm(s.load_form);
@@ -945,6 +976,8 @@ document.addEventListener('alpine:init', () => {
       if (family === 'ZImage') this.onZimageDitChange();
       this.loadFormDirty = true;
       this.pickCompanions();
+      // FLUX.1 and FLUX.2 share a family; only FLUX.2 has the "flux2" schedule.
+      this.syncScheduler();
     },
 
     // Swap VAE / text encoder / CLIP for files of a kind this model loads,
@@ -1132,9 +1165,21 @@ document.addEventListener('alpine:init', () => {
       if (!list.includes(this.form.scheduler)) this.form.scheduler = list[0];
     },
 
+    // Distilled klein: 4 steps, euler, FLUX.2's own schedule. Once per klein file.
+    applyKleinDefaults(dit) {
+      if (!dit || this.kleinApplied === dit) return;
+      this.kleinApplied = dit;
+      this.form.steps = 4;
+      this.form.sampler = 'euler';
+      this.form.scheduler = 'flux2';
+      this.syncSampler();
+      this.syncScheduler();
+    },
+
     async loadModel() {
       this.loadingModel = true;
       this.status = 'Loading…';
+      const klein = this.isKleinDistilled ? this.dit : '';
       try {
         const body = {
           model_type: this.modelType,
@@ -1160,8 +1205,12 @@ document.addEventListener('alpine:init', () => {
         if (ev.type === 'done') {
           this.status = ev.status;
           this.modelLoaded = !!ev.loaded;
+          this.leaveEditIfUnavailable();
           // Our selection is now the loaded form, so broadcasts may sync again.
-          if (this.modelLoaded) this.loadFormDirty = false;
+          if (this.modelLoaded) {
+            this.loadFormDirty = false;
+            this.applyKleinDefaults(klein);
+          }
           if (!this.modelLoaded) this.flash(ev.status);
         } else if (ev.type === 'cancelled') {
           this.status = 'Load cancelled';
@@ -1190,6 +1239,58 @@ document.addEventListener('alpine:init', () => {
         if (key === 'inputImage') this.syncOutputSize(r.result);
       };
       r.readAsDataURL(f);
+    },
+
+    // ── Edit mode references ────────────────────────────────────
+    imageSize(dataUrl) {
+      return new Promise((res, rej) => {
+        const img = new Image();
+        img.onload = () => res([img.naturalWidth, img.naturalHeight]);
+        img.onerror = rej;
+        img.src = dataUrl;
+      });
+    },
+
+    // The first reference sets the output size, as the engine does when it is unset.
+    syncRefSize() {
+      if (!this.refImages.length) return;
+      this.imageSize(this.refImages[0]).then(([w, h]) => {
+        [this.form.width, this.form.height] = flux2RefSize(w, h);
+      }).catch(() => {});
+    },
+
+    async addRefs(files) {
+      const room = MAX_REFS - this.refImages.length;
+      const picked = [...files].filter(f => !f.type || f.type.startsWith('image/'));
+      if (picked.length < files.length) this.flash('Not an image file');
+      if (picked.length > room) this.flash(`Up to ${MAX_REFS} reference images`);
+      const urls = await Promise.all(picked.slice(0, Math.max(room, 0)).map(f => new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = rej;
+        r.readAsDataURL(f);
+      })));
+      const wasEmpty = !this.refImages.length;
+      for (const url of urls) {
+        const [w, h] = await this.imageSize(url);
+        if (w < 64 || h < 64) { this.flash('Reference image too small (min 64 px)'); continue; }
+        if (Math.max(w / h, h / w) > 8) { this.flash('Reference image aspect ratio too extreme (max 8:1)'); continue; }
+        if (this.refImages.length < MAX_REFS) this.refImages.push(url);
+      }
+      if (wasEmpty) this.syncRefSize();
+    },
+
+    onRefFiles(evt) {
+      this.addRefs(evt.target.files);
+      evt.target.value = '';
+    },
+    onRefDrop(evt) {
+      this.dragKey = null;
+      this.addRefs(evt.dataTransfer.files);
+    },
+    removeRef(i) {
+      this.refImages.splice(i, 1);
+      if (i === 0) this.syncRefSize();
     },
 
     // Match the output size to the source, rounded to ×8, so it isn't stretched.
@@ -1539,6 +1640,7 @@ document.addEventListener('alpine:init', () => {
         return;
       }
       if (this.mode === 'i2i' && !this.inputImage) { this.flash('Provide an input image'); return; }
+      if (this.mode === 'edit' && !this.refImages.length) { this.flash('Add a reference image'); return; }
       if (this.mode === 'inpaint') {
         if (!this.inputImage) { this.flash('Provide an input image'); return; }
         if (!this.maskHasCoverage(this.$refs.maskCanvas)) {
@@ -1581,8 +1683,9 @@ document.addEventListener('alpine:init', () => {
           teacache_sigma_floor: this.form.teacacheFloor,
           deepcache: this.form.deepcacheOn ? this.form.deepcache : 1,
           ...skip,
-          input_image: this.mode !== 't2i' ? this.inputImage : null,
+          input_image: this.mode === 'i2i' || this.mode === 'inpaint' ? this.inputImage : null,
           mask_image: this.mode === 'inpaint' ? this.maskImage : null,
+          reference_images: this.mode === 'edit' ? this.refImages : [],
           preview: this.preview,
           blur_check: this.blurOn,
           detail_enabled: this.detail.enabled,
@@ -2484,9 +2587,10 @@ document.addEventListener('alpine:init', () => {
 
     async sendToMode(mode) {
       if (!this.selected) return;
+      let dataUrl;
       try {
         const blob = await (await fetch(this.selected.url)).blob();
-        this.inputImage = await new Promise((res, rej) => {
+        dataUrl = await new Promise((res, rej) => {
           const r = new FileReader();
           r.onload = () => res(r.result);
           r.onerror = rej;
@@ -2496,15 +2600,22 @@ document.addEventListener('alpine:init', () => {
         this.flash('Could not load image: ' + e);
         return;
       }
-      this.maskImage = null;
-      await this._metaLoad;
-      this.applyFields(this.selectedFields);
-      this.syncOutputSize(this.inputImage);
+      if (mode === 'edit') {
+        // The settings stay as they are: an iterative edit wants a new instruction, not the old one.
+        this.refImages = [dataUrl];
+        this.syncRefSize();
+      } else {
+        this.inputImage = dataUrl;
+        this.maskImage = null;
+        await this._metaLoad;
+        this.applyFields(this.selectedFields);
+        this.syncOutputSize(this.inputImage);
+      }
       this.mode = mode;
       this.closeLightbox();
       this.tab = 'generate';
       this.resizeTextareas();
-      this.flash('Sent to ' + (mode === 'i2i' ? 'img2img' : 'inpaint'));
+      this.flash('Sent to ' + { i2i: 'img2img', inpaint: 'inpaint', edit: 'edit' }[mode]);
     },
 
     // ── metadata reader ─────────────────────────────────────────

@@ -164,7 +164,7 @@ SCHEDULERS_ANIMA = ["flow", "flow_dyn", "oss", "sgm_uniform", "simple",
                     "normal", "infinity", "infinity_htds", "kl_optimal",
                     "linear_quadratic", "smoothstep", "beta", "beta_mix",
                     "pump_dual", "pump_taper", "secant_tilt", "relay_tilt"]
-SCHEDULERS_FLUX = ["flux", "flow", "sgm_uniform", "simple", "normal",
+SCHEDULERS_FLUX = ["flux", "flux2", "flow", "sgm_uniform", "simple", "normal",
                    "infinity", "infinity_htds", "kl_optimal", "linear_quadratic"]
 # "krea2" is the checkpoint's own shift; the shift slider only applies to "flow".
 SCHEDULERS_KREA2 = ["krea2", "flow", "flow_dyn", "sgm_uniform", "simple", "normal",
@@ -201,7 +201,7 @@ SAMPLER_GROUPS = {
                   "secant_onset", "euler_ancestral_anneal"],
 }
 SCHEDULER_GROUPS = {
-    "Model default": ["flow", "flow_dyn", "flux", "krea2", "moss", "zimage", "oss"],
+    "Model default": ["flow", "flow_dyn", "flux", "flux2", "krea2", "moss", "zimage", "oss"],
     "Classic": ["karras", "exponential", "polyexponential", "normal", "simple",
                 "sgm_uniform", "ddim_uniform", "kl_optimal", "align_your_steps",
                 "linear_quadratic", "beta"],
@@ -1775,6 +1775,47 @@ class Engine:
         if r:
             self._last_reward = f"k={r['k']}, pick={r['pick']}, tags={', '.join(reward_fn.tags)}"
             info += f" | Reward: {self._last_reward}"
+        return image, info
+
+    def generate_edit(
+        self,
+        prompt: str,
+        reference_images: "list[Image.Image]",
+        width: int | None = None,
+        height: int | None = None,
+        steps: int = 4,
+        cfg_scale: float = 1.0,
+        sampler: str = "euler",
+        scheduler: str = "flux2",
+        seed: int = -1,
+        shift: float = 3.0,
+        progress_callback: Callable[[int, int], None] | None = None,
+        preview_callback: Callable[[Image.Image], None] | None = None,
+    ) -> Tuple[Image.Image, str]:
+        """FLUX.2 reference-image editing. ``width``/``height`` of None follow
+        the first reference's processed size."""
+        if not self._loaded:
+            raise RuntimeError("No model loaded")
+        if self._loaded.family != MODEL_FAMILY_FLUX2:
+            raise RuntimeError("Edit needs a FLUX.2 model")
+        if not reference_images:
+            raise RuntimeError("Provide a reference image")
+        seed = self._resolve_seed(seed)
+        gen = TextToImage(self._loaded.model)
+        try:
+            image, pipeline_info = gen(
+                prompt=prompt, steps=steps, cfg_scale=cfg_scale,
+                width=width, height=height, sampler=sampler, scheduler=scheduler,
+                seed=seed, shift=shift, reference_images=reference_images,
+                progress_callback=progress_callback,
+                preview_callback=self._make_preview_cb(preview_callback) if preview_callback else None,
+                return_info=True,
+            )
+        finally:
+            self._reclaim_memory()
+        n = len(reference_images)
+        info = (f"Seed: {seed} | {n} ref{'s' if n != 1 else ''} | {steps} steps"
+                f" | VAE: {pipeline_info.vae_decode_mode}")
         return image, info
 
     def generate_i2i(

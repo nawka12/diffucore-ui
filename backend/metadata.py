@@ -240,6 +240,8 @@ def format_metadata(gen_kwargs: dict, engine, detailer: dict | None = None,
         fields.append(f"Lora hashes: {json.dumps(', '.join(lora_hashes), ensure_ascii=False)}")
     if "strength" in gen_kwargs:
         fields.append(f"Denoising strength: {gen_kwargs['strength']}")
+    if gen_kwargs.get("reference_images"):
+        fields.append(f"Edit references: {len(gen_kwargs['reference_images'])}")
     if "shift" in gen_kwargs:
         fields.append(f"Shift: {gen_kwargs['shift']}")
     if gen_kwargs.get("teacache_thresh", 0):
@@ -356,6 +358,8 @@ def format_swarmui_metadata(gen_kwargs: dict, engine, detailer: dict | None = No
         extra["reward"] = gen_kwargs["reward"]
     if "strength" in gen_kwargs:
         extra["denoising_strength"] = gen_kwargs["strength"]
+    if gen_kwargs.get("reference_images"):
+        extra["edit_references"] = len(gen_kwargs["reference_images"])
     if "shift" in gen_kwargs:
         extra["shift"] = gen_kwargs["shift"]
     if "cfg_interval_start" in gen_kwargs:
